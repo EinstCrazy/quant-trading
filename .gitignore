@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.env
+.DS_Store
+
+# Local market data and generated research outputs
+data/raw/**
+data/processed/**
+data/cache/**
+reports/**
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/cache/.gitkeep
+!reports/.gitkeep

@@ -1,0 +1,11 @@
+# Research defaults. Keep machine-specific paths and credentials out of version control.
+data:
+  directory: data
+  timezone: UTC
+  price_adjustment: adjusted
+
+backtest:
+  initial_cash: 100000
+  commission_bps: 5
+  slippage_bps: 2
+  allow_short: false

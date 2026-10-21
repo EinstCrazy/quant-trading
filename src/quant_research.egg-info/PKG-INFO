@@ -1,0 +1,143 @@
+Metadata-Version: 2.4
+Name: quant-research
+Version: 0.1.0
+Summary: A workspace for quantitative trading research and backtesting
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.26
+Requires-Dist: pandas>=2.2
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+Requires-Dist: pre-commit>=3.7; extra == "dev"
+Dynamic: license-file
+
+# Quant Trading Research
+
+用于整理量化交易研究、数据、策略实验和回测工具的 Python 工作区。
+
+> **定位**：离线研究 + 模拟回测 + 纸面交易验证。默认**不会**连接券商或提交真实订单。
+> 本仓库的信号与指标仅用于方法学研究，不构成投资建议。
+
+## 当前状态（v0.1.0）
+
+项目处于**脚手架阶段**。「加载数据 → 生成信号 → 计算指标」这条链路上已有三个可用函数，
+但中间的**组合构建层**与**回测执行层**尚未实现——也就是说，目前还无法把一个信号真正跑成一条净值曲线。
+
+| 模块 / 能力 | 状态 | 说明 |
+| --- | --- | --- |
+| `quant_research.data` | ✅ 可用 | 从 CSV 读取并校验收盘价 |
+| `quant_research.strategies.momentum` | ✅ 可用 | 双均线 long-only（0/1）信号 |
+| `quant_research.metrics` | ✅ 可用 | 年化夏普、最大回撤 |
+| 配置加载 `config/settings.yaml` | ⚠️ 无人读取 | `pyyaml` 已声明依赖，但代码中没有 import |
+| 组合构建（权重、约束） | ❌ 未实现 | 信号与目标仓位之间没有桥梁 |
+| 回测引擎（撮合、成本、账本） | ❌ 未实现 | `commission_bps` / `slippage_bps` 等参数暂无消费方 |
+| 绩效分析（完整） | ⚠️ 部分 | 仅夏普与回撤，缺 CAGR / Sortino / IC 等 |
+| 实验管理、可视化、报告 | ❌ 未实现 | `notebooks/` 与 `reports/` 均为空 |
+| 版本控制 | ❌ 缺失 | 该目录**尚未初始化 Git 仓库** |
+
+## 快速开始
+
+建议 Python 3.11 或更新版本：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+pytest
+```
+
+端到端示例（数据 → 信号 → 收益 → 指标）：
+
+```python
+import pandas as pd
+from quant_research.data import load_close_prices
+from quant_research.strategies.momentum import moving_average_signal
+from quant_research.metrics import annualized_sharpe, max_drawdown
+
+close = load_close_prices("data/raw/example.csv")
+signal = moving_average_signal(close, fast_window=20, slow_window=50)
+
+# 关键：信号必须滞后一期再与收益相乘，否则引入前视偏差
+returns = close.pct_change()
+strategy_returns = signal.shift(1).fillna(0) * returns
+
+print(annualized_sharpe(strategy_returns), max_drawdown(strategy_returns))
+```
+
+`data/raw/example.csv` 尚不存在（样例数据属于路线图 P1 任务）。想立即试跑可先用内存序列：
+
+```python
+close = pd.Series(
+    [100, 101, 103, 102, 104, 107, 109, 108],
+    index=pd.bdate_range("2024-01-01", periods=8),
+)
+signal = moving_average_signal(close, fast_window=2, slow_window=4)
+```
+
+信号 `1` 表示模型持有多头，`0` 表示空仓。
+
+## 项目结构
+
+```text
+quant-trading/
+├── .gitignore              项目级数据与研究产物忽略规则
+├── config/                 研究默认配置（数据目录、回测成本假设）
+├── data/
+│   ├── raw/                原始数据（不入库）
+│   ├── processed/          清洗、对齐后的数据
+│   └── cache/              派生缓存（可随时重建）
+├── notebooks/              交互式研究
+├── reports/                回测图表与实验结论
+├── src/quant_research/
+│   ├── README.md           源码模块导览与文档分工
+│   ├── config.py           YAML 研究配置加载与校验
+│   ├── data.py             CSV 收盘价加载与校验
+│   ├── metrics.py          夏普比率、最大回撤
+│   └── strategies/         策略信号
+│       └── momentum.py     双均线动量信号
+├── tests/                  自动化测试
+└── docs/                   项目文档
+```
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [src/quant_research/README.md](src/quant_research/README.md) | 源码模块导览与文档分工 |
+| [docs/IMPLEMENTATION_BRIEF.md](docs/IMPLEMENTATION_BRIEF.md) | 项目最终态、中间态、投入估算与实施路径 |
+| [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | 近期批次任务与接口级细化设计 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 分期路线图、任务清单与优先级建议 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 数据流、分层设计与目录约定 |
+| [docs/API.md](docs/API.md) | 公开函数签名、参数、返回值与异常 |
+| [docs/DATA.md](docs/DATA.md) | 数据格式规范、复权与缺失值处理 |
+| [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | 研究约定与回测防坑清单 |
+
+## 路线图摘要
+
+主线是先把「数据 → 回测 → 绩效」的最小闭环打通，再横向扩充策略库：
+
+| 阶段 | 主题 | 关键产出 |
+| --- | --- | --- |
+| P0 | 工程地基 | Git 初始化、CI、pre-commit |
+| P1 | 数据层 | 多标的面板数据、Parquet 缓存、配置加载器 |
+| P2 | 信号层 | 统一信号契约、因子库、执行滞后 |
+| P3 | 组合构建 | 权重分配、约束、换手控制 |
+| P4 | **回测引擎** | 撮合循环、成本建模、账本与交易流水 |
+| P5 | 绩效分析 | CAGR / Sortino / IC·IR、基准对比、滚动指标 |
+| P6 | 实验管理 | 配置驱动运行、结果落盘、walk-forward |
+| P7 | 可视化报告 | 净值/回撤/月度热力图、HTML 报告 |
+
+建议执行顺序 **P0 → P1 → P4 → P5 → P2/P3 → P6 → P7**。
+理由：先补齐评估手段，之后每新增一个策略都能立刻被量化评估，避免在信号层过度投入却没有衡量标准。
+详见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
+## 研究约定
+
+- 原始数据与凭据不提交到版本控制；数据来源、时区、复权方式和缺失值处理应记录在实验说明中。
+- 回测需明确手续费、滑点、成交假设，并避免前视偏差和幸存者偏差。
+- 每次实验记录参数、数据区间、代码版本和结论；将可复用逻辑放入 `src/`，探索过程放入 `notebooks/`。
+- 先在模拟与纸面交易环境中验证。此工作区没有实盘交易连接。
