@@ -29,7 +29,7 @@ from quant_research.backtest.costs import commission, execution_price, slippage_
 from quant_research.backtest.ledger import Ledger
 from quant_research.data.loader import DataMeta
 from quant_research.logging_setup import get_logger
-from quant_research.portfolio import signal_to_weights
+from quant_research.portfolio import PortfolioPolicy, signal_to_weights
 
 logger = get_logger("backtest")
 
@@ -138,6 +138,8 @@ def _run_shares(
     target_values = weights.shift(config.execution.lag).fillna(0.0).to_numpy(dtype="float64")
 
     ledger = Ledger(symbols, config.initial_cash)
+    buffer = config.rebalance.buffer
+    min_notional = config.rebalance.min_trade_notional
     equity = np.zeros(n_bars, dtype="float64")
     cash_history = np.zeros(n_bars, dtype="float64")
     turnover = np.zeros(n_bars, dtype="float64")
@@ -166,6 +168,17 @@ def _run_shares(
                 if np.isnan(size_price) or size_price <= 0:
                     size_price = price
 
+                # Rebalance buffer: ignore differences too small to matter. Comparing
+                # the target against the *current* weight (which drifts with price)
+                # rather than against the previous target is what actually removes
+                # the daily drip of trivial top-up trades.
+                if buffer > 0 and equity_previous > _EPS:
+                    previous_price = valuation_values[bar - 1][position]
+                    if np.isfinite(previous_price) and previous_price > 0:
+                        held_weight = ledger.shares[position] * previous_price / equity_previous
+                        if abs(weight - held_weight) <= buffer:
+                            continue
+
                 target_shares = weight * equity_previous / size_price
                 if target_shares > ledger.shares[position]:
                     # Reserve the round-trip cost inside the buy budget, otherwise a
@@ -186,6 +199,8 @@ def _run_shares(
 
                 if abs(delta) < _EPS:
                     continue
+                if abs(delta) * price < min_notional:
+                    continue  # not worth the round-trip cost
 
                 orders.append((delta, position, symbol, price))
 
@@ -390,18 +405,34 @@ def run_signal_backtest(
     *,
     target_exposure: float = 1.0,
     weight_method: str = "fixed",
+    risk: pd.Series | pd.DataFrame | None = None,
+    policy: PortfolioPolicy | None = None,
     exec_prices: pd.DataFrame | None = None,
     config: BacktestConfig | None = None,
     meta: DataMeta | None = None,
 ) -> BacktestResult:
-    """Signal → target weights → backtest, the path the engine wants you to use."""
+    """Signal → target weights → backtest, the path the engine wants you to use.
+
+    ``policy`` applies portfolio limits during position sizing; ``risk`` feeds the
+    ``inverse_volatility`` weighting (a per-symbol volatility or any other positive
+    dispersion measure — smaller gets a larger weight). Rebalance controls live in
+    ``config.rebalance`` because they need the live book.
+    """
     config = config or BacktestConfig()
+    allow_short = config.allow_short or (policy.allow_short if policy is not None else False)
     weights = signal_to_weights(
         signal,
         method=weight_method,  # type: ignore[arg-type]
         target_exposure=target_exposure,
-        allow_short=config.allow_short,
+        allow_short=allow_short,
+        risk=risk,
+        policy=policy,
     )
+    if policy is not None:
+        logger.info(
+            "portfolio policy applied: %s",
+            ", ".join(f"{k}={v}" for k, v in policy.to_dict().items()),
+        )
     return run_backtest(prices, weights, exec_prices=exec_prices, config=config, meta=meta)
 
 

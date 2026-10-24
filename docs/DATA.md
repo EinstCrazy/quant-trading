@@ -2,7 +2,7 @@
 
 ## 支持的输入格式
 
-当前 `load_close_prices` 仅支持 CSV，且要求至少两列：
+`load_close_prices` 支持 CSV 与 Parquet，且要求至少两列：
 
 ```csv
 date,close
@@ -33,15 +33,24 @@ date,close
 
 | 目录 | 存放内容 | 入库 |
 | --- | --- | --- |
-| `data/raw/` | 未经修改的原始下载文件 | ❌ |
+| `data/raw/` | 采集进程写入的原始日线（`<provider>/daily/<SYMBOL>.parquet`） | ❌ |
 | `data/processed/` | 清洗、对齐、复权后的数据 | ❌ |
 | `data/cache/` | 派生缓存（Parquet 等） | ❌ |
 | `data/sample/` | 合成样例数据（固定种子可重建） | ✅ |
 
 `raw` / `processed` / `cache` 均可由上游重建，因此不提交版本控制；`sample` 体量小且用于让 CI 与新环境直接运行，故入库。
 
-`load_price_panel` 支持三种输入布局：长表 CSV（含 `symbol` 列）、单标的 CSV、目录（`*.csv`，每文件一个标的）。
-`open` / `high` / `low` / `volume` 若存在，会随 `PricePanel.extra` 一起传递。
+`load_price_panel` 支持三种输入布局：长表 CSV（含 `symbol` 列）、单标的 CSV/Parquet、目录（`*.csv` 与
+`*.parquet`，每文件一个标的）。`open` / `high` / `low` / `volume` 若存在，会随 `PricePanel.extra` 一起传递。
+
+目录下若存在采集进程写的 `_state.json`，其 `adjust` 会覆盖 `data.price_adjustment`
+（`qfq` → `forward`、`hfq` → `backward`），避免报告里把前复权数据描述成模糊的 `adjusted`。
+
+## 采集落盘数据
+
+`data/raw/<provider>/daily/` 由 `quant-collect` 写入，列名已标准化为
+`date/open/high/low/close/volume/amount/pct_change`。安装、调度与故障处理见
+[DATA_COLLECTION.md](DATA_COLLECTION.md)。
 
 ## 数据元信息要求
 

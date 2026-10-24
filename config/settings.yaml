@@ -9,3 +9,17 @@ backtest:
   commission_bps: 5
   slippage_bps: 2
   allow_short: false
+
+# Daily A-share collection. Run `quant-collect --help` for CLI overrides.
+collection:
+  provider: akshare        # akshare | mock
+  symbols: []              # empty = use --symbols / --all / whatever is already stored
+  output_directory: data/raw
+  format: parquet          # parquet | csv
+  adjust: qfq              # qfq | hfq | none
+  lookback_days: 10        # re-fetch this trailing window to absorb adjustment changes
+  schedule_at: "18:30"     # daemon trigger time, local to `timezone`
+  timezone: Asia/Shanghai
+  retries: 2
+  pause_seconds: 0.5
+  report_directory: reports/collection

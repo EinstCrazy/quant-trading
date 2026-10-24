@@ -15,11 +15,11 @@
 | `quant_research.config` | ✅ 可用 | `settings.yaml` 读入冻结 dataclass，未知键报错 |
 | `quant_research.data` | ✅ 可用 | 单标的 CSV + 多标的面板加载、元信息、数据质量报告 |
 | `quant_research.strategies` | ✅ 可用 | 信号契约、注册表（`ma_cross` / `random`）、`apply_lag` |
-| `quant_research.portfolio` | ✅ 最小版 | 固定仓位与等权；约束、换手缓冲未实现 |
-| `quant_research.backtest` | ✅ 最小版 | 日频撮合、手续费、滑点、现金/持仓账本、交易流水、双账本互验 |
+| `quant_research.portfolio` | ✅ 可用 | 固定/等权/波动率倒数三种权重；`PortfolioPolicy` 约束（单标的、杠杆、净敞口、多空） |
+| `quant_research.backtest` | ✅ 最小版 | 日频撮合、手续费、滑点、现金/持仓账本、交易流水、双账本互验、换手缓冲带与最小成交额 |
 | `quant_research.metrics` | ✅ 核心集 | CAGR / 夏普 / Sortino / Calmar / 回撤表 / 基准对照；IC·IR 未实现 |
 | 实验管理、可视化、报告 | ❌ 未实现 | `notebooks/` 与 `reports/` 仍为空 |
-| 版本控制 | ⚠️ 部分 | 仓库已初始化，CI 与 pre-commit 就绪；首次提交待完成 |
+| 版本控制 | ✅ 就绪 | 首次提交已完成，CI 与 pre-commit 生效 |
 
 ## 快速开始
 
@@ -61,9 +61,48 @@ print(result.trades.head())
 
 引擎内部统一执行 `shift(lag)`，**调用方无需也不应自行滞后**。信号 `1` 表示持有多头，`0` 表示空仓。
 
+组合约束与换手控制按需叠加（两者都会压低换手，也会改变收益）：
+
+```python
+from quant_research.backtest import PortfolioPolicy, RebalancePolicy
+
+result = run_signal_backtest(
+    panel.prices,
+    signal,
+    weight_method="equal_weight",
+    policy=PortfolioPolicy(max_weight=0.25, max_gross=1.0),
+    exec_prices=panel.field("open"),
+    config=BacktestConfig.from_settings(
+        settings,
+        execution=ExecutionConfig(price="open"),
+        rebalance=RebalancePolicy(buffer=0.05, min_trade_notional=1_000.0),
+    ),
+)
+```
+
 `data/sample/sample_prices.csv` 是固定随机种子生成的**合成数据**，由
 `python scripts/generate_sample_data.py` 重建，详见 [data/sample/README.md](data/sample/README.md)。
-真实数据放入 `data/raw/`（不入库）。
+
+真实 A 股数据由采集进程落到 `data/raw/`（不入库）：
+
+```bash
+pip install -e '.[collect]'
+quant-collect --symbols 600519.SH,000001.SZ --start 2024-01-01   # 单次收集
+quant-collect --daemon --at 18:30                                # 每个交易日收盘后
+```
+
+随后 `load_price_panel("data/raw/akshare/daily")` 即可读到面板。安装、调度与故障处理见
+[docs/DATA_COLLECTION.md](docs/DATA_COLLECTION.md)。
+
+本地工作台（可选）：
+
+```bash
+pip install -e '.[web]'
+quant-ui                 # 打开 http://127.0.0.1:8000
+```
+
+四个视图：数据质量、回测、策略对比、采集状态与补数。设计与取舍见
+[docs/UI_DESIGN.md](docs/UI_DESIGN.md)。
 
 ## 项目结构
 
@@ -74,15 +113,18 @@ quant-trading/
 ├── config/                 研究默认配置（数据目录、回测成本假设）
 ├── data/
 │   ├── sample/             合成样例数据（入库，可重建）
-│   ├── raw/                原始数据（不入库）
+│   ├── raw/                采集落盘的原始数据（不入库）
 │   ├── processed/          清洗、对齐后的数据（不入库）
 │   └── cache/              派生缓存（不入库）
 ├── notebooks/              交互式研究
-├── reports/                回测图表与实验结论（不入库）
-├── scripts/                数据生成等辅助脚本
+├── reports/                回测图表、采集报告与实验结论（不入库）
+├── scripts/                取数、样例生成等辅助脚本
 ├── src/quant_research/
 │   ├── config.py           YAML → 冻结 dataclass
-│   ├── data/               面板加载、元信息、质量报告
+│   ├── collector.py        每日采集流程与调度循环
+│   ├── cli.py              `quant-collect` 命令行入口
+│   ├── web/                `quant-ui` 本地工作台（FastAPI + 静态前端）
+│   ├── data/               面板加载、元信息、质量报告、providers/、store
 │   ├── strategies/         信号契约、注册表、动量与随机信号
 │   ├── portfolio/          信号 → 目标权重
 │   ├── backtest/           撮合、成本、账本、日频回测引擎
@@ -103,6 +145,8 @@ quant-trading/
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 数据流、分层设计与目录约定 |
 | [docs/API.md](docs/API.md) | 公开函数签名、参数、返回值与异常 |
 | [docs/DATA.md](docs/DATA.md) | 数据格式规范、复权与缺失值处理 |
+| [docs/DATA_COLLECTION.md](docs/DATA_COLLECTION.md) | 每日 A 股采集：安装、落盘结构、调度与故障处理 |
+| [docs/UI_DESIGN.md](docs/UI_DESIGN.md) | 本地工作台：架构、视图、API 契约与演进路径 |
 | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | 研究约定与回测防坑清单 |
 
 ## 路线图摘要
@@ -112,7 +156,7 @@ quant-trading/
 | 阶段 | 主题 | 关键产出 |
 | --- | --- | --- |
 | P0 | 工程地基 | Git 初始化、CI、pre-commit |
-| P1 | 数据层 | 多标的面板数据、Parquet 缓存、配置加载器 |
+| P1 | 数据层 | 多标的面板、Parquet 落盘、每日采集进程、配置加载器 |
 | P2 | 信号层 | 统一信号契约、因子库、执行滞后 |
 | P3 | 组合构建 | 权重分配、约束、换手控制 |
 | P4 | **回测引擎** | 撮合循环、成本建模、账本与交易流水 |

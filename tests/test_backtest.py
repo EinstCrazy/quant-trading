@@ -2,8 +2,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quant_research.backtest import BacktestConfig, CostConfig, ExecutionConfig, run_backtest
+from quant_research.backtest import (
+    BacktestConfig,
+    CostConfig,
+    ExecutionConfig,
+    PortfolioPolicy,
+    RebalancePolicy,
+    run_backtest,
+)
 from quant_research.backtest.engine import run_signal_backtest
+from quant_research.portfolio import signal_to_weights
 from quant_research.strategies.momentum import moving_average_signal
 
 ZERO_COST = CostConfig(commission_bps=0.0, slippage_bps=0.0)
@@ -210,3 +218,120 @@ def test_result_summary_exposes_metric_table(sample_prices, flat_weights):
 def test_run_backtest_rejects_empty_prices(flat_weights):
     with pytest.raises(ValueError, match="non-empty"):
         run_backtest(pd.DataFrame(), flat_weights)
+
+
+# 11. 换手控制
+def _signal_result(sample_prices, **kwargs):
+    signal = moving_average_signal(sample_prices, fast_window=10, slow_window=30)
+    return run_signal_backtest(sample_prices, signal, weight_method="equal_weight", **kwargs)
+
+
+def test_rebalance_buffer_cuts_trades_without_changing_the_first_entry(sample_prices):
+    base = _signal_result(sample_prices, config=BacktestConfig(costs=ZERO_COST))
+    buffered = _signal_result(
+        sample_prices,
+        config=BacktestConfig(costs=ZERO_COST, rebalance=RebalancePolicy(buffer=0.05)),
+    )
+
+    assert len(buffered.trades) < len(base.trades)
+    assert float(buffered.turnover.mean()) < float(base.turnover.mean())
+    assert len(buffered.trades) > 0
+    # entering a position is never postponed by the buffer
+    assert buffered.trades["date"].min() == base.trades["date"].min()
+    assert float(buffered.weights.sum(axis=1).max()) <= 1.1
+
+
+def test_rebalance_buffer_defaults_to_no_op(sample_prices):
+    default = RebalancePolicy()
+    assert default.buffer == 0.0
+    assert default.min_trade_notional == 0.0
+
+    with pytest.raises(ValueError, match="buffer must be in"):
+        RebalancePolicy(buffer=1.0)
+    with pytest.raises(ValueError, match="min_trade_notional"):
+        RebalancePolicy(min_trade_notional=-1.0)
+
+
+def test_min_trade_notional_drops_only_small_orders(sample_prices):
+    threshold = 5_000.0
+    base = _signal_result(sample_prices, config=BacktestConfig(costs=ZERO_COST))
+    filtered = _signal_result(
+        sample_prices,
+        config=BacktestConfig(
+            costs=ZERO_COST, rebalance=RebalancePolicy(min_trade_notional=threshold)
+        ),
+    )
+
+    assert len(filtered.trades) < len(base.trades)
+    assert float(filtered.trades["gross"].abs().min()) >= threshold
+
+
+def test_buffer_suppresses_drift_driven_trades(sample_prices):
+    """With a constant target, turnover is pure price drift — the buffer kills it."""
+    target = pd.DataFrame(
+        1.0 / len(sample_prices.columns), index=sample_prices.index, columns=sample_prices.columns
+    )
+
+    base = run_backtest(sample_prices, target, config=BacktestConfig(costs=ZERO_COST))
+    buffered = run_backtest(
+        sample_prices,
+        target,
+        config=BacktestConfig(costs=ZERO_COST, rebalance=RebalancePolicy(buffer=0.01)),
+    )
+
+    assert len(base.trades) > 0
+    assert len(buffered.trades) < 0.2 * len(base.trades)
+    # the first entry is unavoidable; compare the drift-driven remainder. Bands do
+    # not remove those trades, they batch them: fewer but larger rebalancing days.
+    assert float(buffered.turnover.iloc[2:].sum()) < 0.5 * float(base.turnover.iloc[2:].sum())
+    assert buffered.trades["date"].nunique() < 0.2 * base.trades["date"].nunique()
+    # the book stays invested, it simply stops chasing noise
+    assert float(buffered.weights.iloc[-1].sum()) == pytest.approx(1.0, abs=0.05)
+
+
+def test_buffer_and_min_notional_combine(sample_prices):
+    base = _signal_result(sample_prices, config=BacktestConfig(costs=ZERO_COST))
+    both = _signal_result(
+        sample_prices,
+        config=BacktestConfig(
+            costs=ZERO_COST,
+            rebalance=RebalancePolicy(buffer=0.03, min_trade_notional=2_000.0),
+        ),
+    )
+
+    assert float(both.turnover.sum()) < float(base.turnover.sum())
+    assert both.final_equity > 0
+
+
+# 12. 组合约束贯通
+def test_portfolio_policy_caps_single_name_exposure(sample_prices):
+    policy = PortfolioPolicy(max_weight=0.2, max_gross=1.0)
+    signal = moving_average_signal(sample_prices, fast_window=10, slow_window=30)
+
+    constrained = signal_to_weights(signal, method="equal_weight", policy=policy)
+    unconstrained = signal_to_weights(signal, method="equal_weight")
+
+    assert constrained.max().max() <= 0.2 + 1e-12
+    assert constrained.max().max() < unconstrained.max().max()
+
+    result = _signal_result(sample_prices, policy=policy, config=BacktestConfig(costs=ZERO_COST))
+
+    # realised weights drift with price, so allow a little slack over the cap
+    assert float(result.weights.max().max()) <= 0.25
+    assert len(result.trades) > 0
+
+
+def test_inverse_volatility_weighting_runs_end_to_end(sample_prices):
+    signal = moving_average_signal(sample_prices, fast_window=10, slow_window=30)
+    risk = sample_prices.pct_change().rolling(20, min_periods=10).std().bfill()
+
+    result = run_signal_backtest(
+        sample_prices,
+        signal,
+        weight_method="inverse_volatility",
+        risk=risk,
+        config=BacktestConfig(costs=ZERO_COST),
+    )
+
+    assert result.final_equity > 0
+    assert float(result.weights.sum(axis=1).max()) <= 1.05

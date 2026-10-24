@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>量化研究工作台</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2024; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #2563eb; --good: #15803d; --bad: #b91c1c;
+    --warn: #a16207;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .app { display: flex; min-height: 100vh; }
+  aside { width: 210px; background: var(--panel); border-right: 1px solid var(--line);
+          padding: 18px 14px; flex: none; }
+  aside h1 { font-size: 15px; margin: 0 0 16px; letter-spacing: .5px; }
+  nav button { display: block; width: 100%; text-align: left; padding: 8px 10px;
+               margin-bottom: 4px; border: 0; border-radius: 6px; background: transparent;
+               color: var(--ink); cursor: pointer; font-size: 14px; }
+  nav button:hover { background: var(--bg); }
+  nav button.active { background: var(--accent); color: #fff; }
+  .side-block { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  select, input { width: 100%; padding: 6px 8px; border: 1px solid var(--line);
+                  border-radius: 6px; background: #fff; color: var(--ink); font-size: 13px; }
+  main { flex: 1; padding: 20px 24px 60px; overflow-x: hidden; }
+  h2 { font-size: 17px; margin: 0 0 14px; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px; margin-bottom: 14px; }
+  .card h3 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+  .grid { display: grid; gap: 12px; }
+  .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .kv { display: flex; justify-content: space-between; padding: 5px 0;
+        border-bottom: 1px dashed var(--line); }
+  .kv:last-child { border-bottom: 0; }
+  .kv span:first-child { color: var(--muted); }
+  .kv span:last-child { font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--line);
+           font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; }
+  tbody tr:hover { background: #fafbfc; }
+  .btn { padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent);
+         color: #fff; cursor: pointer; font-size: 14px; }
+  .btn[disabled] { opacity: .5; cursor: default; }
+  .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .field { min-width: 110px; flex: 1; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+  .badge.good { background: #dcfce7; color: var(--good); }
+  .badge.bad { background: #fee2e2; color: var(--bad); }
+  .badge.warn { background: #fef9c3; color: var(--warn); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  #toast { position: fixed; right: 18px; bottom: 18px; background: #1c2024; color: #fff;
+           padding: 10px 14px; border-radius: 8px; font-size: 13px; opacity: 0;
+           transition: opacity .2s; pointer-events: none; max-width: 60ch; }
+  #toast.show { opacity: 1; }
+  .job { border-top: 1px solid var(--line); padding: 8px 0; font-size: 12px; }
+  .job:first-child { border-top: 0; }
+  .job-head { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+  .job-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 5px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .job button { border: 0; background: transparent; color: var(--bad); cursor: pointer;
+                font-size: 12px; padding: 0; }
+  pre { background: #f8fafc; border: 1px solid var(--line); border-radius: 6px;
+        padding: 10px; overflow: auto; font-size: 12px; margin: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>量化研究工作台</h1>
+    <nav>
+      <button data-view="data" class="active">数据</button>
+      <button data-view="backtest">回测</button>
+      <button data-view="compare">对比</button>
+      <button data-view="collect">采集</button>
+    </nav>
+    <div class="side-block">
+      <label>数据集</label>
+      <select id="dataset"></select>
+    </div>
+    <div class="side-block muted" id="health"></div>
+    <div class="side-block">
+      <label>最近任务</label>
+      <div id="jobs"></div>
+    </div>
+  </aside>
+
+  <main>
+    <!-- ① 数据 -->
+    <section id="view-data" class="view active">
+      <h2>数据</h2>
+      <div class="card" id="data-meta"></div>
+      <div class="card">
+        <h3>质量报告</h3>
+        <div id="data-quality"></div>
+      </div>
+      <div class="card">
+        <h3>价格走势（起点归一）</h3>
+        <div id="data-chart"></div>
+      </div>
+      <div class="card">
+        <h3>尾部预览</h3>
+        <div id="data-preview"></div>
+      </div>
+    </section>
+
+    <!-- ② 回测 -->
+    <section id="view-backtest" class="view">
+      <h2>回测</h2>
+      <div class="card">
+        <h3>参数</h3>
+        <div class="row" id="bt-form"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="bt-run">运行回测</button>
+          <span class="muted" id="bt-status"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>净值曲线（策略 vs 等权买入持有）</h3>
+        <div id="bt-equity"></div>
+      </div>
+      <div class="card">
+        <h3>回撤</h3>
+        <div id="bt-drawdown"></div>
+      </div>
+      <div class="grid g2">
+        <div class="card"><h3>指标</h3><div id="bt-metrics"></div></div>
+        <div class="card"><h3>成本与换手</h3><div id="bt-costs"></div></div>
+      </div>
+      <div class="card">
+        <h3>交易流水</h3>
+        <div id="bt-trades"></div>
+      </div>
+    </section>
+
+    <!-- ③ 对比 -->
+    <section id="view-compare" class="view">
+      <h2>对比</h2>
+      <div class="card">
+        <h3>变体（留空表示沿用基线；基线取回测页当前参数）</h3>
+        <div id="cmp-variants"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn ghost" id="cmp-add">+ 添加变体</button>
+          <button class="btn" id="cmp-run">运行对比</button>
+          <span class="muted" id="cmp-status"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>净值曲线</h3>
+        <div id="cmp-chart"></div>
+      </div>
+      <div class="card">
+        <h3>指标并排</h3>
+        <div id="cmp-table"></div>
+      </div>
+      <div class="card">
+        <h3>参数网格</h3>
+        <div class="row" id="grid-form"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="grid-run">扫描</button>
+          <span class="muted" id="grid-status"></span>
+        </div>
+        <div id="grid-table" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h3>历史实验</h3>
+        <div class="row" style="margin-bottom:8px">
+          <select id="exp-sort">
+            <option value="created_at">最近</option>
+            <option value="sharpe">夏普</option>
+            <option value="cagr">年化</option>
+            <option value="max_drawdown">最大回撤</option>
+          </select>
+          <button class="btn" id="exp-refresh">刷新</button>
+          <span class="muted" id="exp-status"></span>
+        </div>
+        <div id="exp-table"></div>
+      </div>
+    </section>
+
+    <!-- ④ 采集 -->
+    <section id="view-collect" class="view">
+      <h2>采集</h2>
+      <div class="card" id="col-status"></div>
+      <div class="card">
+        <h3>补数</h3>
+        <div class="row" id="col-form"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="col-run">触发采集</button>
+          <span class="muted" id="col-result"></span>
+        </div>
+      </div>
+      <div class="card"><h3>标的清单</h3><div id="col-symbols"></div></div>
+      <div class="card"><h3>历史采集报告</h3><div id="col-reports"></div></div>
+    </section>
+
+    <div id="toast"></div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { datasets: [], dataset: "", strategies: [], overview: null, variants: [] };
+
+const METRIC_LABELS = {
+  n_periods: "样本期数", cumulative_return: "累计收益", cagr: "年化收益",
+  annualized_volatility: "年化波动", sharpe: "夏普", sortino: "索提诺", calmar: "卡玛",
+  max_drawdown: "最大回撤", win_rate: "胜率", profit_factor: "盈亏比",
+  benchmark_return: "基准收益", relative_return: "超额收益", alpha: "年化 Alpha",
+  beta: "Beta", tracking_error: "跟踪误差", information_ratio: "信息比率",
+};
+const PCT = new Set(["cumulative_return", "cagr", "annualized_volatility", "max_drawdown",
+  "win_rate", "benchmark_return", "relative_return", "alpha", "tracking_error"]);
+const STRATEGY_PARAMS = {
+  ma_cross: [["fast_window", "快线窗口", 20], ["slow_window", "慢线窗口", 50]],
+  random: [],
+};
+const COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2",
+  "#4b5563", "#ca8a04"];
+
+function toast(message) {
+  const el = $("toast");
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove("show"), 4000);
+}
+
+async function api(path, body, method) {
+  const options = method
+    ? { method }
+    : body
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+      : {};
+  const response = await fetch("/api" + path, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail || response.statusText || "请求失败");
+  return payload;
+}
+
+function fmt(value, digits = 2) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return Number(value).toFixed(digits);
+}
+function fmtMetric(key, value) {
+  if (value === null || value === undefined) return "—";
+  if (key === "n_periods") return String(Math.round(value));
+  if (PCT.has(key)) return (value * 100).toFixed(2) + "%";
+  return Number(value).toFixed(3);
+}
+function fmtMoney(value) {
+  return value === null || value === undefined
+    ? "—"
+    : Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+}
+
+/* ---------- jobs: submit, poll, cancel ---------- */
+const ACTIVE = new Set(["pending", "running"]);
+let jobTimer = null;
+
+async function refreshJobs() {
+  try {
+    renderJobs(await api("/jobs?limit=8"));
+  } catch (error) {
+    // the sidebar is decoration; it must never break a view
+  }
+}
+
+function renderJobs(jobs) {
+  if (!jobs.length) {
+    $("jobs").innerHTML = '<div class="muted">暂无任务</div>';
+    return;
+  }
+  const badgeKind = { done: "good", failed: "bad", cancelled: "warn" };
+  $("jobs").innerHTML = jobs.map((job) => {
+    const pct = Math.round((job.progress?.ratio || 0) * 100);
+    const cancel = ACTIVE.has(job.status)
+      ? `<button data-cancel="${job.id}">取消</button>` : "";
+    return `<div class="job" data-open="${job.id}">
+      <div class="job-head">
+        <span class="job-label">${job.label}</span>
+        <span>${job.archived ? '<span class="badge">归档</span> ' : ""}<span class="badge ${badgeKind[job.status] || ""}">${job.status}</span></span>
+      </div>
+      <div class="muted">${job.message || job.kind}</div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="job-head" style="margin-top:4px">
+        <span class="muted">${pct}%</span>${cancel}
+      </div>
+    </div>`;
+  }).join("");
+
+  $("jobs").querySelectorAll("[data-cancel]").forEach((el) => {
+    el.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await api(`/jobs/${el.dataset.cancel}`, null, "DELETE").catch(() => {});
+      await refreshJobs();
+    });
+  });
+  $("jobs").querySelectorAll("[data-open]").forEach((el) => {
+    el.addEventListener("click", () => openJob(el.dataset.open));
+  });
+}
+
+function watchJobs() {
+  if (jobTimer) return;
+  jobTimer = setInterval(async () => {
+    const jobs = await api("/jobs?limit=8").catch(() => []);
+    renderJobs(jobs);
+    if (!jobs.some((job) => ACTIVE.has(job.status))) {
+      clearInterval(jobTimer);
+      jobTimer = null;
+    }
+  }, 1500);
+}
+
+function trackJob(id, statusEl) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = async () => {
+      let job;
+      try {
+        job = await api(`/jobs/${id}`);
+      } catch (error) {
+        setTimeout(tick, 800);  // transient error; keep waiting
+        return;
+      }
+      const pct = Math.round((job.progress?.ratio || 0) * 100);
+      if (statusEl) statusEl.textContent = `${job.message || job.status} · ${pct}%`;
+
+      if (job.status === "done") {
+        refreshJobs();
+        return resolve(job.result);
+      }
+      if (job.status === "failed" || job.status === "cancelled") {
+        refreshJobs();
+        return reject(new Error(job.error || job.status));
+      }
+      if (Date.now() - started > 900000) return reject(new Error("任务超过 15 分钟未完成"));
+      setTimeout(tick, 400);
+    };
+    watchJobs();
+    setTimeout(tick, 300);
+  });
+}
+
+function submitJob(path, body, statusEl) {
+  return api(path, body).then((ref) => trackJob(ref.id, statusEl));
+}
+
+async function openJob(id) {
+  const job = await api(`/jobs/${id}`).catch(() => null);
+  if (!job || job.status !== "done" || !job.result) return;
+  if (job.kind === "backtest") {
+    showView("backtest");
+    renderBacktest(job.result);
+  } else if (job.kind === "compare") {
+    showView("compare");
+    renderCompare(job.result);
+  } else if (job.kind === "collect") {
+    showView("collect");
+    toast(`采集完成：更新 ${Object.keys(job.result.updated || {}).length} 个标的`);
+    await loadCollection();
+  } else if (job.kind === "grid") {
+    showView("compare");
+    renderGrid(job.result);
+    await loadExperiments();
+  }
+}
+
+function showView(name) {
+  document.querySelectorAll("nav button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.view === name);
+  });
+  document.querySelectorAll(".view").forEach((v) => {
+    v.classList.toggle("active", v.id === `view-${name}`);
+  });
+  if (name === "collect") loadCollection();
+  if (name === "compare") loadExperiments();
+}
+
+/* ---------- charts: hand-rolled SVG, no CDN ---------- */
+function chart(target, series, options = {}) {
+  const width = options.width || 820;
+  const height = options.height || 280;
+  const pad = { left: 62, right: 14, top: 12, bottom: 26 };
+  const usable = series.filter((s) => s.points && s.points.length > 1);
+  if (!usable.length) {
+    target.innerHTML = '<div class="empty">没有可绘制的数据</div>';
+    return;
+  }
+  const all = usable.flatMap((s) => s.points.map((p) => p[1])).filter((v) => v !== null);
+  let min = Math.min(...all);
+  let max = Math.max(...all);
+  if (options.zeroLine && min > 0) min = 0;
+  if (min === max) { min -= 1; max += 1; }
+  const span = max - min;
+  const nPoints = Math.max(...usable.map((s) => s.points.length));
+  const x = (i) => pad.left + (nPoints <= 1 ? 0 : (i / (nPoints - 1)) * (width - pad.left - pad.right));
+  const y = (v) => pad.top + (1 - (v - min) / span) * (height - pad.top - pad.bottom);
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((t) => min + t * span);
+  const grid = yTicks.map((v) => {
+    const yy = y(v).toFixed(1);
+    return `<line x1="${pad.left}" y1="${yy}" x2="${width - pad.right}" y2="${yy}" stroke="#eceff3"/>
+            <text x="${pad.left - 8}" y="${yy}" text-anchor="end" font-size="10" fill="#6b7280">${fmt(v, options.digits === undefined ? 2 : options.digits)}</text>`;
+  }).join("");
+
+  const paths = usable.map((s, index) => {
+    const color = s.color || COLORS[index % COLORS.length];
+    const points = s.points.map((p, i) => `${x(i).toFixed(1)},${y(p[1] === null ? min : p[1]).toFixed(1)}`).join(" ");
+    const fill = options.area
+      ? `<polygon points="${x(0).toFixed(1)},${y(Math.max(min, 0)).toFixed(1)} ${points} ${x(s.points.length - 1).toFixed(1)},${y(Math.max(min, 0)).toFixed(1)}" fill="${color}" opacity="0.12"/>`
+      : "";
+    return `${fill}<polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.6"/>`;
+  }).join("");
+
+  const first = usable[0].points;
+  const lastDate = first[first.length - 1][0];
+  const legend = usable.map((s, index) => {
+    const color = s.color || COLORS[index % COLORS.length];
+    return `<span style="margin-right:14px"><i style="display:inline-block;width:10px;height:10px;background:${color};margin-right:5px"></i>${s.name}</span>`;
+  }).join("");
+
+  target.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" style="width:100%;height:auto">
+      ${grid}
+      ${paths}
+      <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" stroke="#d7dbe0"/>
+      <text x="${pad.left}" y="${height - 8}" font-size="10" fill="#6b7280">${first[0][0]}</text>
+      <text x="${width - pad.right}" y="${height - 8}" text-anchor="end" font-size="10" fill="#6b7280">${lastDate}</text>
+    </svg>
+    <div class="muted" style="margin-top:6px">${legend}</div>`;
+}
+
+function table(columns, rows) {
+  if (!rows.length) return '<div class="empty">无数据</div>';
+  return `<table><thead><tr>${columns.map((c) => `<th>${c}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+/* ---------- ① data ---------- */
+async function loadOverview() {
+  if (!state.dataset) return;
+  $("data-meta").innerHTML = '<div class="muted">加载中…</div>';
+  try {
+    const data = await api(`/datasets/${encodeURIComponent(state.dataset)}/overview`);
+    state.overview = data;
+    renderOverview(data);
+  } catch (error) {
+    $("data-meta").innerHTML = `<div class="muted">${error.message}</div>`;
+  }
+}
+
+function renderOverview(data) {
+  const meta = data.meta || {};
+  $("data-meta").innerHTML = `<h3>元信息</h3><div class="grid g4">
+    ${kv("来源", meta.source)} ${kv("区间", `${meta.start} ~ ${meta.end}`)}
+    ${kv("标的数", meta.n_symbols)} ${kv("复权口径", meta.price_adjustment)}
+    ${kv("频率", meta.frequency)} ${kv("缺失策略", meta.missing_policy)}
+    ${kv("时区", meta.timezone)} ${kv("字段", (data.fields || []).join(", "))}
+  </div>`;
+
+  const q = data.quality || {};
+  const missing = q.missing_rate || {};
+  const rows = Object.keys(missing).map((symbol) => [
+    symbol,
+    (missing[symbol] * 100).toFixed(2) + "%",
+    String((q.non_positive || {})[symbol] ?? 0),
+  ]);
+  const jumps = (q.jumps || []).slice(0, 20);
+  $("data-quality").innerHTML = `
+    <div class="row" style="margin-bottom:10px">
+      ${badge(q.is_clean ? "good" : "bad", q.is_clean ? "无缺失、无跳变" : "存在问题，见下表")}
+      ${badge(q.monotonic_dates ? "good" : "bad", q.monotonic_dates ? "日期单调" : "日期重复或乱序")}
+      <span class="muted">观测数 ${q.n_obs ?? "—"}</span>
+      <span class="muted">异常跳变 ${(q.jumps || []).length}</span>
+    </div>
+    <div class="grid g2">
+      <div>${table(["标的", "缺失率", "非正价格"], rows)}</div>
+      <div>${jumps.length
+        ? table(["日期", "标的", "单日涨跌"], jumps.map(([d, s, r]) => [d, s, (r * 100).toFixed(1) + "%"]))
+        : '<div class="muted">无单日超过 50% 的跳变（未复权或拆分常表现为跳变）</div>'}</div>
+    </div>`;
+
+  const series = Object.keys(data.series || {}).map((name, index) => ({
+    name,
+    points: data.series[name],
+    color: COLORS[index % COLORS.length],
+  }));
+  chart($("data-chart"), series, { height: 300 });
+
+  const preview = data.preview || { columns: [], rows: [] };
+  $("data-preview").innerHTML = table(
+    ["日期", ...preview.columns],
+    preview.rows.map((row) => [row[0], ...row.slice(1).map((v) => fmt(v, 2))])
+  );
+}
+
+function kv(label, value) {
+  return `<div class="kv"><span>${label}</span><span>${value ?? "—"}</span></div>`;
+}
+function badge(kind, text) {
+  return `<span class="badge ${kind}">${text}</span>`;
+}
+
+/* ---------- ② backtest ---------- */
+function buildBacktestForm() {
+  const strategies = state.strategies.length ? state.strategies : ["ma_cross"];
+  $("bt-form").innerHTML = `
+    <div class="field"><label>策略</label><select id="bt-strategy">
+      ${strategies.map((s) => `<option value="${s}">${s}</option>`).join("")}</select></div>
+    <div class="field"><label>快线窗口</label><input id="bt-fast" type="number" value="20"></div>
+    <div class="field"><label>慢线窗口</label><input id="bt-slow" type="number" value="50"></div>
+    <div class="field"><label>权重方法</label><select id="bt-weight">
+      <option value="equal_weight">等权</option><option value="fixed">固定</option>
+      <option value="inverse_volatility">波动率倒数</option></select></div>
+    <div class="field"><label>成交价</label><select id="bt-exec">
+      <option value="close">收盘</option><option value="open">开盘</option></select></div>
+    <div class="field"><label>手续费 bps</label><input id="bt-comm" type="number" value="5" step="0.5"></div>
+    <div class="field"><label>滑点 bps</label><input id="bt-slip" type="number" value="2" step="0.5"></div>
+    <div class="field"><label>换手缓冲带</label><input id="bt-buffer" type="number" value="0" step="0.01"></div>
+    <div class="field"><label>最小成交额</label><input id="bt-mintrade" type="number" value="0" step="100"></div>
+    <div class="field"><label>单标的上限（空=不限）</label><input id="bt-maxw" type="number" step="0.05"></div>
+    <div class="field"><label>初始资金</label><input id="bt-cash" type="number" value="100000" step="10000"></div>`;
+}
+
+function currentRequest() {
+  const params = {};
+  const strategy = $("bt-strategy").value;
+  (STRATEGY_PARAMS[strategy] || []).forEach(([key, _label, _default]) => {
+    const value = Number($(key === "fast_window" ? "bt-fast" : "bt-slow").value);
+    if (!Number.isNaN(value)) params[key] = value;
+  });
+  const maxWeight = $("bt-maxw").value === "" ? null : Number($("bt-maxw").value);
+  return {
+    dataset: state.dataset,
+    strategy,
+    params,
+    weight_method: $("bt-weight").value,
+    exec_price: $("bt-exec").value,
+    initial_cash: Number($("bt-cash").value) || 100000,
+    costs: {
+      commission_bps: Number($("bt-comm").value) || 0,
+      slippage_bps: Number($("bt-slip").value) || 0,
+    },
+    rebalance: {
+      buffer: Number($("bt-buffer").value) || 0,
+      min_trade_notional: Number($("bt-mintrade").value) || 0,
+    },
+    policy: maxWeight === null && !Number($("bt-maxw").value)
+      ? null
+      : { allow_short: false, max_weight: maxWeight, max_gross: null, target_net: null },
+    max_points: 600,
+    trade_limit: 100,
+  };
+}
+
+async function runBacktest() {
+  $("bt-status").textContent = "提交中…";
+  $("bt-run").disabled = true;
+  try {
+    const result = await submitJob("/jobs/backtest", currentRequest(), $("bt-status"));
+    renderBacktest(result);
+    await loadExperiments();  // this run just entered the ledger
+    $("bt-status").textContent =
+      `终值 ${fmtMoney(result.final_equity)} · ${result.trade_count} 笔交易 · ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    toast(error.message);
+    $("bt-status").textContent = "失败";
+  } finally {
+    $("bt-run").disabled = false;
+  }
+}
+
+function renderBacktest(result) {
+  const equity = result.equity || [];
+  chart($("bt-equity"), [
+    { name: "策略", points: equity, color: COLORS[0] },
+    { name: "等权买入持有", points: result.benchmark || [], color: COLORS[6] },
+  ], { height: 300 });
+  chart($("bt-drawdown"), [{ name: "回撤", points: result.drawdown || [], color: "#dc2626" }],
+    { height: 200, area: true, zeroLine: true });
+
+  const metrics = result.metrics || {};
+  $("bt-metrics").innerHTML = Object.keys(metrics)
+    .map((key) => kv(METRIC_LABELS[key] || key, fmtMetric(key, metrics[key])))
+    .join("");
+
+  $("bt-costs").innerHTML =
+    kv("终值", fmtMoney(result.final_equity)) +
+    kv("总成本", fmtMoney(result.total_costs)) +
+    kv("成本占初始资金", ((result.total_costs / (result.config?.initial_cash || 1)) * 100).toFixed(2) + "%") +
+    kv("日均换手", (result.mean_turnover * 100).toFixed(2) + "%") +
+    kv("交易笔数", String(result.trade_count)) +
+    kv("数据复权口径", result.meta?.price_adjustment ?? "—");
+
+  const trades = (result.trades || []).slice(0, 50);
+  $("bt-trades").innerHTML = trades.length
+    ? table(["日期", "标的", "股数", "成交价", "名义额", "成本", "原因"],
+        trades.map((t) => [String(t.date).slice(0, 10), t.symbol, fmt(t.shares, 0),
+          fmt(t.fill_price ?? t.price, 2), fmtMoney(t.gross), fmt(t.cost, 2), t.reason ?? ""]))
+      + `<div class="muted" style="margin-top:8px">显示前 ${trades.length} 条，共 ${result.trade_count} 条</div>`
+    : '<div class="empty">本次运行没有成交</div>';
+
+  const warnings = result.warnings || [];
+  if (warnings.length) {
+    toast(`回测告警：${warnings.length} 条，例如 ${warnings[0].kind}（${warnings[0].symbol}）`);
+  }
+}
+
+/* ---------- ③ compare ---------- */
+function renderVariants() {
+  if (!state.variants.length) {
+    state.variants = [{ label: "慢线 100", slow: 100, fast: "", weight: "", buffer: "" }];
+  }
+  $("cmp-variants").innerHTML = state.variants.map((v, index) => `
+    <div class="row" style="margin-bottom:8px">
+      <div class="field"><label>名称</label><input data-i="${index}" data-k="label" value="${v.label}"></div>
+      <div class="field"><label>快线（留空沿用）</label><input type="number" data-i="${index}" data-k="fast" value="${v.fast}"></div>
+      <div class="field"><label>慢线（留空沿用）</label><input type="number" data-i="${index}" data-k="slow" value="${v.slow}"></div>
+      <div class="field"><label>权重方法</label><select data-i="${index}" data-k="weight">
+        <option value="">沿用</option>
+        <option value="equal_weight" ${v.weight === "equal_weight" ? "selected" : ""}>等权</option>
+        <option value="fixed" ${v.weight === "fixed" ? "selected" : ""}>固定</option>
+        <option value="inverse_volatility" ${v.weight === "inverse_volatility" ? "selected" : ""}>波动率倒数</option>
+      </select></div>
+      <div class="field"><label>缓冲带</label><input type="number" step="0.01" data-i="${index}" data-k="buffer" value="${v.buffer}"></div>
+      <button class="btn ghost" data-del="${index}">删除</button>
+    </div>`).join("");
+
+  $("cmp-variants").querySelectorAll("input,select").forEach((el) => {
+    el.addEventListener("change", () => {
+      const index = Number(el.dataset.i);
+      state.variants[index][el.dataset.k] = el.value;
+    });
+  });
+  $("cmp-variants").querySelectorAll("[data-del]").forEach((el) => {
+    el.addEventListener("click", () => {
+      state.variants.splice(Number(el.dataset.del), 1);
+      renderVariants();
+    });
+  });
+}
+
+function renderCompare(rows) {
+  chart($("cmp-chart"), rows.map((row, index) => ({
+    name: row.label, points: row.equity, color: COLORS[index % COLORS.length],
+  })), { height: 300 });
+  const keys = ["cumulative_return", "cagr", "sharpe", "max_drawdown", "calmar", "information_ratio"];
+  $("cmp-table").innerHTML = table(
+    ["变体", ...keys.map((k) => METRIC_LABELS[k] || k), "交易笔数", "成本"],
+    rows.map((row) => [row.label, ...keys.map((k) => fmtMetric(k, row.metrics?.[k])),
+      String(row.trade_count), fmtMoney(row.total_costs)])
+  );
+}
+
+/* ---------- experiments: the ledger of configurations tried ---------- */
+async function loadExperiments() {
+  try {
+    const data = await api(`/experiments?sort=${$("exp-sort").value}&limit=30`);
+    renderExperiments(data.experiments || []);
+  } catch (error) {
+    $("exp-table").innerHTML = `<div class="muted">${error.message}</div>`;
+  }
+}
+
+function renderExperiments(items) {
+  state.experiments = items;
+  if (!items.length) {
+    $("exp-status").textContent = "无记录";
+    $("exp-table").innerHTML = '<div class="empty">还没有实验，跑一次回测就会留档</div>';
+    return;
+  }
+  $("exp-status").textContent = `${items.length} 条`;
+  $("exp-table").innerHTML = table(
+    ["时间", "策略", "参数", "夏普", "年化", "最大回撤", "笔数", "终值", "备注", ""],
+    items.map((exp) => [
+      String(exp.created_at ?? "").slice(5, 19).replace("T", " "),
+      exp.strategy,
+      Object.entries(exp.params || {}).map(([k, v]) => `${k}=${v}`).join(" ") || "—",
+      fmtMetric("sharpe", exp.metrics?.sharpe),
+      fmtMetric("cagr", exp.metrics?.cagr),
+      fmtMetric("max_drawdown", exp.metrics?.max_drawdown),
+      String(exp.trade_count),
+      fmtMoney(exp.final_equity),
+      `<input class="exp-note" data-note="${exp.id}" value="${String(exp.note || "").replace(/"/g, "&quot;")}" placeholder="为什么记下它">`,
+      `<button class="btn" data-load="${exp.id}">载入</button>`,
+    ])
+  );
+
+  $("exp-table").querySelectorAll("[data-load]").forEach((el) => {
+    el.addEventListener("click", () => loadAsVariant(el.dataset.load));
+  });
+  $("exp-table").querySelectorAll("[data-note]").forEach((el) => {
+    el.addEventListener("change", async () => {
+      try {
+        await api(`/experiments/${el.dataset.note}`, { note: el.value }, "PATCH");
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  });
+}
+
+function loadAsVariant(id) {
+  const exp = (state.experiments || []).find((item) => item.id === id);
+  if (!exp) return;
+  const values = Object.entries(exp.params || {}).map(([, v]) => v).join("/");
+  state.variants.push({
+    label: exp.label || `${exp.strategy} ${values}`,
+    fast: exp.params?.fast_window ?? "",
+    slow: exp.params?.slow_window ?? "",
+    weight: exp.weight_method ?? "",
+    buffer: exp.rebalance?.buffer ?? "",
+  });
+  renderVariants();
+  toast("已载入为对比变体");
+}
+
+/* ---------- parameter sweep: many configurations, one submission ---------- */
+function buildGridForm() {
+  const strategy = $("grid-strategy")?.value || "ma_cross";
+  const options = Object.keys(STRATEGY_PARAMS)
+    .map((name) => `<option value="${name}"${name === strategy ? " selected" : ""}>${name}</option>`)
+    .join("");
+  const fields = (STRATEGY_PARAMS[strategy] || [])
+    .map(([key, label, dflt]) => `
+      <label>${label}<input data-grid-param="${key}" placeholder="${dflt} 起，逗号分隔" style="width:180px"></label>`)
+    .join("");
+  $("grid-form").innerHTML = `
+    <label>策略<select id="grid-strategy">${options}</select></label>
+    ${fields || '<span class="muted">该策略没有可调参数</span>'}
+    <label>排序指标<select id="grid-metric">
+      ${["sharpe", "cagr", "cumulative_return", "max_drawdown", "calmar"]
+        .map((m) => `<option value="${m}">${METRIC_LABELS[m] || m}</option>`).join("")}
+    </select></label>`;
+  $("grid-strategy").addEventListener("change", buildGridForm);
+}
+
+async function runGrid() {
+  const params = {};
+  $("grid-form").querySelectorAll("[data-grid-param]").forEach((el) => {
+    const values = el.value.split(",").map((v) => v.trim()).filter(Boolean).map(Number);
+    if (values.length) params[el.dataset.gridParam] = values;
+  });
+  if (!Object.keys(params).length) {
+    toast("至少给一个参数填候选值（逗号分隔，例如 10, 20, 30）");
+    return;
+  }
+  try {
+    const result = await submitJob("/jobs/grid", {
+      dataset: state.dataset,
+      strategy: $("grid-strategy").value,
+      params,
+      metric: $("grid-metric").value,
+    }, $("grid-status"));
+    renderGrid(result);
+    await loadExperiments();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function renderGrid(result) {
+  if (!result || !Array.isArray(result.rows)) return;
+  const keys = ["cumulative_return", "cagr", "sharpe", "max_drawdown", "calmar"];
+  state.gridRows = result.rows;
+  $("grid-table").innerHTML = table(
+    ["#", "配置", ...keys.map((k) => METRIC_LABELS[k] || k), "笔数", "终值", ""],
+    result.rows.map((row, index) => [
+      String(index + 1),
+      row.label,
+      ...keys.map((k) => fmtMetric(k, row.metrics?.[k])),
+      String(row.trade_count),
+      fmtMoney(row.final_equity),
+      `<button class="btn" data-gridrow="${index}">载入</button>`,
+    ])
+  );
+  $("grid-table").querySelectorAll("[data-gridrow]").forEach((el) => {
+    el.addEventListener("click", () => loadGridRow(Number(el.dataset.gridrow)));
+  });
+  const stopped = result.stopped ? ` · 已停止（${result.completed}/${result.requested}）` : "";
+  $("grid-status").textContent =
+    `按${METRIC_LABELS[result.metric] || result.metric}排序 · ${result.completed}/${result.requested} 组${stopped}`;
+}
+
+function loadGridRow(index) {
+  const row = (state.gridRows || [])[index];
+  if (!row) return;
+  state.variants.push({
+    label: row.label,
+    fast: row.params?.fast_window ?? "",
+    slow: row.params?.slow_window ?? "",
+    weight: row.weight_method ?? "",
+    buffer: "",
+  });
+  renderVariants();
+  toast("已载入为对比变体");
+}
+
+async function runCompare() {
+  $("cmp-status").textContent = "提交中…";
+  const variants = state.variants.map((v) => {
+    const params = {};
+    if (v.fast !== "" && v.fast !== null) params.fast_window = Number(v.fast);
+    if (v.slow !== "" && v.slow !== null) params.slow_window = Number(v.slow);
+    return {
+      label: v.label || "变体",
+      params: Object.keys(params).length ? params : null,
+      weight_method: v.weight || null,
+      rebalance: v.buffer === "" || v.buffer === null ? null : { buffer: Number(v.buffer), min_trade_notional: 0 },
+    };
+  });
+  try {
+    const rows = await submitJob(
+      "/jobs/compare", { base: currentRequest(), variants }, $("cmp-status")
+    );
+    renderCompare(rows);
+    $("cmp-status").textContent = `${rows.length} 组 · ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    toast(error.message);
+    $("cmp-status").textContent = "失败";
+  }
+}
+
+/* ---------- ④ collection ---------- */
+function buildCollectForm() {
+  $("col-form").innerHTML = `
+    <div class="field"><label>数据源</label><select id="col-provider">
+      <option value="akshare">akshare</option><option value="mock">mock（离线）</option></select></div>
+    <div class="field" style="flex:2"><label>标的（逗号分隔，留空=已存全部）</label>
+      <input id="col-symbols-input" placeholder="600519.SH,000001.SZ"></div>
+    <div class="field"><label>开始日期</label><input id="col-start" type="date"></div>
+    <div class="field"><label>结束日期</label><input id="col-end" type="date"></div>
+    <div class="field"><label>全量重拉</label><select id="col-full">
+      <option value="false">否</option><option value="true">是</option></select></div>
+    <div class="field"><label>试运行</label><select id="col-dry">
+      <option value="false">否</option><option value="true">是</option></select></div>`;
+}
+
+async function loadCollection() {
+  try {
+    const data = await api("/collection/status");
+    const providers = data.providers || [];
+    $("col-status").innerHTML = `<h3>落盘状态（根目录 ${data.root}）</h3>` +
+      (providers.length
+        ? providers.map((p) => `<div class="grid g4" style="margin-bottom:10px">
+            ${kv("数据源", p.provider)} ${kv("复权", p.adjust)}
+            ${kv("格式", p.format)} ${kv("标的数", p.n_symbols)}
+            ${kv("上次成功", p.last_run_date ?? "—")} ${kv("更新时间", p.updated_at ?? "—")}
+            ${kv("失败标的", String(Object.keys(p.failures || {}).length))}
+            ${kv("失败明细", Object.entries(p.failures || {}).slice(0, 2).map(([s, m]) => `${s}: ${m}`).join("；") || "无")}
+          </div>`).join("")
+        : '<div class="empty">尚无落盘数据，先运行 quant-collect 或在下方触发采集</div>');
+
+    const symbols = providers.flatMap((p) => p.symbols || []);
+    $("col-symbols").innerHTML = symbols.length
+      ? table(["标的", "行数", "首日", "末日", "更新时间"],
+          symbols.map((s) => [s.symbol, String(s.rows ?? "—"), s.first_date ?? "—",
+            s.last_date ?? "—", String(s.updated_at ?? "—").slice(0, 19)]))
+      : '<div class="empty">无</div>';
+
+    await loadReports();
+  } catch (error) {
+    $("col-status").innerHTML = `<div class="muted">${error.message}</div>`;
+  }
+}
+
+async function loadReports() {
+  try {
+    const data = await api("/collection/reports?limit=10");
+    const reports = data.reports || [];
+    $("col-reports").innerHTML = reports.length
+      ? table(["开始时间", "数据源", "请求", "更新", "跳过", "失败", "新增行", "备注"],
+          reports.map((r) => [
+            String(r.started_at ?? "—").replace("T", " ").slice(0, 19),
+            r.provider ?? "—",
+            String(r.requested ?? "—"),
+            String(r.updated ?? "—"),
+            String(r.skipped ?? "—"),
+            String(r.failed ?? "—"),
+            String(r.rows_added ?? "—"),
+            r.unreadable ? "无法解析"
+              : (r.failed_symbols || []).length
+                ? "失败：" + r.failed_symbols.slice(0, 3).join("、")
+                : (r.note ?? ""),
+          ]))
+      : `<div class="empty">尚无归档报告（${data.root}）</div>`;
+  } catch (error) {
+    $("col-reports").innerHTML = `<div class="muted">${error.message}</div>`;
+  }
+}
+
+async function runCollect() {
+  $("col-result").textContent = "运行中…";
+  const symbols = $("col-symbols-input").value
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  const body = {
+    provider: $("col-provider").value,
+    symbols,
+    start: $("col-start").value || null,
+    end: $("col-end").value || null,
+    full: $("col-full").value === "true",
+    dry_run: $("col-dry").value === "true",
+  };
+  try {
+    const report = await submitJob("/jobs/collect", body, $("col-result"));
+    const summary = report.summary || {};
+    $("col-result").textContent =
+      `更新 ${summary.updated ?? 0} · 新增行数 ${summary.rows_added ?? 0} · ` +
+      `跳过 ${summary.skipped ?? 0} · 失败 ${summary.failed ?? 0}${report.note ? " · " + report.note : ""}`;
+    toast("采集完成");
+    await loadCollection();
+    await loadDatasets();
+  } catch (error) {
+    toast(error.message);
+    $("col-result").textContent = "失败";
+  }
+}
+
+/* ---------- wiring ---------- */
+async function loadDatasets() {
+  try {
+    const health = await api("/health");
+    state.strategies = health.strategies || ["ma_cross"];
+    $("health").textContent = `策略：${state.strategies.join(", ")}`;
+    const datasets = await api("/datasets");
+    state.datasets = datasets;
+    $("dataset").innerHTML = datasets
+      .map((d) => `<option value="${d.key}">${d.label}</option>`).join("");
+    if (!state.dataset && datasets.length) state.dataset = datasets[0].key;
+    $("dataset").value = state.dataset;
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+document.querySelectorAll("nav button").forEach((button) => {
+  button.addEventListener("click", () => showView(button.dataset.view));
+});
+$("dataset").addEventListener("change", () => {
+  state.dataset = $("dataset").value;
+  loadOverview();
+});
+$("bt-run").addEventListener("click", runBacktest);
+$("cmp-run").addEventListener("click", runCompare);
+$("cmp-add").addEventListener("click", () => {
+  state.variants.push({ label: `变体 ${state.variants.length + 1}`, slow: "", fast: "", weight: "", buffer: "" });
+  renderVariants();
+});
+$("col-run").addEventListener("click", runCollect);
+$("exp-sort").addEventListener("change", loadExperiments);
+$("exp-refresh").addEventListener("click", loadExperiments);
+$("grid-run").addEventListener("click", runGrid);
+
+(async function start() {
+  await loadDatasets();
+  await refreshJobs();
+  buildBacktestForm();
+  buildCollectForm();
+  buildGridForm();
+  renderVariants();
+  await loadOverview();
+})();
+</script>
+</body>
+</html>

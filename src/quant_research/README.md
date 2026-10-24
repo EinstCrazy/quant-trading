@@ -7,10 +7,13 @@
 | 路径 | 职责 | 主要入口 |
 | --- | --- | --- |
 | `config.py` | YAML 研究配置 → 冻结 dataclass | `load_settings` |
-| `data/` | 面板加载、元信息与质量报告 | `load_price_panel`、`describe_panel` |
+| `collector.py` | 每日采集流程、增量窗口与调度循环 | `collect_once`、`run_daily_loop` |
+| `cli.py` | `quant-collect` 命令行入口 | `main`、`build_parser` |
+| `web/` | `quant-ui` 本地工作台（FastAPI + 静态前端） | `create_app`、`main` |
+| `data/` | 面板加载、元信息、质量报告、数据源与存储 | `load_price_panel`、`describe_panel`、`get_provider`、`LocalMarketStore` |
 | `strategies/` | 信号契约、注册表与信号实现 | `get_signal`、`apply_lag`、`moving_average_signal` |
-| `portfolio/` | 信号分数 → 目标权重 | `signal_to_weights` |
-| `backtest/` | 撮合、成本、账本与日频引擎 | `run_backtest`、`run_signal_backtest` |
+| `portfolio/` | 信号分数 → 目标权重；`PortfolioPolicy` 约束 | `signal_to_weights`、`enforce_policy` |
+| `backtest/` | 撮合、成本、账本、日频引擎与换手控制 | `run_backtest`、`run_signal_backtest` |
 | `metrics.py` | 绩效、风险与基准指标 | `summarize`、`annualized_sharpe` |
 | `logging_setup.py` | 统一日志入口（不使用 `print`） | `get_logger` |
 

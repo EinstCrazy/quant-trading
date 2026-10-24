@@ -9,8 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
+from quant_research.logging_setup import get_logger
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from quant_research.config import BacktestSettings, Settings
+
+logger = get_logger("backtest.config")
 
 
 @dataclass(frozen=True)
@@ -63,18 +67,54 @@ class ExecutionConfig:
 
 
 @dataclass(frozen=True)
+class RebalancePolicy:
+    """Controls that suppress unnecessary trading.
+
+    The default values (``0``) mean "trade on every weight change". Both controls
+    need the live book, so they are engine-level rather than portfolio-level.
+
+    Attributes:
+        buffer: skip a name when the target weight differs from its current weight
+            by this fraction or less. This is the standard cure for the small,
+            price-drift-driven trades a daily-rebalanced book would otherwise place.
+        min_trade_notional: skip orders whose traded notional is below this amount.
+    """
+
+    buffer: float = 0.0
+    min_trade_notional: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.buffer < 1.0:
+            raise ValueError(f"buffer must be in [0, 1), got {self.buffer}")
+        if self.min_trade_notional < 0:
+            raise ValueError(
+                f"min_trade_notional must be non-negative, got {self.min_trade_notional}"
+            )
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     """Full engine configuration."""
 
     initial_cash: float = 100_000.0
     costs: CostConfig = field(default_factory=CostConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    rebalance: RebalancePolicy = field(default_factory=RebalancePolicy)
     allow_short: bool = False
     accounting: Literal["shares", "weights"] = "shares"
 
     def __post_init__(self) -> None:
         if self.initial_cash <= 0:
             raise ValueError(f"initial_cash must be positive, got {self.initial_cash}")
+        if self.accounting not in ("shares", "weights"):
+            raise ValueError(f"accounting must be 'shares' or 'weights', got {self.accounting!r}")
+        if self.accounting == "weights" and (
+            self.rebalance.buffer > 0 or self.rebalance.min_trade_notional > 0
+        ):
+            logger.warning(
+                "rebalance controls need the live book; they are ignored in "
+                "accounting='weights' because it is a vectorised approximation"
+            )
 
     @classmethod
     def from_settings(
@@ -109,9 +149,13 @@ class BacktestConfig:
                 "lot_size": self.execution.lot_size,
                 "clip_to_cash": self.execution.clip_to_cash,
             },
+            "rebalance": {
+                "buffer": self.rebalance.buffer,
+                "min_trade_notional": self.rebalance.min_trade_notional,
+            },
             "allow_short": self.allow_short,
             "accounting": self.accounting,
         }
 
 
-__all__ = ["BacktestConfig", "CostConfig", "ExecutionConfig"]
+__all__ = ["BacktestConfig", "CostConfig", "ExecutionConfig", "RebalancePolicy"]

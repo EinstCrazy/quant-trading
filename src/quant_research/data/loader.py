@@ -9,6 +9,7 @@ Two entry points are provided:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +52,7 @@ class DataMeta:
             "price_adjustment": self.price_adjustment,
             "frequency": self.frequency,
             "missing_policy": self.missing_policy,
+            "n_symbols": self.n_symbols,
             "symbols": list(self.symbols),
         }
 
@@ -87,12 +89,12 @@ def load_close_prices(
     date_column: str = DATE_COLUMN,
     price_column: str = PRICE_COLUMN,
 ) -> pd.Series:
-    """Load a CSV containing dates and closing prices into a sorted Series."""
-    frame = pd.read_csv(path, parse_dates=[date_column])
-    if date_column not in frame or price_column not in frame:
-        raise ValueError(f"CSV must contain {date_column!r} and {price_column!r} columns")
+    """Load a CSV or Parquet file containing dates and closing prices."""
+    frame = _read_table(Path(path), date_column)
+    if price_column not in frame.columns:
+        raise ValueError(f"{path} must contain {date_column!r} and {price_column!r} columns")
 
-    prices = frame.set_index(date_column)[price_column].sort_index()
+    prices = frame[price_column].sort_index()
     if prices.index.has_duplicates:
         raise ValueError("Date column contains duplicate values")
     if prices.isna().any():
@@ -104,13 +106,25 @@ def load_close_prices(
     return prices
 
 
-def _read_csv(path: Path, date_column: str, check_duplicates: bool = True) -> pd.DataFrame:
-    frame = pd.read_csv(path, parse_dates=[date_column])
+def _read_table(path: Path, date_column: str, check_duplicates: bool = True) -> pd.DataFrame:
+    """Read a CSV or Parquet table; Parquet may carry the dates in the index."""
+    if path.suffix == ".parquet":
+        frame = pd.read_parquet(path)
+        if date_column not in frame.columns:
+            frame = frame.reset_index()
+    else:
+        frame = pd.read_csv(path)
+
     if date_column not in frame.columns:
-        raise ValueError(f"CSV {path} must contain a {date_column!r} column")
+        raise ValueError(f"{path.name} must contain a {date_column!r} column")
+
+    dates = pd.to_datetime(frame[date_column], errors="coerce")
+    if dates.isna().any():
+        raise ValueError(f"{path.name} contains unparsable {date_column!r} values")
+    frame[date_column] = dates
     frame = frame.set_index(date_column).sort_index()
     if check_duplicates and frame.index.has_duplicates:
-        raise ValueError(f"CSV {path} contains duplicate dates")
+        raise ValueError(f"{path} contains duplicate dates")
     return frame
 
 
@@ -122,12 +136,12 @@ def _collect_symbol_frames(
 ) -> dict[str, pd.DataFrame]:
     """Return ``{symbol: DataFrame}`` for either a directory or a single file."""
     if path.is_dir():
-        files = sorted(path.glob("*.csv"))
+        files = sorted([*path.glob("*.csv"), *path.glob("*.parquet")])
         if not files:
-            raise FileNotFoundError(f"No CSV files found in directory: {path}")
-        return {file.stem: _read_csv(file, date_column) for file in files}
+            raise FileNotFoundError(f"No CSV or Parquet files found in directory: {path}")
+        return {file.stem: _read_table(file, date_column) for file in files}
 
-    frame = _read_csv(path, date_column, check_duplicates=False)
+    frame = _read_table(path, date_column, check_duplicates=False)
     if symbol_column in frame.columns:
         frames = {
             str(symbol): group.drop(columns=[symbol_column])
@@ -163,6 +177,28 @@ def _default_settings() -> tuple[str, str, Path]:
     except (FileNotFoundError, ValueError):
         return "UTC", "adjusted", Path("data")
     return settings.data.timezone, settings.data.price_adjustment, settings.data.directory
+
+
+_ADJUST_TO_META = {"qfq": "forward", "hfq": "backward", "none": "none"}
+
+
+def _adjust_hint(path: Path) -> str | None:
+    """Read the collector's adjustment setting from ``_state.json`` next to the data.
+
+    Reporting ``adjusted`` (the settings default) for a forward-adjusted store would
+    misdescribe the data in every downstream report, so the store's own record wins.
+    """
+    for candidate in (path / "_state.json", path.parent / "_state.json"):
+        if not candidate.is_file():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        mapped = _ADJUST_TO_META.get(str(payload.get("adjust", "")))
+        if mapped:
+            return mapped
+    return None
 
 
 def load_price_panel(
@@ -234,7 +270,7 @@ def load_price_panel(
         start=prices.index.min(),
         end=prices.index.max(),
         timezone=timezone,
-        price_adjustment=price_adjustment,
+        price_adjustment=_adjust_hint(path) or price_adjustment,
         frequency="daily",
         missing_policy=missing_policy,
         symbols=tuple(str(column) for column in prices.columns),

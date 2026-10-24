@@ -6,6 +6,8 @@
 日频回测、绩效分析。空缺集中在横截面因子、组合约束、实验归档与报告。
 
 ```text
+⓪ 采集        行情源  →  quant-collect（provider → store）  →  data/raw/<provider>/daily/*.parquet
+                                                    │
 ① 数据层      CSV/Parquet  →  清洗校验  →  面板数据 DataFrame(date × symbol)
                                                     │
 ② 信号层      面板数据      →  因子/信号  →  分数 DataFrame(date × symbol)
@@ -34,10 +36,11 @@ summary = result.summary(benchmark_buy_hold(panel.prices))  # ⑤
 
 | 层 | 目录 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| 数据 | `quant_research/data/` | 加载、校验、元信息、质量报告 | 可用（缓存与复权修复未做） |
+| 采集 | `quant_research/collector.py`、`data/providers/`、`data/store.py` | 每日增量拉取、落盘、记账 | 可用（日频、akshare/mock） |
+| 数据 | `quant_research/data/` | 加载、校验、元信息、质量报告 | 可用（派生缓存与复权修复未做） |
 | 信号 | `quant_research/strategies/` | 信号契约、注册表、因子计算 | 可用（因子库未做） |
-| 组合 | `quant_research/portfolio/` | 信号 → 目标权重 | 最小版（固定/等权，无约束） |
-| 回测 | `quant_research/backtest/` | 撮合、成本、账本、交易流水 | 最小版（日频） |
+| 组合 | `quant_research/portfolio/` | 信号 → 目标权重、约束 | 可用（三种权重 + 单标的/杠杆/净敞口约束） |
+| 回测 | `quant_research/backtest/` | 撮合、成本、账本、交易流水、换手控制 | 可用（日频） |
 | 分析 | `quant_research/metrics.py` | 绩效、风险与基准指标 | 核心集（无 IC/IR、滚动指标） |
 | 实验 | 待建 `quant_research/experiments/` | 配置驱动运行、结果落盘 | 未实现 |
 

@@ -21,9 +21,24 @@ dev = [
     "mypy>=1.10",
     "pre-commit>=3.7",
 ]
+collect = [
+    "akshare>=1.19",
+    "pyarrow>=14",
+]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+
+[project.scripts]
+quant-collect = "quant_research.cli:main"
+quant-ui = "quant_research.web.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"quant_research.web" = ["static/*.html"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -35,7 +50,16 @@ target-version = "py311"
 
 [tool.mypy]
 python_version = "3.11"
-# 渐进式接入：先只对新增的回测与组合层强制类型检查，存量模块后续补齐。
-files = ["src/quant_research/backtest", "src/quant_research/portfolio"]
+# 渐进式接入：先只对新增的模块强制类型检查，存量模块后续补齐。
+files = [
+    "src/quant_research/backtest",
+    "src/quant_research/portfolio",
+    "src/quant_research/collector.py",
+    "src/quant_research/cli.py",
+    "src/quant_research/web",
+    "src/quant_research/data/store.py",
+    "src/quant_research/data/calendar.py",
+    "src/quant_research/data/providers",
+]
 ignore_missing_imports = true
 warn_unused_ignores = true
