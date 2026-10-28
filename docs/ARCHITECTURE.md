@@ -36,7 +36,7 @@ summary = result.summary(benchmark_buy_hold(panel.prices))  # ⑤
 
 | 层 | 目录 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| 采集 | `quant_research/collector.py`、`data/providers/`、`data/store.py` | 每日增量拉取、落盘、记账 | 可用（日频、akshare/mock） |
+| 采集 | `quant_research/collector.py`、`data/providers/`、`data/store.py` | 每日增量拉取、落盘、记账 | 可用（日频，akshare / baostock / sse / mock） |
 | 数据 | `quant_research/data/` | 加载、校验、元信息、质量报告 | 可用（派生缓存与复权修复未做） |
 | 信号 | `quant_research/strategies/` | 信号契约、注册表、因子计算 | 可用（因子库未做） |
 | 组合 | `quant_research/portfolio/` | 信号 → 目标权重、约束 | 可用（三种权重 + 单标的/杠杆/净敞口约束） |

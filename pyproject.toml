@@ -23,6 +23,7 @@ dev = [
 ]
 collect = [
     "akshare>=1.19",
+    "baostock>=0.8.8",
     "pyarrow>=14",
 ]
 web = [

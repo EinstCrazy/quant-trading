@@ -22,7 +22,11 @@ from quant_research.data.providers import (
     normalize_symbol,
     to_bare_symbol,
 )
-from quant_research.data.providers.base import MarketDataProvider, normalise_bars
+from quant_research.data.providers.base import (
+    MarketDataProvider,
+    SourceUnreachable,
+    normalise_bars,
+)
 from quant_research.data.store import LocalMarketStore
 
 _END = date(2024, 1, 31)  # a Wednesday, so the weekday calendar accepts it
@@ -434,3 +438,41 @@ def test_collect_once_stops_when_requested(tmp_path):
 
     assert list(report.updated) == ["600000.SH"]
     assert report.note and "stopped after 1/2" in report.note
+
+
+def test_a_refused_source_backs_off_further_than_a_broken_one(tmp_path):
+    """Retrying a source that hung up, at normal pace, mostly deepens the throttle."""
+
+    def attempt(exc: Exception) -> tuple[list[float], dict[str, str]]:
+        waits: list[float] = []
+
+        class Boom(MarketDataProvider):
+            name = "boom"
+
+            def list_symbols(self) -> list[str]:
+                return ["600000.SH"]
+
+            def fetch_daily(self, symbols, start=None, end=None) -> dict:
+                raise exc
+
+        report = collect_once(
+            provider=Boom(),
+            store=_store(tmp_path),
+            symbols=["600000.SH"],
+            start=date(2024, 1, 2),
+            end=_END,
+            retries=2,
+            backoff=2.0,
+            sleep=waits.append,
+            dry_run=True,
+        )
+        return waits, report.failed
+
+    broken_waits, broken_failed = attempt(ProviderError("bad columns"))
+    refused_waits, refused_failed = attempt(SourceUnreachable("服务端断开：疑似限流"))
+
+    assert broken_waits == [1.0, 2.0]  # ordinary exponential backoff
+    assert refused_waits == [5.0, 10.0]  # five times slower once refused
+    # the guidance reaches the report the UI shows, type name and all
+    assert refused_failed["600000.SH"] == "服务端断开：疑似限流"
+    assert broken_failed["600000.SH"] == "bad columns"

@@ -17,6 +17,9 @@ from quant_research.data.providers.base import (
     MarketDataProvider,
     ProviderError,
     ProviderUnavailable,
+    SourceUnreachable,
+    explain,
+    is_transport_error,
     normalise_bars,
     normalize_symbol,
     to_bare_symbol,
@@ -108,6 +111,11 @@ class AkshareProvider(MarketDataProvider):
                     adjust=adjust,
                 )
             except Exception as exc:
+                # wrap it as ProviderError, but preserve "not interrupting unexpectedly"
+                if is_transport_error(exc):
+                    raise SourceUnreachable(
+                        explain(exc, f"{self.name}（东方财富行情接口）")
+                    ) from exc
                 raise ProviderError(f"{normalised}: {type(exc).__name__}: {exc}") from exc
 
             if raw is None or raw.empty:

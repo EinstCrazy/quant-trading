@@ -23,7 +23,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from quant_research.data.calendar import TradingCalendar
-from quant_research.data.providers.base import MarketDataProvider, ProviderError, normalize_symbol
+from quant_research.data.providers.base import (
+    MarketDataProvider,
+    ProviderError,
+    SourceUnreachable,
+    normalize_symbol,
+)
 from quant_research.data.store import LocalMarketStore, StoreState
 from quant_research.logging_setup import get_logger
 
@@ -31,6 +36,10 @@ logger = get_logger("collector")
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_LOOKBACK_DAYS = 10
+
+# How much longer to wait after a source *refused* us. Retrying a throttled
+# endpoint at the normal pace mostly proves we have not understood the refusal.
+_REFUSED_BACKOFF_FACTOR = 5.0
 
 
 @dataclass
@@ -137,11 +146,15 @@ def _fetch_with_retry(
             if attempt > retries:
                 raise
             wait = backoff ** (attempt - 1)
+            refused = isinstance(exc, SourceUnreachable)
+            if refused:
+                wait *= _REFUSED_BACKOFF_FACTOR
             logger.warning(
-                "fetch failed for %s (attempt %d/%d), retrying in %.1fs: %s",
+                "fetch failed for %s (attempt %d/%d)%s, retrying in %.1fs: %s",
                 symbols,
                 attempt,
                 retries,
+                " — source refused the connection, throttling suspected" if refused else "",
                 wait,
                 exc,
             )
@@ -217,7 +230,9 @@ def collect_once(
                 provider, [symbol], window_start, end, retries, backoff, sleep
             )
         except Exception as exc:  # noqa: BLE001 - isolate per-symbol failures
-            message = f"{type(exc).__name__}: {exc}"
+            # SourceUnreachable already says what happened and what to do about
+            # it; anything else keeps its type so it stays diagnosable.
+            message = str(exc) if isinstance(exc, ProviderError) else f"{type(exc).__name__}: {exc}"
             report.failed[symbol] = message
             state.failures[symbol] = message
             logger.error("collection failed for %s: %s", symbol, message)

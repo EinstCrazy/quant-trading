@@ -19,11 +19,11 @@ from quant_research.data.providers.base import (
 )
 from quant_research.data.providers.mock import MockProvider
 
-AVAILABLE_PROVIDERS: tuple[str, ...] = ("akshare", "mock")
+AVAILABLE_PROVIDERS: tuple[str, ...] = ("akshare", "baostock", "sse", "mock")
 
 
 def get_provider(name: str, **kwargs: Any) -> MarketDataProvider:
-    """Build a provider by name; ``akshare`` is only imported when requested."""
+    """Build a provider by name; each source module is only imported on request."""
     key = name.strip().lower()
     if key == "mock":
         return MockProvider(**kwargs)
@@ -31,6 +31,14 @@ def get_provider(name: str, **kwargs: Any) -> MarketDataProvider:
         from quant_research.data.providers.akshare_provider import AkshareProvider
 
         return AkshareProvider(**kwargs)
+    if key == "baostock":
+        from quant_research.data.providers.baostock_provider import BaostockProvider
+
+        return BaostockProvider(**kwargs)
+    if key == "sse":
+        from quant_research.data.providers.sse_provider import SseProvider
+
+        return SseProvider(**kwargs)
     raise ValueError(f"unknown provider {name!r}; available: {list(AVAILABLE_PROVIDERS)}")
 
 

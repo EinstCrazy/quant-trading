@@ -35,6 +35,53 @@ class ProviderUnavailable(ProviderError):
     """A third-party package required by the provider is not installed."""
 
 
+class SourceUnreachable(ProviderError):
+    """The source hung up instead of answering.
+
+    A rate limit and a block look exactly like this: no HTTP status, no body, just
+    a closed socket. It is named separately from a malformed response because the
+    two ask for opposite reactions — hammering a source that is refusing us only
+    deepens the throttle, whereas a bad response deserves an immediate retry.
+    """
+
+
+# Exception names meaning "transport refused or dropped us". Named rather than
+# imported because the underlying clients (requests, urllib3) are optional.
+_TRANSPORT_ERROR_NAMES = frozenset(
+    {
+        "ConnectionError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "Timeout",
+        "RemoteDisconnected",
+        "ConnectionResetError",
+        "BrokenPipeError",
+        "ProtocolError",
+        "ProtocolErrorWrapper",
+        "SSLError",
+    }
+)
+
+
+def is_transport_error(exc: BaseException) -> bool:
+    """Whether a failure is "they hung up" rather than "the answer was junk"."""
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    names = {klass.__name__ for klass in type(exc).__mro__}
+    return not names.isdisjoint(_TRANSPORT_ERROR_NAMES)
+
+
+def explain(exc: BaseException, source: str) -> str:
+    """Say what a refused connection actually means, and what to do about it."""
+    return (
+        f"{source} 取不到数据：服务端直接断开，没有返回任何响应。\n"
+        f"这通常意味着被限流或拒绝（HTTP 状态码都没有，更不是数据问题）。\n"
+        f"原始错误：{type(exc).__name__}: {exc}\n"
+        f"怎么办：稍后再试；或换 baostock 采集 —— quant-collect --provider baostock "
+        f"--symbols 600519.SH。连续重试会加重限流。"
+    )
+
+
 # First digit(s) -> exchange. Covers A shares, STAR/ChiNext and Beijing listings.
 _EXCHANGE_BY_PREFIX: dict[str, str] = {
     "60": "SH",
@@ -153,6 +200,9 @@ __all__ = [
     "MarketDataProvider",
     "ProviderError",
     "ProviderUnavailable",
+    "SourceUnreachable",
+    "explain",
+    "is_transport_error",
     "normalise_bars",
     "normalize_symbol",
     "to_bare_symbol",

@@ -6,7 +6,7 @@
 ## 快速开始
 
 ```bash
-pip install -e '.[collect]'          # akshare + pyarrow
+pip install -e '.[collect]'          # akshare + baostock + pyarrow
 
 # 单次：指定标的
 quant-collect --symbols 600519.SH,000001.SZ --start 2024-01-01
@@ -28,6 +28,33 @@ quant-collect --symbols 600519.SH
 python -m quant_research.cli --symbols 600519.SH
 python scripts/collect_a_shares.py --symbols 600519.SH   # 无需 pip install -e
 ```
+
+## 数据源
+
+同一个 `--provider` 开关切换，落盘结构与下游读取完全一致：
+
+| provider | 取什么 | 适用 | 注意 |
+| --- | --- | --- | --- |
+| `akshare` | 沪深京日线 + 全市场列表 | 默认，覆盖面最广 | 抓取第三方公开接口，**上游改版就会失效**；全市场列表偶尔长时间无响应 |
+| `baostock` | 沪深京日线 + 全市场列表 | akshare 挂掉时的备份 | 免费、无需 token、接口常年不变；需要 login/logout；成交量原始单位是**股** |
+| `sse` | **仅**沪市官方证券清单 | 校准全市场清单 | 不提供行情：`fetch_daily` 直接报错，而不是返回空集 |
+| `mock` | 确定性随机游走 | 离线演示 | 不联网 |
+
+### 不要在一个目录里混用两个源
+
+前复权价格依赖"最新这一天"作为基准，各家基准不同，**同一天的收盘价可以相差百分之一以上**。
+实测 600519 在 2024-01-02：
+
+| 源 | 前复权收盘 | 成交量 |
+| --- | --- | --- |
+| akshare | 1550.67 | 32156 手 |
+| baostock | 1531.23 | 32156 手（原文 3,215,644 股，已换算） |
+
+成交量一致说明换算是准的；价格的差异不是错误，是复权基准不同。落盘目录按 provider 分隔
+（`data/raw/<provider>/`），正是为了让这件事无从发生。
+
+> 想从交易所直接拿历史日线此路不通：上交所不对个人免费提供，`sseinfo.com` 的授权数据是
+> 付费服务。所以 `sse` 这个 provider 只做清单，价格由另外两个源负责。
 
 ## 落盘结构
 
@@ -104,6 +131,7 @@ quant-collect --daemon --at 18:30 --timezone Asia/Shanghai
 | --- | --- |
 | 单个标的失败 | 记入 `report.failed` 与 `_state.json.failures`，其余标的继续 |
 | 网络抖动 | 每个标的最多重试 `--retries` 次，指数退避 |
+| 源拒绝连接（疑似限流） | 归类为 `SourceUnreachable`：报告写明原因与出路，退避放慢到 5 倍 |
 | 请求过快 | `--pause` 控制标的间隔，默认 0.5 秒 |
 | 退出码 | `0` 全部成功；`1` 有标的失败；`2` 用法或配置错误 |
 
@@ -113,6 +141,26 @@ quant-collect --daemon --at 18:30 --timezone Asia/Shanghai
 quant-collect --symbols 600519.SH --start 2025-01-01 --end 2025-06-30   # 指定区间补
 quant-collect --symbols 600519.SH --full                                # 整段重拉
 ```
+
+### 源拒绝连接时该怎么办
+
+AkShare 走的是东方财富的公开行情接口。当对方**直接断开、连 HTTP 状态码都不返回**时，
+采集器把它归类为"源不可用"而不是"数据错误"，报告里写出可能原因与出路，并把重试间隔
+放慢到正常的 5 倍——对着一个正在拒绝你的接口高频重试，只会让限流持续得更久。
+
+看到这类提示时的处理顺序：
+
+1. **换源**：`quant-collect --provider baostock --symbols 600519.SH`
+   （BaoStock 与东财互不相干，通常照常可用）
+2. **暂停**：别再连续重试，等限流自行解除（几十分钟到数小时不等）
+3. **自查**（可选）：判断是单个数据接口被拒，还是整站不可达——
+
+   ```bash
+   curl -4 -o /dev/null -w "%{http_code}\n" "https://quote.eastmoney.com/"   # 200 说明 IP 没被整体封禁
+   curl -4 -o /dev/null -w "%{http_code}\n" "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.600519&fields1=f1&fields2=f51&klt=101&fqt=1&beg=20240101&end=20240110"
+   ```
+
+   页面返回 200 而数据接口无响应，就可以确定是**数据接口的限流**，不是网络或 IP 的问题。
 
 > 已知限制：AKShare 的「全市场列表」接口（`stock_info_a_code_name`）偶尔长时间无响应。
 > 因此 `--all` 失败时会回退到**已存储的标的清单**继续增量，而不是中断。日常请用
@@ -135,7 +183,7 @@ describe_panel(panel).to_dict()
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `provider` | `akshare` | `akshare` 或 `mock` |
+| `provider` | `akshare` | `akshare` / `baostock` / `sse` / `mock` |
 | `symbols` | `[]` | 空则由 `--symbols` / `--all` / 已存清单决定 |
 | `output_directory` | `data/raw` | 存储根目录 |
 | `format` | `parquet` | `parquet` 或 `csv` |
@@ -150,6 +198,11 @@ describe_panel(panel).to_dict()
 ## 已验证
 
 - AKShare 1.19.1 + `stock_zh_a_hist`：列名为 `日期/开盘/收盘/最高/最低/成交量/成交额/涨跌幅`，已按此映射；
+- BaoStock + `query_history_k_data_plus`：成交量原始单位为**股**，除以 100 换算为手后与 AKShare
+  实数一致（2024-01-02 的 600519：3,215,644 股 → 32156 手，两边同为 32156）；停牌日
+  `tradestatus=0` 已剔除；列表接口只对交易日有响应，非交易日按日回退最多 7 天；
+- 上交所 `downloadStockListFile.do`（GBK、Tab 分隔，`stockType=1` 主板 + `8` 科创板）：
+  实测 2009 只沪市标的；BaoStock `query_all_stock` 实测 7437 只；
 - 真实冒烟：3 个标的（600519.SH、000001.SZ、300750.SZ）各 31 行，写入后
   `load_price_panel` 读回 `31 x 3`、`price_adjustment='forward'`；
 - 重复运行同一区间：`+0 rows`，无重复行；

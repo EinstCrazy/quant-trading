@@ -16,6 +16,12 @@
   并可把历史配置载入为对比变体（`GET` / `PATCH` / `DELETE /api/experiments`）。
 - 参数网格 `POST /api/jobs/grid`：一次跑完参数 × 权重方法的组合（上限 200 组，提交前校验），
   按指定指标排名，每组都进实验台账；`BacktestRequest.costs` / `rebalance` 现在允许显式留空。
+- 数据源：新增 `baostock`（免费、无需 token、接口稳定；停牌日剔除，**成交量原始单位为股，
+  已换算为手**以与 akshare 一致）与 `sse`（上交所官方证券清单；无免费历史行情，
+  `fetch_daily` 明确报错而非返回空集）。
+- 采集失败可读性：源直接断开（ConnectionError / 超时等网络层错误）现归类为
+  `SourceUnreachable`，报告写出"疑似限流"的原因、给出换源命令，并把重试退避放慢到
+  5 倍以免加剧限流；数据类错误维持原样，不会被误报成限流。
 - 每日 A 股采集进程 `quant-collect`：单次与常驻守护两种模式、按标的增量落盘 Parquet、
   失败隔离与重试、交易日历三级降级、运行报告归档。可选依赖 `pip install -e '.[collect]'`。
 - `MarketDataProvider` 抽象与 `akshare` / `mock` 两个实现；`LocalMarketStore` 负责原子写、

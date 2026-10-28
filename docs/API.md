@@ -197,6 +197,8 @@ collect_once(
 | provider | 说明 |
 | --- | --- |
 | `akshare` | A 股日线（东方财富口径），可选依赖：`pip install -e '.[collect]'` |
+| `baostock` | A 股日线（BaoStock），免费无 token；成交量单位为股，已换算为手 |
+| `sse` | 沪市官方证券清单（权威、免费）；**不提供行情**，`fetch_daily` 报错 |
 | `mock` | 确定性合成行情，离线可用，用于测试与演示 |
 
 `get_provider(name, **kwargs)` 按名构造；`normalize_symbol("600519")` → `600519.SH`（自动推断交易所）。
