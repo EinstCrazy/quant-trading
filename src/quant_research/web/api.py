@@ -30,6 +30,7 @@ from quant_research.config import Settings, load_settings
 from quant_research.data import describe_panel, load_price_panel
 from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers import get_provider
+from quant_research.data.providers.base import ProviderError
 from quant_research.data.store import LocalMarketStore
 from quant_research.logging_setup import get_logger
 from quant_research.metrics import benchmark_buy_hold, drawdown_series
@@ -430,6 +431,12 @@ def collection_status() -> dict[str, Any]:
     return {"root": str(root), "providers": providers}
 
 
+# A full-market sweep asks one host for thousands of symbols in a row, which is
+# precisely what gets a connection closed on us. Pace it whether or not the
+# caller thought to ask.
+_MIN_SWEEP_PAUSE = 0.35
+
+
 def _collect_report(
     request: CollectRequest,
     on_progress: Callable[[int, int, str], None] | None = None,
@@ -446,9 +453,32 @@ def _collect_report(
         provider.name,
         fmt=settings.collection.format,
     )
-    symbols = request.symbols or store.stored_symbols()
-    if not symbols:
-        raise HTTPException(status_code=400, detail="no symbols supplied and none are stored yet")
+    sweep = request.all_symbols and not request.symbols
+    if sweep:
+        if on_progress is not None:
+            on_progress(0, 1, "拉取全市场清单…")
+        try:
+            symbols = provider.list_symbols()
+        except ProviderError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"{provider.name} could not list the market: {exc}"
+            ) from exc
+        # Listing the market takes seconds and cannot be interrupted from the
+        # inside, so honour a cancellation as soon as it returns rather than
+        # charging on into thousands of downloads the user already called off.
+        cancelled = should_stop is not None and should_stop()
+        if cancelled:
+            symbols = []  # stop was called while listing: download nothing
+        elif not symbols:
+            raise HTTPException(status_code=502, detail=f"{provider.name} listed no symbols")
+    else:
+        symbols = request.symbols or store.stored_symbols()
+        if not symbols:
+            raise HTTPException(
+                status_code=400, detail="no symbols supplied and none are stored yet"
+            )
+
+    pause = max(request.pause, _MIN_SWEEP_PAUSE) if sweep else request.pause
 
     try:
         report = collect_once(
@@ -465,7 +495,7 @@ def _collect_report(
             ),
             calendar=TradingCalendar.load_or_weekday(store.calendar_path),
             retries=request.retries,
-            pause=request.pause,
+            pause=pause,
             timezone=settings.collection.timezone,
             dry_run=request.dry_run,
             on_progress=on_progress,
@@ -479,7 +509,11 @@ def _collect_report(
         len(report.updated),
         len(report.failed),
     )
-    return report.to_dict()
+    payload = report.to_dict()
+    if sweep:
+        # tell the caller what it actually bought: how many, and how slowly
+        payload["swept"] = {"symbols": len(symbols), "pause": pause}
+    return payload
 
 
 @router.post("/collection/collect")
@@ -594,18 +628,31 @@ def submit_collect(
     market = LocalMarketStore(
         settings.collection.output_directory, request.provider, fmt=settings.collection.format
     )
-    symbols = request.symbols or market.stored_symbols()
-    if not symbols:
-        raise HTTPException(status_code=400, detail="no symbols supplied and none are stored yet")
+    sweep = request.all_symbols and not request.symbols
+    if not sweep and not (request.symbols or market.stored_symbols()):
+        raise HTTPException(
+            status_code=400,
+            detail="no symbols supplied and none are stored yet; try all_symbols=true",
+        )
 
     def task(progress: Progress, stop: Callable[[], bool]) -> dict[str, Any]:
         def on_progress(done: int, total: int, symbol: str) -> None:
+            # only the run itself knows how many symbols the source listed
+            progress.set_total(total)
             progress.update(done, f"{symbol or '完成'}（{done}/{total}）")
 
         return _collect_report(request, on_progress=on_progress, should_stop=stop)
 
+    label = (
+        f"{request.provider} · 全市场"
+        if sweep
+        else f"{request.provider} · {len(request.symbols or market.stored_symbols())} 标的"
+    )
     job = jobs.submit(
-        "collect", f"{request.provider} · {len(symbols)} 标的", task, total=len(symbols)
+        "collect",
+        label,
+        task,
+        total=1 if sweep else len(request.symbols or market.stored_symbols()),
     )
     return JobRef(id=job.id, kind=job.kind, label=job.label, status=job.status)
 

@@ -839,7 +839,12 @@ async function runCompare() {
 function buildCollectForm() {
   $("col-form").innerHTML = `
     <div class="field"><label>数据源</label><select id="col-provider">
-      <option value="akshare">akshare</option><option value="mock">mock（离线）</option></select></div>
+      <option value="akshare">akshare</option>
+      <option value="baostock">baostock</option>
+      <option value="sse">sse（仅清单，无行情）</option>
+      <option value="mock">mock（离线）</option></select></div>
+    <div class="field"><label>范围</label><select id="col-all">
+      <option value="false">指定标的</option><option value="true">全市场</option></select></div>
     <div class="field" style="flex:2"><label>标的（逗号分隔，留空=已存全部）</label>
       <input id="col-symbols-input" placeholder="600519.SH,000001.SZ"></div>
     <div class="field"><label>开始日期</label><input id="col-start" type="date"></div>
@@ -847,7 +852,24 @@ function buildCollectForm() {
     <div class="field"><label>全量重拉</label><select id="col-full">
       <option value="false">否</option><option value="true">是</option></select></div>
     <div class="field"><label>试运行</label><select id="col-dry">
-      <option value="false">否</option><option value="true">是</option></select></div>`;
+      <option value="false">否</option><option value="true">是</option></select></div>
+    <div class="field" style="flex:3"><label>&nbsp;</label>
+      <span class="muted" id="col-hint"></span></div>`;
+  $("col-all").onchange = syncCollectForm;
+  $("col-provider").onchange = syncCollectForm;
+  syncCollectForm();
+}
+
+function syncCollectForm() {
+  const wholeMarket = $("col-all").value === "true";
+  const provider = $("col-provider").value;
+  $("col-symbols-input").disabled = wholeMarket;
+  $("col-hint").textContent = wholeMarket
+    ? "全市场：先向数据源拉取全部标的，再逐一下载。已按 ≥0.35 秒间隔节流以免被限流，" +
+      "标的常有数千只，预计几十分钟；可在「最近任务」里随时取消，中断后再次运行会从断点续采。"
+    : provider === "sse"
+      ? "sse 只有沪市官方证券清单，不提供行情，无法下载历史数据。"
+      : "";
 }
 
 async function loadCollection() {
@@ -904,23 +926,37 @@ async function loadReports() {
 }
 
 async function runCollect() {
-  $("col-result").textContent = "运行中…";
-  const symbols = $("col-symbols-input").value
+  const provider = $("col-provider").value;
+  const wholeMarket = $("col-all").value === "true";
+  if (provider === "sse") {
+    $("col-result").textContent = "sse 不提供行情数据，请换 baostock 或 akshare";
+    return;
+  }
+  $("col-result").textContent = wholeMarket
+    ? "全量下载中（先取全市场清单，请耐心等待）…"
+    : "运行中…";
+  const symbols = wholeMarket
+    ? []
+    : $("col-symbols-input").value
     .split(",").map((s) => s.trim()).filter(Boolean);
   const body = {
-    provider: $("col-provider").value,
+    provider,
     symbols,
     start: $("col-start").value || null,
     end: $("col-end").value || null,
     full: $("col-full").value === "true",
     dry_run: $("col-dry").value === "true",
+    all_symbols: wholeMarket,
   };
   try {
     const report = await submitJob("/jobs/collect", body, $("col-result"));
     const summary = report.summary || {};
+    const swept = report.swept;
     $("col-result").textContent =
       `更新 ${summary.updated ?? 0} · 新增行数 ${summary.rows_added ?? 0} · ` +
-      `跳过 ${summary.skipped ?? 0} · 失败 ${summary.failed ?? 0}${report.note ? " · " + report.note : ""}`;
+      `跳过 ${summary.skipped ?? 0} · 失败 ${summary.failed ?? 0}` +
+      (swept ? ` · 全市场 ${swept.symbols} 只（间隔 ${swept.pause}s）` : "") +
+      (report.note ? " · " + report.note : "");
     toast("采集完成");
     await loadCollection();
     await loadDatasets();

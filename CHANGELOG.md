@@ -22,6 +22,9 @@
 - 采集失败可读性：源直接断开（ConnectionError / 超时等网络层错误）现归类为
   `SourceUnreachable`，报告写出"疑似限流"的原因、给出换源命令，并把重试退避放慢到
   5 倍以免加剧限流；数据类错误维持原样，不会被误报成限流。
+- 全量下载：采集请求支持 `all_symbols`（界面「范围 → 全市场」，CLI 仍为 `--all`），
+  从数据源拉取全部标的；全市场运行强制 ≥0.35 秒间隔，任务的进度总量在清单拉取完成后
+  才校准，返回结果附带 `swept`（标的数与实际节流间隔）。
 - 每日 A 股采集进程 `quant-collect`：单次与常驻守护两种模式、按标的增量落盘 Parquet、
   失败隔离与重试、交易日历三级降级、运行报告归档。可选依赖 `pip install -e '.[collect]'`。
 - `MarketDataProvider` 抽象与 `akshare` / `mock` 两个实现；`LocalMarketStore` 负责原子写、

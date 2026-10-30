@@ -48,6 +48,16 @@ class Progress:
             if message:
                 self._job.message = message
 
+    def set_total(self, total: int) -> None:
+        """Rescale once the work turns out bigger than the initial guess.
+
+        A whole-market sweep cannot know its size until the source has listed
+        it, and a bar that claims otherwise is the kind of lie a user plans their
+        afternoon around.
+        """
+        with self._lock:
+            self._job.progress_total = max(1, total)
+
 
 @dataclass
 class Job:

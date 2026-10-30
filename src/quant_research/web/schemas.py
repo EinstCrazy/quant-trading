@@ -84,6 +84,9 @@ class CollectRequest(BaseModel):
     lookback_days: int | None = None
     pause: float = 0.0
     retries: int = 1
+    # Named all_symbols rather than `all`: a pydantic field called `all` shadows
+    # the builtin, and reads oddly at every call site.
+    all_symbols: bool = False
 
 
 class DatasetOut(BaseModel):

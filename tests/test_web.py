@@ -453,3 +453,90 @@ def test_grid_rejects_empty_and_oversized(client):
     )
     assert big.status_code == 422
     assert "limit" in big.json()["detail"]
+
+
+def test_full_market_sweep_takes_the_universe_from_the_source(client):
+    """A sweep asks the source what exists, rather than reusing what we stored."""
+    from quant_research.data.providers import get_provider
+
+    universe = get_provider("mock").list_symbols()
+    response = client.post(
+        "/api/collection/collect",
+        json={"provider": "mock", "all_symbols": True, "dry_run": True},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["requested"] == len(universe)
+    # and it owns up to its size, because a two-hour run should not be a surprise
+    assert body["swept"]["symbols"] == len(universe)
+
+
+def test_a_sweep_is_paced_but_a_targeted_run_is_not(client, monkeypatch):
+    """Thousands of requests in a row are what gets a connection closed on us."""
+    from quant_research.web import api
+
+    captured: dict = {}
+    real = api.collect_once
+
+    def spy(**kwargs):
+        captured.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(api, "collect_once", spy)
+
+    swept = client.post(
+        "/api/collection/collect",
+        json={"provider": "mock", "all_symbols": True, "dry_run": True, "pause": 0.0},
+    )
+    assert swept.status_code == 200, swept.text
+    assert captured["pause"] == api._MIN_SWEEP_PAUSE  # asked for none, still paced
+
+    captured.clear()
+    client.post(
+        "/api/collection/collect",
+        json={"provider": "mock", "symbols": ["600519.SH"], "dry_run": True, "pause": 0.0},
+    )
+    assert captured["pause"] == 0.0  # three symbols do not need pacing
+
+
+def test_a_sweep_can_be_submitted_without_symbols(client):
+    """The "nothing supplied and nothing stored" rule must not block a sweep."""
+    response = client.post(
+        "/api/jobs/collect", json={"provider": "mock", "all_symbols": True, "dry_run": True}
+    )
+    assert response.status_code == 202, response.text
+    assert "全市场" in response.json()["label"]
+
+
+def test_a_sweep_honours_cancellation_before_any_download(client, monkeypatch):
+    """Listing the market cannot be interrupted, but nothing may be fetched after.
+
+    Found the hard way: a request to stop during a 30-second listing used to be
+    ignored, and the run charged on into thousands of downloads.
+    """
+    import time
+
+    from quant_research.data.providers.mock import MockProvider
+
+    def slow_list(self):
+        # returns a fixed list: calling the real one here would recurse into
+        # this patch, one 0.6s sleep per stack frame
+        time.sleep(0.6)  # long enough to cancel while it is still listing
+        return ["600000.SH", "600519.SH", "000001.SZ"]
+
+    monkeypatch.setattr(MockProvider, "list_symbols", slow_list)
+
+    ref = client.post(
+        "/api/jobs/collect", json={"provider": "mock", "all_symbols": True, "dry_run": True}
+    ).json()
+    client.delete(f"/api/jobs/{ref['id']}")
+
+    # generous window: earlier jobs may still hold a worker, and the pool is small
+    for _ in range(80):
+        job = client.get(f"/api/jobs/{ref['id']}").json()
+        if job["status"] not in ("running", "pending"):
+            break
+        time.sleep(0.1)
+
+    assert job["status"] == "cancelled"
+    assert (job.get("result") or {}).get("requested") == 0  # nothing was downloaded
