@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from quant_research.backtest import (
     BacktestConfig,
@@ -36,6 +36,7 @@ from quant_research.data.store import LocalMarketStore
 from quant_research.indicators import (
     compute_all,
     doc_for,
+    family_of,
     load_bundle,
     params_from_settings,
     store_bundle,
@@ -63,6 +64,7 @@ from .schemas import (
     IndicatorBoardOut,
     IndicatorDetailOut,
     IndicatorRowOut,
+    IndicatorSeriesOut,
     IndicatorValueOut,
     JobOut,
     JobRef,
@@ -72,6 +74,8 @@ from .schemas import (
     ScreenPickOut,
     ScreenRequest,
     ScreenReviewOut,
+    SeriesLineOut,
+    SeriesPanelOut,
     VariantIn,
 )
 
@@ -1036,6 +1040,99 @@ def indicator_detail(
         as_of=pd.Timestamp(sample.index.max()).date().isoformat(),
         provider=wanted_provider,
         values=values,
+    )
+
+
+# Chart panels, described by indicator *family* rather than by field name: with
+# ``rsi_period: 21`` the line still appears instead of the chart going empty.
+_PANELS: tuple[tuple[str, str, str, tuple[str, ...], tuple[float, ...]], ...] = (
+    ("price", "价格与布林带", "价格", ("boll_mid", "boll_upper", "boll_lower"), ()),
+    ("rsi", "RSI", "0–100", ("rsi",), (20.0, 80.0)),
+    ("macd", "MACD", "价格", ("macd_dif", "macd_dea", "macd_hist"), ()),
+    ("kdj", "KDJ", "0–100", ("kdj_k", "kdj_d", "kdj_j"), (20.0, 80.0)),
+)
+
+
+def _indicator_points(series: pd.Series, days: int) -> list[list[Any]]:
+    """``[[date, value]]`` with NaN as null: a warm-up gap must stay a gap.
+
+    Rounding to four decimals keeps a 500-day response small without changing
+    anything a chart can show.
+    """
+    tail = series.tail(days)
+    return [
+        [stamp.date().isoformat(), None if pd.isna(value) else round(float(value), 4)]
+        for stamp, value in tail.items()
+    ]
+
+
+@router.get("/indicators/{symbol}/series", response_model=IndicatorSeriesOut)
+def indicator_series(
+    symbol: str,
+    provider: str | None = None,
+    adjust: str | None = None,
+    days: int = Query(120, ge=5, le=500),
+) -> IndicatorSeriesOut:
+    """A name's indicator history, split into panels a chart can draw alone.
+
+    Split here rather than in the browser: RSI and MACD share no scale, and a
+    single chart with two y-axes invites reading crossings that mean nothing.
+    """
+    settings = load_settings()
+    wanted_provider = provider or settings.collection.provider
+    wanted_adjust = adjust or settings.collection.adjust
+    bundle = _load_indicators(wanted_provider, wanted_adjust)
+
+    sample = next(iter(bundle.frames.values()))
+    if symbol not in sample.columns:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{symbol} 不在指标集合里（共 {sample.shape[1]} 只）",
+        )
+
+    by_family: dict[str, str] = {}
+    for field in bundle.frames:
+        by_family.setdefault(family_of(field), field)
+
+    panels: list[SeriesPanelOut] = []
+    for key, title, unit, families, reference in _PANELS:
+        lines: list[SeriesLineOut] = []
+        if key == "price":
+            close = _load_panel(wanted_provider, wanted_adjust).prices[symbol]
+            lines.append(
+                SeriesLineOut(field="close", label="收盘", points=_indicator_points(close, days))
+            )
+        for family in families:
+            field = by_family.get(family)
+            if field is None:
+                continue
+            doc = doc_for(field)
+            lines.append(
+                SeriesLineOut(
+                    field=field,
+                    label=_labelled(field, doc) if doc is not None else field,
+                    # the histogram is about which side of zero, not how it slopes
+                    kind="bar" if family.endswith("_hist") else "line",
+                    points=_indicator_points(bundle.frames[field][symbol], days),
+                )
+            )
+        if lines:
+            panels.append(
+                SeriesPanelOut(
+                    key=key,
+                    title=title,
+                    unit=unit,
+                    reference=list(reference),
+                    lines=lines,
+                )
+            )
+
+    return IndicatorSeriesOut(
+        symbol=symbol,
+        as_of=pd.Timestamp(sample.index.max()).date().isoformat(),
+        provider=wanted_provider,
+        days=days,
+        panels=panels,
     )
 
 

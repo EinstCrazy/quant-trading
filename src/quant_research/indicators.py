@@ -47,6 +47,7 @@ __all__ = [
     "compute_all",
     "doc_for",
     "ema",
+    "family_of",
     "kdj",
     "load_bundle",
     "macd",
@@ -558,7 +559,7 @@ def store_bundle(
 
 def load_bundle(directory: str | Path, provider: str, adjust: str) -> IndicatorBundle | None:
     """Read back what :func:`store_bundle` wrote, or ``None`` if it is not there."""
-    target = _bundle_directory(directory, provider, adjust)
+    target = _bundle_directory(Path(directory), provider, adjust)
     meta_path = target / "meta.json"
     if not meta_path.is_file():
         return None
@@ -785,10 +786,18 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
 }
 
 
+def family_of(field: str) -> str:
+    """``rsi_21`` → ``rsi``: the period is a parameter, not part of the family.
+
+    Kept in one place because both the catalogue lookup and the chart panels ask
+    the same question, and two copies of this rule would eventually disagree.
+    """
+    return field.rstrip("0123456789").rstrip("_")
+
+
 def doc_for(field: str) -> IndicatorDoc | None:
     """Look up the description for a computed field (``rsi_14`` → ``rsi``)."""
-    base = field.rstrip("0123456789").rstrip("_")
-    return INDICATOR_CATALOG.get(base)
+    return INDICATOR_CATALOG.get(family_of(field))
 
 
 def catalog() -> dict[str, dict[str, str]]:

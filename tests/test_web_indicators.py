@@ -43,7 +43,7 @@ def _panel(days: int = 120) -> PricePanel:
     )
 
 
-def _settings(tmp_path):
+def _settings(tmp_path, **overrides):
     class _Collection:
         provider = "baostock"
         adjust = "qfq"
@@ -69,6 +69,9 @@ def _settings(tmp_path):
         cci_period = 14
         adx_period = 14
         volatility_period = 20
+
+    for key, value in overrides.items():
+        setattr(_Indicators, key, value)
 
     class _Settings:
         collection = _Collection()
@@ -214,3 +217,91 @@ def test_a_stored_bundle_older_than_the_panel_is_flagged(client, monkeypatch, tm
     monkeypatch.setattr(api, "_latest_session", lambda provider, adjust: "2026-01-01")
 
     assert client.get("/api/indicators").json()["stale"] is True
+
+
+# --- the series a chart draws ----------------------------------------------
+
+
+def _panels(client: TestClient, symbol: str = "600519.SH", **params) -> dict:
+    payload = client.get(f"/api/indicators/{symbol}/series", params=params).json()
+    return {panel["key"]: panel for panel in payload["panels"]}
+
+
+def test_the_series_arrives_panel_by_panel(client):
+    """One chart per panel: RSI and a price share no scale, and two y-axes invite
+    reading crossings that mean nothing."""
+    panels = _panels(client)
+
+    assert list(panels) == ["price", "rsi", "macd", "kdj"]
+    lengths = {len(line["points"]) for panel in panels.values() for line in panel["lines"]}
+    assert lengths == {120}  # every line covers the same window
+
+
+def test_the_price_panel_carries_the_close_and_the_band(client):
+    fields = [line["field"] for line in _panels(client)["price"]["lines"]]
+
+    assert fields[0] == "close"
+    assert {"boll_mid", "boll_upper", "boll_lower"} <= set(fields)
+
+
+def test_the_histogram_is_sent_as_bars(client):
+    """The sign of the histogram is the point, and a line hides it."""
+    macd = _panels(client)["macd"]
+
+    kinds = {line["field"]: line["kind"] for line in macd["lines"]}
+    assert kinds["macd_hist"] == "bar"
+    assert kinds["macd_dif"] == "line"
+    assert kinds["macd_dea"] == "line"
+
+
+def test_the_reference_levels_travel_with_the_panel(client):
+    panels = _panels(client)
+
+    assert panels["rsi"]["reference"] == [20.0, 80.0]
+    assert panels["kdj"]["reference"] == [20.0, 80.0]
+    assert panels["price"]["reference"] == []
+
+
+def test_the_warm_up_is_a_gap_not_a_zero(client):
+    """Null means "not enough history yet". Sending 0 would draw a real RSI of 0."""
+    rsi = _panels(client, days=500)["rsi"]["lines"][0]["points"]
+
+    values = [value for _, value in rsi]
+    # 14 changes need 15 closes, so the first 14 slots are genuinely empty
+    assert values[:14] == [None] * 14
+    assert values[14] is not None
+    assert all(value is not None for value in values[14:])
+
+
+def test_the_window_follows_days(client):
+    points = _panels(client, days=30)["price"]["lines"][0]["points"]
+
+    assert len(points) == 30
+
+
+def test_a_window_outside_the_range_is_rejected(client):
+    """Clamping would silently return 500 days when 2000 were asked for."""
+    assert client.get("/api/indicators/600519.SH/series", params={"days": 3}).status_code == 422
+    assert client.get("/api/indicators/600519.SH/series", params={"days": 501}).status_code == 422
+
+
+def test_an_unknown_name_has_no_series(client):
+    assert client.get("/api/indicators/999999.SH/series").status_code == 404
+
+
+def test_changing_the_period_moves_the_line_instead_of_emptying_the_chart(tmp_path, monkeypatch):
+    """Panels are looked up by family: ``rsi_period: 21`` still yields an RSI panel."""
+    panel = _panel()
+    monkeypatch.setattr(api, "_load_panel", lambda provider="baostock", adjust="qfq": panel)
+    monkeypatch.setattr(
+        api, "_latest_session", lambda provider, adjust: str(panel.prices.index.max().date())
+    )
+    monkeypatch.setattr(
+        api, "load_settings", lambda *args, **kwargs: _settings(tmp_path, rsi_period=21)
+    )
+    client = TestClient(create_app())
+
+    rsi = _panels(client)["rsi"]
+
+    assert rsi["lines"][0]["field"] == "rsi_21"
+    assert "21" in rsi["lines"][0]["label"]

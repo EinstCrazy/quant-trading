@@ -257,11 +257,16 @@
         <h3>单只查询</h3>
         <div class="row">
           <input id="ind-symbol" placeholder="600519.SH" style="width:140px">
+          <label>天数</label>
+          <input id="ind-days" type="number" value="120" style="width:80px">
           <button class="btn" id="ind-query">查</button>
           <span class="muted" id="ind-query-status"></span>
         </div>
+        <p class="muted">查一只票的当前值与历史曲线：价格与布林带、RSI、MACD、KDJ 分开画——
+          量纲不同的线放在一张图上，交点会凭空多出意义。</p>
         <div id="ind-detail"></div>
       </div>
+      <div id="ind-series"></div>
     </section>
 
     <div id="toast"></div>
@@ -459,15 +464,32 @@ function chart(target, series, options = {}) {
     target.innerHTML = '<div class="empty">没有可绘制的数据</div>';
     return;
   }
-  const all = usable.flatMap((s) => s.points.map((p) => p[1])).filter((v) => v !== null);
+  const all = usable
+    .flatMap((s) => s.points.map((p) => p[1]))
+    .filter((v) => v !== null && v !== undefined);
+  if (!all.length) {
+    // a short window can leave a panel entirely inside its warm-up
+    target.innerHTML = '<div class="empty">这段窗口里没有可绘制的数据</div>';
+    return;
+  }
   let min = Math.min(...all);
   let max = Math.max(...all);
-  if (options.zeroLine && min > 0) min = 0;
+  // a reference level outside the data must still be drawn, or the threshold
+  // disappears exactly when the series is far from it
+  (options.reference || []).forEach((level) => {
+    min = Math.min(min, level);
+    max = Math.max(max, level);
+  });
+  if (options.zeroLine) {
+    min = Math.min(min, 0);
+    max = Math.max(max, 0);
+  }
   if (min === max) { min -= 1; max += 1; }
   const span = max - min;
   const nPoints = Math.max(...usable.map((s) => s.points.length));
   const x = (i) => pad.left + (nPoints <= 1 ? 0 : (i / (nPoints - 1)) * (width - pad.left - pad.right));
   const y = (v) => pad.top + (1 - (v - min) / span) * (height - pad.top - pad.bottom);
+  const barWidth = Math.max(1, ((width - pad.left - pad.right) / Math.max(nPoints, 1)) * 0.6);
 
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((t) => min + t * span);
   const grid = yTicks.map((v) => {
@@ -476,13 +498,59 @@ function chart(target, series, options = {}) {
             <text x="${pad.left - 8}" y="${yy}" text-anchor="end" font-size="10" fill="#6b7280">${fmt(v, options.digits === undefined ? 2 : options.digits)}</text>`;
   }).join("");
 
+  // null means "not enough history yet": break the path instead of drawing the
+  // gap along the floor, which would look like a real value
+  const lineRuns = (s) => {
+    const runs = [];
+    let run = [];
+    s.points.forEach((p, i) => {
+      const value = p[1];
+      if (value === null || value === undefined) {
+        if (run.length) runs.push(run);
+        run = [];
+      } else {
+        run.push(`${x(i).toFixed(1)},${y(value).toFixed(1)}`);
+      }
+    });
+    if (run.length) runs.push(run);
+    return runs;
+  };
+
   const paths = usable.map((s, index) => {
     const color = s.color || COLORS[index % COLORS.length];
-    const points = s.points.map((p, i) => `${x(i).toFixed(1)},${y(p[1] === null ? min : p[1]).toFixed(1)}`).join(" ");
-    const fill = options.area
-      ? `<polygon points="${x(0).toFixed(1)},${y(Math.max(min, 0)).toFixed(1)} ${points} ${x(s.points.length - 1).toFixed(1)},${y(Math.max(min, 0)).toFixed(1)}" fill="${color}" opacity="0.12"/>`
-      : "";
-    return `${fill}<polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.6"/>`;
+    if (s.type === "bar") {
+      const zero = y(Math.min(Math.max(0, min), max));
+      return s.points.map((p, i) => {
+        const value = p[1];
+        if (value === null || value === undefined) return "";
+        const top = y(value);
+        const yy = Math.min(zero, top).toFixed(1);
+        const hh = Math.max(0.5, Math.abs(zero - top)).toFixed(1);
+        return `<rect x="${(x(i) - barWidth / 2).toFixed(1)}" y="${yy}" width="${barWidth.toFixed(1)}" height="${hh}" fill="${color}" opacity="0.5"/>`;
+      }).join("");
+    }
+    const runs = lineRuns(s);
+    const fill =
+      options.area && runs.length === 1
+        ? `<polygon points="${x(0).toFixed(1)},${y(Math.max(min, 0)).toFixed(1)} ${runs[0].join(" ")} ${x(s.points.length - 1).toFixed(1)},${y(Math.max(min, 0)).toFixed(1)}" fill="${color}" opacity="0.12"/>`
+        : "";
+    const lines = runs
+      .map((points) => {
+        if (points.length > 1) {
+          return `<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.6"/>`;
+        }
+        // a lone point is still a value: a dot, so a gap does not hide it
+        const [cx, cy] = points[0].split(",");
+        return `<circle cx="${cx}" cy="${cy}" r="2" fill="${color}"/>`;
+      })
+      .join("");
+    return fill + lines;
+  }).join("");
+
+  const guideLines = (options.reference || []).map((level) => {
+    const yy = y(level).toFixed(1);
+    return `<line x1="${pad.left}" y1="${yy}" x2="${width - pad.right}" y2="${yy}" stroke="#c3c9d1" stroke-dasharray="4 4"/>
+            <text x="${width - pad.right}" y="${yy}" dy="-3" text-anchor="end" font-size="10" fill="#9aa1ab">${level}</text>`;
   }).join("");
 
   const first = usable[0].points;
@@ -495,6 +563,7 @@ function chart(target, series, options = {}) {
   target.innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" style="width:100%;height:auto">
       ${grid}
+      ${guideLines}
       ${paths}
       <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" stroke="#d7dbe0"/>
       <text x="${pad.left}" y="${height - 8}" font-size="10" fill="#6b7280">${first[0][0]}</text>
@@ -1198,10 +1267,12 @@ async function loadIndicatorDetail() {
     toast("先填一个代码");
     return;
   }
+  const provider = $("ind-provider").value;
+  const days = Number($("ind-days").value) || 120;
   $("ind-query-status").textContent = "查询中…";
   try {
     const data = await api(
-      `/indicators/${encodeURIComponent(symbol)}?provider=${$("ind-provider").value}`,
+      `/indicators/${encodeURIComponent(symbol)}?provider=${provider}`,
     );
     const rows = data.values
       .map(
@@ -1214,11 +1285,49 @@ async function loadIndicatorDetail() {
       <p class="muted">${data.symbol} · ${data.as_of} · ${data.provider}</p>
       <table><thead><tr><th>指标</th><th>值</th><th>量纲</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
+
+    const series = await api(
+      `/indicators/${encodeURIComponent(symbol)}/series?provider=${provider}&days=${days}`,
+    );
+    renderIndicatorSeries(series);
     $("ind-query-status").textContent = "";
   } catch (error) {
     $("ind-detail").innerHTML = `<p class="muted">${error.message}</p>`;
+    $("ind-series").innerHTML = "";
     $("ind-query-status").textContent = "失败";
   }
+}
+
+function renderIndicatorSeries(data) {
+  if (!data.panels || !data.panels.length) {
+    $("ind-series").innerHTML = "";
+    return;
+  }
+  $("ind-series").innerHTML = data.panels
+    .map(
+      (panel) => `
+      <div class="card">
+        <h3>${panel.title} <span class="muted">${data.symbol} · ${panel.unit}</span></h3>
+        <div id="ind-series-${panel.key}"></div>
+      </div>`,
+    )
+    .join("");
+  data.panels.forEach((panel) => {
+    chart(
+      $(`ind-series-${panel.key}`),
+      panel.lines.map((line) => ({
+        name: line.label,
+        points: line.points,
+        type: line.kind,
+      })),
+      {
+        height: 220,
+        digits: panel.key === "price" ? 2 : 1,
+        reference: panel.reference || [],
+        zeroLine: panel.key === "macd",
+      },
+    );
+  });
 }
 
 /* ---------- wiring ---------- */

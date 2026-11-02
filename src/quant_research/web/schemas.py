@@ -256,6 +256,36 @@ class IndicatorDetailOut(BaseModel):
     values: list[IndicatorValueOut]
 
 
+class SeriesLineOut(BaseModel):
+    """One line in a chart: a field name, a label, and the points to draw."""
+
+    field: str
+    label: str
+    # "bar" for MACD's histogram: the sign is the point, a line hides it
+    kind: Literal["line", "bar"] = "line"
+    # [[date, value]]; a null value is a gap, not a zero
+    points: list[list[Any]]
+
+
+class SeriesPanelOut(BaseModel):
+    key: str
+    title: str
+    unit: str
+    # horizontal guides, e.g. 20/80 for RSI — the thresholds readers remember
+    reference: list[float] = Field(default_factory=list)
+    lines: list[SeriesLineOut]
+
+
+class IndicatorSeriesOut(BaseModel):
+    """A name's indicator history, split into panels a chart can draw alone."""
+
+    symbol: str
+    as_of: str
+    provider: str
+    days: int
+    panels: list[SeriesPanelOut]
+
+
 class JobProgress(BaseModel):
     done: int
     total: int
