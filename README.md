@@ -165,6 +165,7 @@ quant-trading/
 | [docs/DATA.md](docs/DATA.md) | 数据格式规范、复权与缺失值处理 |
 | [docs/DATA_COLLECTION.md](docs/DATA_COLLECTION.md) | 每日 A 股采集：安装、落盘结构、调度与故障处理 |
 | [docs/UI_DESIGN.md](docs/UI_DESIGN.md) | 本地工作台：架构、视图、API 契约与演进路径 |
+| [docs/INDICATORS.md](docs/INDICATORS.md) | 常用技术指标：公式、参数与实现细节（RSI / MACD / BOLL / KDJ / ATR 等） |
 | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | 研究约定与回测防坑清单 |
 
 ## 路线图摘要
