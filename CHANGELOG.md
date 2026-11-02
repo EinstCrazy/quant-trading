@@ -35,6 +35,17 @@
   （登录无需开户）。定位写进文档：实时行情与下单用它，**全市场日线历史仍用 baostock**——
   富途的历史 K 线按「最近 7 天内的不同标的数」计量（未开户 100 只，1000 只需 50 万 HKD
   资产档），覆盖 A 股全市场一轮要数周。另注意 A 股 LV1 只对**境内 IP** 免费
+- 技术指标实现：`indicators.py` 算出 MA/EMA/MACD/RSI/BOLL/KDJ/ATR/威廉%R/CCI/DMI-ADX/
+  OBV/VWAP/已实现波动率共 26 个字段，`quant-indicators` 落盘到 `data/indicators/`。
+  - 参数全在 `config/settings.yaml` 的 `indicators` 段，非法周期直接拒绝启动
+  - 字段名带周期（`rsi_21`）、`meta.json` 记录参数——改口径后旧文件不会被当成新口径读回
+  - 数据只有收盘价时静默降级：少算 KDJ/ATR/量能类，而不是拒绝计算
+  - 除零全部显式处理：单边行情 RSI=100、完全无波动给 NaN、一字板 KDJ 沿用前值、
+    零成交量 VWAP 为缺失
+  - `INDICATOR_CATALOG` 把「界面怎么解释这个指标」写进代码，`catalog()` 可直接出 JSON，
+    界面与文档共用一份，避免口径漂移
+  - 34 条测试：公式手算核对、防前视（截断重算逐值一致）、除零与 NaN 边界、落盘往返。
+    实测 baostock 30 只 × 683 日：RSI 8.5–97.0、带宽恒正、VWAP 与收盘同量级
 - 技术指标梳理：`docs/INDICATORS.md`——RSI / MACD / BOLL / KDJ / 威廉%R / CCI / ATR /
   ADX / OBV / VWAP 的公式、常用参数与 pandas 实现。重点不是「指标是什么」，而是
   「哪里会写错且不会报错」：`ewm` 默认 `adjust=True` 与行情软件的递推 EMA 不同

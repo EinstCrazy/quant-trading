@@ -115,6 +115,83 @@ class CollectionSettings:
         return _parse_clock(self.schedule_at)
 
 
+_INDICATOR_FIELDS = (
+    "output_directory",
+    "format",
+    "ma_periods",
+    "ema_periods",
+    "macd_fast",
+    "macd_slow",
+    "macd_signal",
+    "rsi_period",
+    "boll_period",
+    "boll_std",
+    "kdj_period",
+    "kdj_smooth",
+    "atr_period",
+    "williams_period",
+    "cci_period",
+    "adx_period",
+    "volatility_period",
+)
+
+
+@dataclass(frozen=True)
+class IndicatorSettings:
+    """Parameters for the technical indicators, with the usual defaults.
+
+    Periods are validated here rather than at the point of use: a typo that says
+    ``rsi_period: 0`` should refuse to start, not hand ``ewm`` a zero window.
+    """
+
+    output_directory: Path = Path("data/indicators")
+    format: str = "parquet"
+    ma_periods: tuple[int, ...] = (5, 10, 20, 60)
+    ema_periods: tuple[int, ...] = (12, 26)
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    rsi_period: int = 14
+    boll_period: int = 20
+    boll_std: float = 2.0
+    kdj_period: int = 9
+    kdj_smooth: int = 3
+    atr_period: int = 14
+    williams_period: int = 14
+    cci_period: int = 14
+    adx_period: int = 14
+    volatility_period: int = 20
+
+    def __post_init__(self) -> None:
+        if self.format not in STORAGE_FORMATS:
+            raise ValueError(
+                f"indicators.format must be one of {STORAGE_FORMATS}, got {self.format!r}"
+            )
+        periods = {
+            "macd_fast": self.macd_fast,
+            "macd_slow": self.macd_slow,
+            "macd_signal": self.macd_signal,
+            "rsi_period": self.rsi_period,
+            "boll_period": self.boll_period,
+            "kdj_period": self.kdj_period,
+            "kdj_smooth": self.kdj_smooth,
+            "atr_period": self.atr_period,
+            "williams_period": self.williams_period,
+            "cci_period": self.cci_period,
+            "adx_period": self.adx_period,
+            "volatility_period": self.volatility_period,
+        }
+        for name, value in periods.items():
+            if value < 1:
+                raise ValueError(f"indicators.{name} must be at least 1, got {value}")
+        for name in ("ma_periods", "ema_periods"):
+            for period in getattr(self, name):
+                if period < 1:
+                    raise ValueError(f"indicators.{name} entries must be at least 1, got {period}")
+        if self.boll_std <= 0:
+            raise ValueError(f"indicators.boll_std must be positive, got {self.boll_std}")
+
+
 def _parse_clock(text: str) -> time:
     try:
         hour, minute = (int(part) for part in str(text).split(":", maxsplit=1))
@@ -130,6 +207,7 @@ class Settings:
     data: DataSettings
     backtest: BacktestSettings
     collection: CollectionSettings = field(default_factory=CollectionSettings)
+    indicators: IndicatorSettings = field(default_factory=IndicatorSettings)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain nested dict (paths serialised as strings)."""
@@ -137,6 +215,9 @@ class Settings:
         payload["data"]["directory"] = str(self.data.directory)
         payload["collection"]["output_directory"] = str(self.collection.output_directory)
         payload["collection"]["report_directory"] = str(self.collection.report_directory)
+        payload["indicators"]["output_directory"] = str(self.indicators.output_directory)
+        payload["indicators"]["ma_periods"] = list(self.indicators.ma_periods)
+        payload["indicators"]["ema_periods"] = list(self.indicators.ema_periods)
         return payload
 
 
@@ -210,6 +291,38 @@ def _build_collection_settings(section: Mapping[str, Any]) -> CollectionSettings
     )
 
 
+def _periods(section: Mapping[str, Any], key: str, fallback: tuple[int, ...]) -> tuple[int, ...]:
+    raw = section.get(key)
+    if raw is None:
+        return fallback
+    if isinstance(raw, (int, float)):
+        return (int(raw),)
+    return tuple(int(item) for item in raw)
+
+
+def _build_indicator_settings(section: Mapping[str, Any]) -> IndicatorSettings:
+    defaults = IndicatorSettings()
+    return IndicatorSettings(
+        output_directory=Path(section.get("output_directory", defaults.output_directory)),
+        format=str(section.get("format", defaults.format)),
+        ma_periods=_periods(section, "ma_periods", defaults.ma_periods),
+        ema_periods=_periods(section, "ema_periods", defaults.ema_periods),
+        macd_fast=int(section.get("macd_fast", defaults.macd_fast)),
+        macd_slow=int(section.get("macd_slow", defaults.macd_slow)),
+        macd_signal=int(section.get("macd_signal", defaults.macd_signal)),
+        rsi_period=int(section.get("rsi_period", defaults.rsi_period)),
+        boll_period=int(section.get("boll_period", defaults.boll_period)),
+        boll_std=float(section.get("boll_std", defaults.boll_std)),
+        kdj_period=int(section.get("kdj_period", defaults.kdj_period)),
+        kdj_smooth=int(section.get("kdj_smooth", defaults.kdj_smooth)),
+        atr_period=int(section.get("atr_period", defaults.atr_period)),
+        williams_period=int(section.get("williams_period", defaults.williams_period)),
+        cci_period=int(section.get("cci_period", defaults.cci_period)),
+        adx_period=int(section.get("adx_period", defaults.adx_period)),
+        volatility_period=int(section.get("volatility_period", defaults.volatility_period)),
+    )
+
+
 def load_settings(path: str | Path | None = None) -> Settings:
     """Load research settings from a YAML file into frozen dataclasses.
 
@@ -231,19 +344,25 @@ def load_settings(path: str | Path | None = None) -> Settings:
 
     data_section = _require_section(config, "data", settings_path)
     backtest_section = _require_section(config, "backtest", settings_path)
-    # ``collection`` is optional so existing settings files keep working.
+    # ``collection`` and ``indicators`` are optional so existing settings files
+    # keep working.
     collection_section = config.get("collection") or {}
     if not isinstance(collection_section, Mapping):
         raise TypeError(f"Settings section 'collection' must be a mapping: {settings_path}")
+    indicator_section = config.get("indicators") or {}
+    if not isinstance(indicator_section, Mapping):
+        raise TypeError(f"Settings section 'indicators' must be a mapping: {settings_path}")
 
     _reject_unknown(data_section, _DATA_FIELDS, "data")
     _reject_unknown(backtest_section, _BACKTEST_FIELDS, "backtest")
     _reject_unknown(collection_section, _COLLECTION_FIELDS, "collection")
+    _reject_unknown(indicator_section, _INDICATOR_FIELDS, "indicators")
 
     return Settings(
         data=_build_data_settings(data_section),
         backtest=_build_backtest_settings(backtest_section),
         collection=_build_collection_settings(collection_section),
+        indicators=_build_indicator_settings(indicator_section),
     )
 
 
@@ -253,6 +372,7 @@ __all__ = [
     "BacktestSettings",
     "CollectionSettings",
     "DataSettings",
+    "IndicatorSettings",
     "Settings",
     "load_settings",
 ]

@@ -108,6 +108,14 @@ quant-nightly --provider baostock             # 等到 collection.schedule_at �
 quant-nightly --provider baostock --daemon    # 每个交易日自动跑一次
 ```
 
+技术指标（参数在 `config/settings.yaml` 的 `indicators` 段，公式与坑见
+[docs/INDICATORS.md](docs/INDICATORS.md)）：
+
+```bash
+quant-indicators --provider baostock --symbols 600519.SH   # 拉数并计算
+quant-indicators --from-cache                              # 用已缓存的面板，不联网
+```
+
 本地工作台（可选）：
 
 ```bash
@@ -140,6 +148,8 @@ quant-trading/
 │   ├── cli.py              `quant-collect` 命令行入口
 │   ├── screen_cli.py       `quant-screen` 命令行入口
 │   ├── nightly_cli.py      `quant-nightly` 命令行入口
+│   ├── indicators.py       技术指标：宽表进宽表出，附指标说明目录
+│   ├── indicators_cli.py   `quant-indicators` 命令行入口
 │   ├── web/                `quant-ui` 本地工作台（FastAPI + 静态前端）
 │   ├── data/               面板加载、元信息、质量报告、providers/、store、面板缓存
 │   ├── strategies/         信号契约、注册表、动量与随机信号

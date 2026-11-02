@@ -106,9 +106,10 @@ DEA  = EMA(DIF, 9)              # 信号线
 ```
 
 ```python
-dif = close.ewm(span=12, adjust=False, min_periods=12).mean() - close.ewm(
-    span=26, adjust=False, min_periods=26
-).mean()
+dif = (
+    close.ewm(span=12, adjust=False, min_periods=12).mean()
+    - close.ewm(span=26, adjust=False, min_periods=26).mean()
+)
 dea = dif.ewm(span=9, adjust=False, min_periods=9).mean()
 hist = 2 * (dif - dea)
 ```
@@ -215,9 +216,7 @@ ATR = TR 的 Wilder 平滑（alpha = 1/n）
 
 ```python
 prev = close.shift(1)
-tr = pd.concat(
-    [high - low, (high - prev).abs(), (low - prev).abs()], axis=1
-).max(axis=1)
+tr = pd.concat([high - low, (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
 atr = tr.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
 ```
 
@@ -248,7 +247,7 @@ atr = tr.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
 
 ```python
 mid = close.rolling(n).mean()
-spread = close.rolling(n).std(ddof=0)      # 不是 pandas 默认的 ddof=1
+spread = close.rolling(n).std(ddof=0)  # 不是 pandas 默认的 ddof=1
 upper, lower = mid + k * spread, mid - k * spread
 ```
 
@@ -328,6 +327,167 @@ AKShare 报手），换算已在 provider 层统一，新增数据源时别再�
 - **除零全部显式处理**：RSI 的单边行情、KDJ/威廉的一字板、ADX 的无波动。
 - **不要 `dropna()` 了事**：那会让每只标的的可比起点不同，回测的样本期悄悄变短。
 - **测试三件套**：手算小样本、防前视自检、边界（`NaN`、除零、不足 `n` 根）。
+
+## 实现与配置
+
+代码在 `src/quant_research/indicators.py`（公式与坑），入口是 `indicators_cli.py`。
+
+```bash
+quant-indicators --provider baostock --symbols 600519.SH,000001.SZ
+quant-indicators --provider baostock --all          # 全市场，慢
+quant-indicators --from-cache                       # 用已缓存的面板，不联网
+quant-indicators --from-cache --format csv           # 换存储格式
+```
+
+**参数全部在 `config/settings.yaml` 的 `indicators` 段**，命令行只决定数据从哪来、存到哪去。
+周期这类东西属于配置，不属于 shell 历史。
+
+| 键 | 默认 | 含义 |
+| --- | --- | --- |
+| `ma_periods` | `[5, 10, 20, 60]` | 均线组，可写多个 |
+| `ema_periods` | `[12, 26]` | 指数均线组 |
+| `macd_fast` / `macd_slow` / `macd_signal` | `12` / `26` / `9` | MACD 三参数 |
+| `rsi_period` | `14` | Wilder 平滑 |
+| `boll_period` / `boll_std` | `20` / `2.0` | 带宽倍数 |
+| `kdj_period` / `kdj_smooth` | `9` / `3` | K、D 初值 50 |
+| `atr_period` | `14` | TR 的 Wilder 平滑 |
+| `williams_period` / `cci_period` / `adx_period` | `14` | |
+| `volatility_period` | `20` | 年化 252 |
+| `output_directory` | `data/indicators` | 落盘位置 |
+| `format` | `parquet` | `parquet` 或 `csv` |
+
+非法值直接拒绝启动（`rsi_period: 0`、`boll_std: 0`、未知键），不会让 `ewm` 拿到零窗口。
+
+**落盘结构**：
+
+```text
+data/indicators/baostock_qfq/
+    ma_20.parquet  rsi_14.parquet  macd_hist.parquet  …
+    meta.json          # 参数、生成时间、行数、标的数、字段清单
+```
+
+两处刻意设计：
+
+- **字段名带周期**（`rsi_21` 而不是 `rsi`）：改配置后文件名跟着变，旧文件不会被当成新口径读。
+- **`meta.json` 记录 `params`**：`rsi_14.parquet` 和 `rsi_21.parquet` 在磁盘上长得一模一样，
+  唯一能区分的是这个文件。
+
+读回：
+
+```python
+from quant_research.indicators import load_bundle
+
+bundle = load_bundle("data/indicators", "baostock", "qfq")
+bundle.frames["rsi_14"]  # 宽表：索引日期，列是标的
+bundle.params.rsi_period  # 14，来自 meta 而不是猜测
+```
+
+**能算多少取决于数据有多少**（静默降级，不报错）：
+
+| 面板有的字段 | 可算出的指标 |
+| --- | --- |
+| `close` | MA、EMA、MACD、RSI、BOLL、已实现波动率 |
+| 加上 `high` / `low` | KDJ、ATR、威廉 %R、CCI、DMI/ADX |
+| 加上 `volume` / `amount` | OBV、VWAP |
+
+一份只有收盘价的 CSV 也能用——少算几类，而不是拒绝计算。
+
+## 界面展示
+
+原则一句话：**指标是描述，不是判断**。界面只回答「现在是什么状态」，不回答「该不该买」。
+
+每一条指标的展示规格固定为六个元素，全部来自代码里的 `INDICATOR_CATALOG`
+（`indicators.catalog()` 可直接输出成 JSON 供接口使用）：
+
+| 元素 | 示例（RSI） |
+| --- | --- |
+| 名称 | `RSI(14)` —— **标签必须带周期**，光写「RSI」说明不了什么 |
+| 单位 / 量纲 | 0–100 |
+| 常见区间 | 20–80 |
+| 一句话说明 | 一段时间内上涨幅度占涨跌总幅度的比例 |
+| 建议读法 | 当作温度计而不是开关：>80 说明近期几乎只涨 |
+| 误读提醒 | 强趋势里会长期钝化在超买区，用它做反转信号是最常见的误用 |
+
+说明文字**不要硬编码在前端**。代码改了口径而界面还念着旧词，是最难发现的一类不一致；
+统一从 `catalog()` 取，路径只有一条。
+
+**可直接用的文案示例**：
+
+```text
+RSI(14)      56.3      0–100 · 20–80 常见     近期上涨力量略占优
+BOLL 带宽    0.054     —                       波动在压缩，方向未知
+ATR(14)      0.42 元   约股价 3.6%            定止损距离用
+VWAP         11.55     收盘 11.64 在其上方     当日买方占优
+```
+
+**界面上不应该出现的五样东西**：
+
+1. **「买入 / 卖出 / 持有」标签**——指标不含仓位、成本与风险预算，给它贴操作标签是越界。
+2. **「预期收益」**——台账里三次回放的平均超额是 −0.0004，写上去等于把噪声包装成承诺。
+3. **不标日期的数值**——盘前打开时它讲的是昨天。名单和指标都要写「数据截至 X」。
+4. **不带参数的指标名**——「RSI」是 14 还是 6？标签里必须带周期，`rsi_14` 这种键名同理。
+5. **跨标的的绝对值对比**——RSI=70 对高波动票和大盘股不是一回事，见最后一节。
+
+颜色只在**有明确惯例阈值**的地方使用（RSI 的 20/80、CCI 的 ±100），其余保持中性。
+不要建立「越红越要买」这类映射——那是在给数值编故事。
+
+## 建议使用方式
+
+### 一、当状态描述用（最稳）
+
+| 维度 | 看什么 | 别指望它 |
+| --- | --- | --- |
+| 趋势 | 价格 vs MA20/MA60、ADX 强弱 | 预测顶底 |
+| 波动 | ATR、已实现波动率、BOLL 带宽 | 说出方向 |
+| 位置 | RSI、威廉 %R、KDJ、CCI | 保证反转 |
+| 量能 | OBV 趋势、收盘 vs VWAP | 判断主力意图 |
+
+一次看 **2–4 个不同维度**的指标，比堆十个同类震荡指标有用得多——同类的彼此高度相关，
+堆在一起只是给同一个判断反复加权。
+
+### 二、互相验证，而不是互相替代
+
+- **趋势 + 位置**：ADX 高、ATR 在扩大时，RSI 的「超买」不构成反转信号——趋势正在走强，
+  钝化是常态。
+- **位置 + 量能**：%R 在低位、OBV 同步走低，说明卖压仍在，不急于抄底。
+- **只有同向时才降低犹豫**：两个信号同向不等于可以下单，它只说明「描述一致」；
+  仓位、成本、风险预算仍然要单独决定。
+
+### 三、当因子的原料（本项目的走法）
+
+指标是时序的，直接排序是错的，必须走这条链：
+
+```text
+指标（时序） → zscore_by_day（逐日截面标准化） → combine（加权） → screen（排序、过滤、归档）
+```
+
+`scoring/factors.py` 已有四个因子（动量、均线距离、波动率倒数、流动性）。要加新因子：
+
+1. 因子函数输入 `PricePanel`、输出宽表，每个值只看过去；
+2. 交给 `combine()` 逐日标准化与加权；
+3. 补两条测试：手算小样本 + **防前视自检**（截断历史重算，重叠日期必须逐值一致）。
+
+### 四、四条常见误区
+
+| 误区 | 为什么错 |
+| --- | --- |
+| 「RSI > 70 就该卖」 | 强趋势里 RSI 会长期停在 70 以上，卖早了整段行情都错过 |
+| 「金叉买、死叉卖」 | 震荡市里交易次数暴增，成本先吃掉大部分名义收益 |
+| 「指标越多越准」 | 同类指标高度相关，等价于给同一个判断重复加权 |
+| 「把指标值当分数排序」 | 绝对值跨标的不可比：波动率不同的票，同样的 RSI 含义不同 |
+
+## 验证与边界
+
+- **34 条测试**：公式手算核对（EMA/RSI/KDJ/ATR/BOLL/TR/OBV/VWAP 各有独立手算案例）、
+  防前视（截断历史重算逐值一致）、除零与 NaN 边界（单边行情、完全无波动、一字板、零成交量）、
+  落盘往返、目录与计算字段一一对应。
+- **真实数据实测**（baostock，30 只 × 683 个交易日，2024-01-02 → 2026-10-30）：
+  26 个指标；RSI 落在 8.5–97.0、KDJ-K 2.6–97.3、ADX 6.3–83.9、带宽恒为正、ATR 恒为正；
+  VWAP 11.55 与收盘 11.64 同量级——单位没有写错。
+- **没有与第三方指标库逐值对拍**。公式按本文档手算，未跟 TA-Lib 做浮点级比对。
+  若需要与某个行情软件逐值一致，得另做一次对拍（尤其 MACD 柱的 1 倍/2 倍、
+  KDJ 初值、EMA 前几十根）。
+- 指标不含资金流（除 OBV/VWAP）、不含基本面，也**不含任何预测成分**。
 
 ## 参考
 

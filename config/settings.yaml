@@ -23,3 +23,23 @@ collection:
   retries: 2
   pause_seconds: 0.5
   report_directory: reports/collection
+
+# Technical indicators. Run `quant-indicators --help` for CLI overrides.
+indicators:
+  output_directory: data/indicators
+  format: parquet          # parquet | csv
+  ma_periods: [5, 10, 20, 60]
+  ema_periods: [12, 26]
+  macd_fast: 12            # MACD: 12/26/9, histogram = 2 × (DIF − DEA)
+  macd_slow: 26
+  macd_signal: 9
+  rsi_period: 14           # Wilder smoothing
+  boll_period: 20          # band uses the population std dev (ddof=0)
+  boll_std: 2.0
+  kdj_period: 9            # K and D start at 50
+  kdj_smooth: 3
+  atr_period: 14
+  williams_period: 14
+  cci_period: 14
+  adx_period: 14
+  volatility_period: 20
