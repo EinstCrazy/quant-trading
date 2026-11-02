@@ -108,6 +108,14 @@ quant-screen --provider baostock --review     # 回头看这些名单到底行�
 quant-screen --indicator-factors macd_trend --factor-weights momentum=1,macd_trend=0.5
 ```
 
+因子到底有没有用，用 IC 与分层量一遍（结论与边界见
+[docs/FACTORS.md](docs/FACTORS.md)）：
+
+```bash
+quant-factor --provider baostock --horizon 5                    # 全部因子一张表
+quant-factor --provider baostock --factors momentum --detail momentum   # 分层 + 衰减
+```
+
 每晚一条命令（等到数据落地 → 收数 → 打分 → 归档，数据没到就不打分）：
 
 ```bash
@@ -183,6 +191,7 @@ quant-trading/
 | [docs/DATA_COLLECTION.md](docs/DATA_COLLECTION.md) | 每日 A 股采集：安装、落盘结构、调度与故障处理 |
 | [docs/UI_DESIGN.md](docs/UI_DESIGN.md) | 本地工作台：架构、视图、API 契约与演进路径 |
 | [docs/INDICATORS.md](docs/INDICATORS.md) | 常用技术指标：公式、参数与实现细节（RSI / MACD / BOLL / KDJ / ATR 等） |
+| [docs/FACTORS.md](docs/FACTORS.md) | 因子检验：IC、分层收益、衰减，以及为什么不能拿样本内结果调参数 |
 | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | 研究约定与回测防坑清单 |
 
 ## 路线图摘要

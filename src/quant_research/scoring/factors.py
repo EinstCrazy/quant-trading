@@ -162,7 +162,10 @@ def factor_correlation(
         # a correlation over two names is ±1 by construction, which says nothing
         if len(row) < 3:
             continue
-        total += row.corr(method=method).fillna(0.0)
+        # Spearman is Pearson on ranks; doing it explicitly keeps scipy out of
+        # the dependency list for what is one method call either way
+        matrix = row.rank().corr() if method == "spearman" else row.corr(method=method)
+        total += matrix.fillna(0.0)
         counted += 1
 
     if not counted:
