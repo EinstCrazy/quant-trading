@@ -101,6 +101,13 @@ quant-screen --provider baostock --top-n 10   # 收盘后打分，出名单并�
 quant-screen --provider baostock --review     # 回头看这些名单到底行不行
 ```
 
+指标因子默认关闭（它们与已有因子高度相关，开之前先看
+[docs/INDICATORS.md](docs/INDICATORS.md) 的相关性表）：
+
+```bash
+quant-screen --indicator-factors macd_trend --factor-weights momentum=1,macd_trend=0.5
+```
+
 每晚一条命令（等到数据落地 → 收数 → 打分 → 归档，数据没到就不打分）：
 
 ```bash

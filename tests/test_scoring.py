@@ -12,7 +12,18 @@ import pandas as pd
 import pytest
 
 from quant_research.data.loader import PricePanel
-from quant_research.scoring import combine, momentum, screen, to_target_weights, zscore_by_day
+from quant_research.indicators import boll
+from quant_research.scoring import (
+    boll_position,
+    combine,
+    factor_correlation,
+    macd_trend,
+    momentum,
+    rsi_reversal,
+    screen,
+    to_target_weights,
+    zscore_by_day,
+)
 from quant_research.scoring.factors import inverse_volatility, ma_distance
 
 
@@ -207,3 +218,122 @@ def test_inverse_volatility_prefers_the_quiet_name():
 
     score = inverse_volatility(frame)
     assert score.iloc[-1]["calm"] > score.iloc[-1]["jumpy"]
+
+
+# --- factors built on the technical indicators ------------------------------
+
+
+def test_macd_trend_is_the_same_for_the_same_percentage_move():
+    """A 5-yuan name and a 500-yuan name making identical percentage moves must
+    score identically. Ranking the raw histogram would just favour the expensive one."""
+    index = pd.bdate_range("2024-01-01", periods=80, name="date")
+    shape = np.cumprod(1.0 + np.random.default_rng(1).normal(0.0, 0.01, 80))
+
+    cheap = pd.DataFrame({"cheap": 5.0 * shape}, index=index)
+    dear = pd.DataFrame({"dear": 500.0 * shape}, index=index)
+
+    assert np.allclose(
+        macd_trend(cheap)["cheap"].dropna().to_numpy(),
+        macd_trend(dear)["dear"].dropna().to_numpy(),
+    )
+
+
+def test_boll_position_is_the_share_of_the_band_below_the_close():
+    prices = _panel(days=80).prices[["S0.SH"]]
+    bands = boll(prices, n=20, k=2.0)
+
+    position = boll_position(prices, window=20, width=2.0)
+    expected = (prices - bands.lower) / (bands.upper - bands.lower)
+
+    assert np.allclose(position.dropna().to_numpy(), expected.dropna().to_numpy())
+
+
+def test_boll_position_has_no_answer_for_a_flat_window():
+    """A band of zero width has no inside: 0.5 would be an invented answer."""
+    prices = pd.DataFrame({"A": [10.0] * 25}, index=pd.bdate_range("2024-01-01", periods=25))
+    assert boll_position(prices, window=20).iloc[-1].isna().all()
+
+
+def test_rsi_reversal_points_the_opposite_way_to_momentum():
+    """This is the reason both are opt-in: switched on together they cancel out."""
+    index = pd.bdate_range("2024-01-01", periods=120, name="date")
+    rising = pd.DataFrame({"up": np.linspace(10.0, 20.0, 120)}, index=index)
+
+    assert momentum(rising, window=60, skip_recent=5).iloc[-1, 0] > 0
+    assert rsi_reversal(rising, window=14).iloc[-1, 0] < 0  # RSI is ~100, so 50-100 < 0
+
+
+@pytest.mark.parametrize("factor", [rsi_reversal, macd_trend, boll_position])
+def test_indicator_factors_do_not_look_into_the_future(factor):
+    """Cut the last 30 days off and every earlier value must be unchanged."""
+    prices = _panel(days=160).prices
+
+    full = factor(prices)
+    truncated = factor(prices.iloc[:-30])
+
+    assert np.allclose(
+        full.loc[truncated.index].to_numpy(),
+        truncated.to_numpy(),
+        equal_nan=True,
+    )
+
+
+def test_indicator_factors_are_off_unless_asked_for():
+    result = screen(_panel(), top_n=3)
+
+    assert "rsi_reversal" not in result.picks.columns
+    assert "macd_trend" not in result.picks.columns
+
+
+def test_an_enabled_indicator_factor_appears_in_the_picks():
+    """A pick nobody can decompose into its parts cannot be argued with."""
+    result = screen(_panel(), top_n=3, indicator_factors=("macd_trend",))
+
+    assert "macd_trend" in result.picks.columns
+    assert result.picks["macd_trend"].notna().all()
+
+
+def test_a_mistyped_indicator_factor_is_an_error_not_a_silent_no_op():
+    """Ignoring it would change the score without changing the request."""
+    with pytest.raises(ValueError, match="rsi_reversel"):
+        screen(_panel(), indicator_factors=("rsi_reversel",))
+
+
+def test_factor_correlation_notices_a_factor_that_is_a_rescaled_twin():
+    """Rank correlation of an affine transform is 1, whatever the scale."""
+    prices = _panel(days=80).prices
+    base = ma_distance(prices)
+
+    matrix = factor_correlation({"ma_distance": base, "its_twin": 2.0 * base + 1.0})
+
+    assert matrix.loc["ma_distance", "its_twin"] == pytest.approx(1.0)
+
+
+def test_unrelated_factors_come_out_near_zero():
+    rng = np.random.default_rng(7)
+    index = pd.bdate_range("2024-01-01", periods=64, name="date")
+    columns = [f"S{i}" for i in range(10)]
+    first = pd.DataFrame(rng.normal(size=(64, 10)), index=index, columns=columns)
+    second = pd.DataFrame(rng.normal(size=(64, 10)), index=index, columns=columns)
+
+    value = factor_correlation({"first": first, "second": second}).loc["first", "second"]
+
+    assert abs(value) < 0.2
+
+
+def test_correlation_needs_at_least_two_factors():
+    with pytest.raises(ValueError, match="at least two"):
+        factor_correlation({"only": _panel(days=80).prices})
+
+
+def test_screen_says_it_out_loud_when_two_factors_are_one_judgement(monkeypatch):
+    """The score cannot notice redundancy; the log has to."""
+    from quant_research.scoring.screen import _warn_about_overlap, logger
+
+    warnings: list[str] = []
+    monkeypatch.setattr(logger, "warning", lambda message, *args: warnings.append(message % args))
+    prices = _panel(days=100).prices
+
+    _warn_about_overlap({"ma_distance": ma_distance(prices), "its_twin": 2.0 * ma_distance(prices)})
+
+    assert warnings and "加两次权" in warnings[0]

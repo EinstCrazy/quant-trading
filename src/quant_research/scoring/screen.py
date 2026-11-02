@@ -7,22 +7,61 @@ report that will not survive contact with the opening auction.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import pandas as pd
 
 from quant_research.data.loader import PricePanel
+from quant_research.indicators import IndicatorParams
+from quant_research.logging_setup import get_logger
 from quant_research.portfolio.weights import signal_to_weights
 from quant_research.scoring.factors import (
+    boll_position,
     combine,
+    factor_correlation,
     inverse_volatility,
     liquidity,
     ma_distance,
+    macd_trend,
     momentum,
+    rsi_reversal,
 )
 
+logger = get_logger("scoring")
+
 _DEFAULT_LIMIT_UP = 0.098  # A-share daily limit, less a tick for rounding
+_INDICATOR_FACTORS = ("rsi_reversal", "macd_trend", "boll_position")
+# 0.85, not 0.9: on the real panel ma_distance and boll_position average 0.90
+# apart, and the pair that most deserves the warning was the one that slipped
+# under a stricter line.
+_OVERLAP_THRESHOLD = 0.85
+
+
+def _warn_about_overlap(factors: dict[str, pd.DataFrame]) -> None:
+    """Say it out loud when two factors are the same judgement counted twice.
+
+    A weighted sum cannot notice that ``boll_position`` and ``ma_distance`` are
+    near-identical; the person reading the score can, if told.
+    """
+    try:
+        matrix = factor_correlation(factors)
+    except ValueError:
+        return
+    names = list(matrix.columns)
+    for position, left in enumerate(names):
+        for right in names[position + 1 :]:
+            value = float(matrix.loc[left, right])
+            if abs(value) >= _OVERLAP_THRESHOLD:
+                logger.warning(
+                    "因子 %s 与 %s 的截面相关 %.2f（%s）：同时开启等于给同一个判断加两次权",
+                    left,
+                    right,
+                    value,
+                    "同向" if value > 0 else "反向",
+                )
+
 
 __all__ = ["ScreenResult", "screen", "to_target_weights"]
 
@@ -54,6 +93,8 @@ def screen(
     factor_weights: dict[str, float] | None = None,
     momentum_window: int = 60,
     skip_recent: int = 5,
+    indicator_factors: Sequence[str] = (),
+    indicator_params: IndicatorParams | None = None,
 ) -> ScreenResult:
     """Score the market as of one day and keep the top ``top_n`` buyable names.
 
@@ -81,6 +122,28 @@ def screen(
         "ma_distance": ma_distance(prices),
         "inverse_volatility": inverse_volatility(prices),
     }
+    unknown = sorted(set(indicator_factors) - set(_INDICATOR_FACTORS))
+    if unknown:
+        # silently ignoring a mistyped factor name would change the score without
+        # changing the request, which is the worst kind of quiet
+        raise ValueError(f"unknown indicator factor(s) {unknown}; choose from {_INDICATOR_FACTORS}")
+    params = indicator_params or IndicatorParams()
+    if "rsi_reversal" in indicator_factors:
+        factors["rsi_reversal"] = rsi_reversal(prices, window=params.rsi_period)
+    if "macd_trend" in indicator_factors:
+        factors["macd_trend"] = macd_trend(
+            prices,
+            fast=params.macd_fast,
+            slow=params.macd_slow,
+            signal=params.macd_signal,
+        )
+    if "boll_position" in indicator_factors:
+        factors["boll_position"] = boll_position(
+            prices, window=params.boll_period, width=params.boll_std
+        )
+    if indicator_factors:
+        _warn_about_overlap(factors)
+
     turnover = None
     if panel.has_field("amount"):
         turnover = liquidity(panel.field("amount"))
@@ -128,18 +191,10 @@ def screen(
         usable = usable[~below]
 
     ranked = usable.sort_values(ascending=False).head(top_n)
-    picks = pd.DataFrame(
-        {
-            "score": ranked.round(4),
-            "rank": range(1, len(ranked) + 1),
-            "momentum": factors["momentum"].loc[day].reindex(ranked.index).round(4),
-            "ma_distance": factors["ma_distance"].loc[day].reindex(ranked.index).round(4),
-            "inverse_volatility": factors["inverse_volatility"]
-            .loc[day]
-            .reindex(ranked.index)
-            .round(4),
-        }
-    )
+    # every factor that went into the score is shown, indicator factors included:
+    # a pick nobody can decompose into its parts cannot be argued with
+    parts = {name: frame.loc[day].reindex(ranked.index).round(4) for name, frame in factors.items()}
+    picks = pd.DataFrame({"score": ranked.round(4), "rank": range(1, len(ranked) + 1), **parts})
     if turnover is not None:
         picks["turnover"] = turnover.loc[day].reindex(ranked.index)
     picks.index.name = "symbol"

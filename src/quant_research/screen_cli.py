@@ -19,11 +19,30 @@ from quant_research.data.cache import (
     cache_path,
     load_panel_cache,
 )
+from quant_research.indicators import params_from_settings
 from quant_research.logging_setup import get_logger
 from quant_research.scoring import screen, to_target_weights
 from quant_research.scoring.ledger import ScreenLedger, review
 
 logger = get_logger("screen")
+
+
+def _names(text: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in text.split(",") if part.strip())
+
+
+def _weights(text: str) -> dict[str, float] | None:
+    """Parse ``momentum=1.0,rsi_reversal=0.3``; an empty string means "equal"."""
+    pairs = [part.strip() for part in text.split(",") if part.strip()]
+    if not pairs:
+        return None
+    weights: dict[str, float] = {}
+    for pair in pairs:
+        name, _, value = pair.partition("=")
+        if not value:
+            raise ValueError(f"expected name=weight, got {pair!r}")
+        weights[name.strip()] = float(value)
+    return weights
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +62,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-amount", type=float, default=None, help="drop names below this average turnover"
     )
     parser.add_argument("--as-of", help="screen this date instead of the latest one")
+    parser.add_argument(
+        "--indicator-factors",
+        default="",
+        help=(
+            "comma-separated technical factors to add: rsi_reversal, macd_trend, "
+            "boll_position (default: none — see docs/INDICATORS.md for why)"
+        ),
+    )
+    parser.add_argument(
+        "--factor-weights",
+        default="",
+        help="comma-separated name=weight, e.g. momentum=1.0,rsi_reversal=0.3",
+    )
     parser.add_argument("--note", default="", help="free-text note stored with the record")
     parser.add_argument(
         "--no-record", action="store_true", help="print the list but do not write it down"
@@ -63,6 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     adjust = args.adjust or settings.collection.adjust
 
     try:
+        factor_weights = _weights(args.factor_weights)
+        indicator_factors = _names(args.indicator_factors)
+
         if not cache_path(root, provider, adjust).is_file():
             logger.info("no cached panel yet, building one from the store")
             build_panel_cache(root, provider, adjust)
@@ -78,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
             top_n=args.top_n,
             min_history=args.min_history,
             min_amount=args.min_amount,
+            factor_weights=factor_weights,
+            indicator_factors=indicator_factors,
+            indicator_params=params_from_settings(settings),
         )
         _print_picks(result)
 
@@ -91,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
                     "top_n": args.top_n,
                     "min_history": args.min_history,
                     "min_amount": args.min_amount,
+                    # recorded so a list can be reproduced: "which factors" is not
+                    # reconstructable from the picks themselves
+                    "indicator_factors": list(indicator_factors),
+                    "factor_weights": factor_weights,
                 },
                 note=args.note,
             )
