@@ -30,6 +30,11 @@ web = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
 ]
+futu = [
+    # Live quotes and trading through Futu's OpenAPI. Also needs the OpenD
+    # gateway running locally; history is metered, so it is not a market-wide source.
+    "futu-api>=9.0",
+]
 
 [project.scripts]
 quant-collect = "quant_research.cli:main"

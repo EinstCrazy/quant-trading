@@ -19,7 +19,7 @@ from quant_research.data.providers.base import (
 )
 from quant_research.data.providers.mock import MockProvider
 
-AVAILABLE_PROVIDERS: tuple[str, ...] = ("akshare", "baostock", "sse", "mock")
+AVAILABLE_PROVIDERS: tuple[str, ...] = ("akshare", "baostock", "sse", "futu", "mock")
 
 
 def get_provider(name: str, **kwargs: Any) -> MarketDataProvider:
@@ -39,6 +39,10 @@ def get_provider(name: str, **kwargs: Any) -> MarketDataProvider:
         from quant_research.data.providers.sse_provider import SseProvider
 
         return SseProvider(**kwargs)
+    if key == "futu":
+        from quant_research.data.providers.futu_provider import FutuProvider
+
+        return FutuProvider(**kwargs)
     raise ValueError(f"unknown provider {name!r}; available: {list(AVAILABLE_PROVIDERS)}")
 
 
