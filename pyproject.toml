@@ -34,6 +34,7 @@ web = [
 [project.scripts]
 quant-collect = "quant_research.cli:main"
 quant-screen = "quant_research.screen_cli:main"
+quant-nightly = "quant_research.nightly_cli:main"
 quant-ui = "quant_research.web.app:main"
 
 [tool.setuptools.packages.find]

@@ -33,6 +33,7 @@ __all__ = [
     "build_panel_cache",
     "cache_path",
     "load_panel_cache",
+    "refresh_symbols",
     "to_long",
     "update_panel_cache",
     "write_panel_cache",
@@ -149,9 +150,11 @@ def load_panel_cache(
     )
 
 
-def _read_store(directory: Path) -> pd.DataFrame:
-    """Read every per-symbol file in a store directory into long format."""
+def _read_store(directory: Path, symbols: set[str] | None = None) -> pd.DataFrame:
+    """Read per-symbol files into long format; ``symbols`` narrows the read."""
     paths = sorted(directory.glob("*.parquet")) + sorted(directory.glob("*.csv"))
+    if symbols is not None:
+        paths = [path for path in paths if path.stem in symbols]
     if not paths:
         raise ValueError(f"no per-symbol files found in {directory}")
 
@@ -187,3 +190,32 @@ def build_panel_cache(
     long = _read_store(directory)
     long = long.drop_duplicates(subset=_INDEX, keep="last")
     return _write(long, cache_path(root, provider, adjust))
+
+
+def refresh_symbols(
+    root: str | Path,
+    provider: str,
+    adjust: str,
+    symbols: Sequence[str],
+) -> Path:
+    """Re-read some symbols' files into the cache, replacing only their rows.
+
+    For the nightly run: a handful of files changed, and re-reading the whole
+    market to pick up one day is not worth it.
+
+    The files are read directly rather than through the panel loader because the
+    loader drops ``amount`` — writing those NaNs back over the cache would
+    quietly cost the liquidity filter its input.
+    """
+    wanted = set(symbols)
+    if not wanted:
+        return cache_path(root, provider, adjust)
+
+    directory = Path(root).expanduser() / "raw" / provider / "daily"
+    incoming = _read_store(directory, symbols=wanted)
+    path = cache_path(root, provider, adjust)
+    if path.is_file():
+        kept = pd.read_parquet(path)
+        kept = kept[~kept[SYMBOL_COLUMN].isin(wanted)]
+        incoming = pd.concat([kept, incoming], ignore_index=True)
+    return _write(incoming, path)

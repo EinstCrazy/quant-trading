@@ -303,7 +303,7 @@ def write_report(
 
 
 def run_daily_loop(
-    collect: Callable[[], CollectionReport],
+    collect: Callable[[], object],
     *,
     at: Any,
     timezone: str = DEFAULT_TIMEZONE,

@@ -101,6 +101,13 @@ quant-screen --provider baostock --top-n 10   # 收盘后打分，出名单并�
 quant-screen --provider baostock --review     # 回头看这些名单到底行不行
 ```
 
+每晚一条命令（等到数据落地 → 收数 → 打分 → 归档，数据没到就不打分）：
+
+```bash
+quant-nightly --provider baostock             # 等到 collection.schedule_at 再跑
+quant-nightly --provider baostock --daemon    # 每个交易日自动跑一次
+```
+
 本地工作台（可选）：
 
 ```bash
@@ -129,8 +136,10 @@ quant-trading/
 ├── src/quant_research/
 │   ├── config.py           YAML → 冻结 dataclass
 │   ├── collector.py        每日采集流程与调度循环
+│   ├── nightly.py          尾盘编排：收数 → 校验落地 → 打分 → 归档
 │   ├── cli.py              `quant-collect` 命令行入口
 │   ├── screen_cli.py       `quant-screen` 命令行入口
+│   ├── nightly_cli.py      `quant-nightly` 命令行入口
 │   ├── web/                `quant-ui` 本地工作台（FastAPI + 静态前端）
 │   ├── data/               面板加载、元信息、质量报告、providers/、store、面板缓存
 │   ├── strategies/         信号契约、注册表、动量与随机信号

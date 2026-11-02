@@ -102,6 +102,25 @@ def test_combine_is_an_unweighted_sum_by_default():
     pd.testing.assert_series_equal(combined.loc[day].dropna(), expected.dropna())
 
 
+def test_a_market_with_no_dispersion_produces_no_scores():
+    """Four names with identical prices have no spread to standardise — so no picks.
+
+    Not padding this to top_n is deliberate: a score that says nothing should
+    produce nothing.
+    """
+    prices = pd.DataFrame(
+        100.0,
+        index=pd.bdate_range("2024-01-01", periods=100, name="date"),
+        columns=["A.SH", "B.SH", "C.SH", "D.SH"],
+    )
+    panel = PricePanel(prices=prices, extra={"open": prices.copy()})
+
+    result = screen(panel, top_n=2, min_history=60)
+
+    assert result.picks.empty
+    assert result.dropped["no_score"] == 4
+
+
 def test_screen_returns_the_top_names_ranked():
     result = screen(_panel(), top_n=3)
     assert list(result.picks["rank"]) == list(range(1, len(result.picks) + 1))
