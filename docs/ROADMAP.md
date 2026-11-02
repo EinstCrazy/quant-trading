@@ -213,14 +213,16 @@ T 日 18:30  ─ ① 收数：当日全市场增量 → data/raw/<provider>/dail
 
 ### 任务清单
 
-- [ ] **S1 宽表缓存**：`data/cache/<provider>_<adjust>.parquet`，收数后增量更新而非重建；
-      `load_price_panel` 优先读缓存（目标：全市场加载 < 10 秒，当前为分钟级）
+- [x] **S1 宽表缓存**：`data/cache/<provider>_<adjust>.parquet`（`data/cache.py`），按天增量更新、
+      重复运行幂等；选股链路改读 `load_panel_cache()`，`load_price_panel` 保持原样
+      （实测 30 只 × 683 日：逐文件 0.07s → 缓存 0.01s，规模上去后差距才明显）
 - [ ] **S2 尾盘编排**：`quant-nightly` 命令编排「等待 → 收数 → 打分 → 选股 → 归档」；
       收数前先校验目标交易日数据存在且非空，缺则跳过并告警
-- [ ] **S3 截面打分层**（新建 `src/quant_research/scoring/`）：动量、均线距离、波动率倒数、
-      流动性等因子，各因子**逐日 z-score** 后加权合成
-- [ ] **S4 选股与可执行性过滤**：上市不足 N 日、停牌、流动性不足、**一字板不可成交**
-      （`open == high == low` 且涨幅近停板）→ 剔除；Top N → `signal_to_weights`
+- [x] **S3 截面打分层**（新建 `src/quant_research/scoring/`）：动量（可跳过最近几日）、均线距离、
+      波动率倒数、流动性等因子，各因子**逐日 z-score** 后加权合成
+- [x] **S4 选股与可执行性过滤**：上市不足 N 日、流动性不足、**一字板不可成交**
+      （`open == high == low` 且涨幅近停板）→ 剔除；只保留跑赢当日截面均值的标的
+      （宁可少给几只，不为了凑数买「最不难看的输家」）→ `signal_to_weights`
 - [ ] **S5 归档与复盘**：选股台账含 `as_of` 与持仓明细，支持事后统计胜率
 - [ ] **S6 界面与任务**：Web 新增 `job kind: "screen"`（`schemas.py` 的 Literal 需同步加）
       + `POST /jobs/screen` + 今日建议面板
