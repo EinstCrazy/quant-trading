@@ -85,6 +85,7 @@
       <button data-view="backtest">回测</button>
       <button data-view="compare">对比</button>
       <button data-view="collect">采集</button>
+      <button data-view="screen">建议</button>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -204,6 +205,30 @@
       </div>
       <div class="card"><h3>标的清单</h3><div id="col-symbols"></div></div>
       <div class="card"><h3>历史采集报告</h3><div id="col-reports"></div></div>
+    </section>
+
+    <!-- ⑤ 今日建议 -->
+    <section id="view-screen" class="view">
+      <h2>今日建议</h2>
+      <div class="card">
+        <h3>收盘后打分</h3>
+        <div class="row" id="scr-form"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="scr-run">跑一次选股</button>
+          <span class="muted" id="scr-status"></span>
+        </div>
+      </div>
+      <div class="card" id="scr-latest"></div>
+      <div class="card">
+        <h3>复盘</h3>
+        <div class="row">
+          <label>持有期</label>
+          <input id="scr-horizon" type="number" value="5" style="width:80px">
+          <span class="muted">个交易日 · 次日开盘买入，收盘卖出</span>
+          <button class="btn" id="scr-review">刷新</button>
+        </div>
+        <div id="scr-review-body"></div>
+      </div>
     </section>
 
     <div id="toast"></div>
@@ -966,6 +991,110 @@ async function runCollect() {
   }
 }
 
+/* ---------- ⑤ 今日建议 ---------- */
+const DROP_LABELS = {
+  short_history: "历史不足", no_score: "无法打分", thin_turnover: "流动性过低",
+  limit_up_locked: "一字板不可成交", below_cross_sectional_mean: "低于截面均值",
+};
+const pct = (value) =>
+  value === null || value === undefined
+    ? "—"
+    : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
+
+function buildScreenForm() {
+  $("scr-form").innerHTML = `
+    <label>数据源</label>
+    <select id="scr-provider">
+      <option value="baostock" selected>baostock</option>
+      <option value="akshare">akshare</option>
+    </select>
+    <label>选几只</label><input id="scr-topn" type="number" value="10" style="width:80px">
+    <label>最少历史</label><input id="scr-history" type="number" value="60" style="width:80px">
+    <label>回放日期</label><input id="scr-asof" placeholder="留空=最新" style="width:120px">
+    <label><input type="checkbox" id="scr-record" checked> 写入台账</label>`;
+}
+
+function renderScreen(data) {
+  if (!data || !data.picks || !data.picks.length) {
+    $("scr-latest").innerHTML = "<h3>名单</h3><p class='muted'>这一天没有选出标的——安静的日子宁可空着。</p>";
+    return;
+  }
+  const rows = data.picks.map((pick) => `
+    <tr><td>${pick.rank}</td><td>${pick.symbol}</td>
+    <td>${pick.score >= 0 ? "+" : ""}${pick.score.toFixed(3)}</td>
+    <td>${(pick.weight * 100).toFixed(1)}%</td></tr>`).join("");
+  const dropped = Object.entries(data.dropped || {})
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${DROP_LABELS[reason] || reason} ${count}`)
+    .join(" · ");
+  $("scr-latest").innerHTML = `
+    <h3>名单 · ${data.as_of}</h3>
+    <p class="muted">
+      数据源 ${data.provider} · 候选 ${data.universe} 只 · 数据截至 ${data.latest_session}
+      ${data.stale ? `｜这是 ${data.as_of} 的名单，不是最新收盘` : ""}
+    </p>
+    <table><thead><tr><th>#</th><th>标的</th><th>分数</th><th>权重</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    ${dropped ? `<p class="muted">剔除：${dropped}</p>` : ""}
+    <p class="muted">研究用的候选名单，不是投资建议，也不接实盘。</p>`;
+}
+
+async function loadScreenLatest() {
+  try {
+    renderScreen(await api("/screen/latest?provider=" + $("scr-provider").value));
+  } catch (error) {
+    $("scr-latest").innerHTML =
+      "<h3>名单</h3><p class='muted'>还没有选股记录——先跑一次，或等收盘后自动跑。</p>";
+  }
+}
+
+async function loadScreenReview() {
+  const provider = $("scr-provider").value;
+  const horizon = Number($("scr-horizon").value) || 5;
+  try {
+    const payload = await api(`/screen/review?horizon=${horizon}&provider=${provider}`);
+    if (!payload.screens) {
+      $("scr-review-body").innerHTML =
+        "<p class='muted'>还没有可复盘的选股——持有期走完的记录才会参与统计。</p>";
+      return;
+    }
+    const rows = payload.rows.map((row) => `
+      <tr><td>${row.as_of}</td><td>${row.picks}</td><td>${row.entry}</td><td>${row.exit}</td>
+      <td>${pct(row.mean_return)}</td><td>${pct(row.excess)}</td>
+      <td>${(row.beat_market * 100).toFixed(0)}%</td></tr>`).join("");
+    $("scr-review-body").innerHTML = `
+      <table><thead><tr><th>名单日期</th><th>只数</th><th>买入</th><th>卖出</th>
+      <th>平均收益</th><th>超额</th><th>跑赢市场</th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="muted">共 ${payload.screens} 次 · 平均超额 ${pct(payload.mean_excess)} ·
+      跑赢市场 ${(payload.beat_market * 100).toFixed(1)}%｜样本还很少，别当结论</p>`;
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function runScreen() {
+  $("scr-status").textContent = "运行中…";
+  $("scr-run").disabled = true;
+  try {
+    const result = await submitJob("/jobs/screen", {
+      provider: $("scr-provider").value,
+      top_n: Number($("scr-topn").value),
+      min_history: Number($("scr-history").value),
+      as_of: $("scr-asof").value || null,
+      record: $("scr-record").checked,
+    }, $("scr-status"));
+    renderScreen(result);
+    $("scr-status").textContent = `完成 · ${result.picks.length} 只 · ${new Date().toLocaleTimeString()}`;
+    toast("选股完成");
+    await loadScreenReview();
+  } catch (error) {
+    toast(error.message);
+    $("scr-status").textContent = "失败";
+  } finally {
+    $("scr-run").disabled = false;
+  }
+}
+
 /* ---------- wiring ---------- */
 async function loadDatasets() {
   try {
@@ -997,6 +1126,8 @@ $("cmp-add").addEventListener("click", () => {
   renderVariants();
 });
 $("col-run").addEventListener("click", runCollect);
+$("scr-run").addEventListener("click", runScreen);
+$("scr-review").addEventListener("click", loadScreenReview);
 $("exp-sort").addEventListener("change", loadExperiments);
 $("exp-refresh").addEventListener("click", loadExperiments);
 $("grid-run").addEventListener("click", runGrid);
@@ -1007,8 +1138,11 @@ $("grid-run").addEventListener("click", runGrid);
   buildBacktestForm();
   buildCollectForm();
   buildGridForm();
+  buildScreenForm();
   renderVariants();
   await loadOverview();
+  await loadScreenLatest();
+  await loadScreenReview();
 })();
 </script>
 </body>

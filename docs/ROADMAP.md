@@ -230,8 +230,10 @@ T 日 18:30  ─ ① 收数：当日全市场增量 → data/raw/<provider>/dail
       一天只有一份意见，两份只会让人分不清该信哪份）；`review()` 按「次日开盘买入、
       持有 N 个交易日卖出」回放历史名单，与回测的成交假设一致；窗口未走完的记录
       不参与统计。`quant-screen --review` 查看，样本只有几次时别当结论
-- [ ] **S6 界面与任务**：Web 新增 `job kind: "screen"`（`schemas.py` 的 Literal 需同步加）
-      + `POST /jobs/screen` + 今日建议面板
+- [x] **S6 界面与任务**：Web 新增「建议」视图（`GET /screen/latest`、`GET /screen/review`、
+      `POST /jobs/screen`）。`schemas.py` 的 `JobOut.kind` Literal 已同步加 `"screen"`——
+      漏了这一处，前端就收不到这类任务。名单卡同时写**名单日期**与**数据截至日**：
+      没有日期的名单最容易被误读，盘前打开时它讲的是昨天，界面必须说清楚
 
 ### 必须一开始钉死的约束
 

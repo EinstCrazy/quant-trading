@@ -155,6 +155,56 @@ class GridRequest(BaseModel):
     rebalance: RebalanceIn | None = None
 
 
+class ScreenRequest(BaseModel):
+    """Rank the market and keep a short list.
+
+    ``as_of`` replays an earlier day; a replay is not written to the ledger,
+    because it is not an opinion held that day.
+    """
+
+    provider: str = "baostock"
+    adjust: str | None = None
+    top_n: int = 10
+    min_history: int = 60
+    min_amount: float | None = None
+    as_of: str | None = None
+    record: bool = True
+    note: str = ""
+
+
+class ScreenPickOut(BaseModel):
+    symbol: str
+    rank: int
+    score: float
+    weight: float
+
+
+class ScreenOut(BaseModel):
+    """One short list.
+
+    ``as_of`` and ``latest_session`` are both here so the interface can say which
+    day the list is about: run before the close and the list is about yesterday,
+    which is the one thing people misread from a panel with no date on it.
+    """
+
+    as_of: str
+    latest_session: str
+    provider: str
+    universe: int
+    picks: list[ScreenPickOut]
+    dropped: dict[str, int]
+    note: str = ""
+    stale: bool = False
+
+
+class ScreenReviewOut(BaseModel):
+    horizon: int
+    rows: list[dict[str, Any]]
+    screens: int = 0
+    mean_excess: float | None = None
+    beat_market: float | None = None
+
+
 class JobProgress(BaseModel):
     done: int
     total: int
@@ -163,7 +213,7 @@ class JobProgress(BaseModel):
 
 class JobOut(BaseModel):
     id: str
-    kind: Literal["backtest", "compare", "collect", "grid"]
+    kind: Literal["backtest", "compare", "collect", "grid", "screen"]
     label: str
     status: Literal["pending", "running", "done", "failed", "cancelled"]
     progress: JobProgress

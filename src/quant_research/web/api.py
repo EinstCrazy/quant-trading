@@ -28,12 +28,15 @@ from quant_research.backtest.engine import BacktestResult, run_signal_backtest
 from quant_research.collector import collect_once
 from quant_research.config import Settings, load_settings
 from quant_research.data import describe_panel, load_price_panel
+from quant_research.data.cache import build_panel_cache, cache_path, load_panel_cache
 from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers import get_provider
 from quant_research.data.providers.base import ProviderError
 from quant_research.data.store import LocalMarketStore
 from quant_research.logging_setup import get_logger
 from quant_research.metrics import benchmark_buy_hold, drawdown_series
+from quant_research.scoring import screen, to_target_weights
+from quant_research.scoring.ledger import ScreenLedger, review
 from quant_research.strategies import STRATEGY_REGISTRY, get_signal
 
 from .experiments import ExperimentStore
@@ -54,6 +57,10 @@ from .schemas import (
     JobRef,
     PolicyIn,
     RebalanceIn,
+    ScreenOut,
+    ScreenPickOut,
+    ScreenRequest,
+    ScreenReviewOut,
     VariantIn,
 )
 
@@ -729,6 +736,173 @@ def submit_grid(request: GridRequest, jobs: Annotated[JobStore, Depends(get_stor
 
 
 # --- experiments: the ledger of configurations already tried -----------------
+
+
+# --- screening --------------------------------------------------------------
+
+
+def _load_panel(provider: str, adjust: str):
+    """The cached wide panel, built the first time it is asked for."""
+    settings = load_settings()
+    root = settings.data.directory
+    if not cache_path(root, provider, adjust).is_file():
+        logger.info("no cached panel for %s/%s; building one", provider, adjust)
+        try:
+            build_panel_cache(root, provider, adjust)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{provider} 还没有落盘数据（{exc}）；先采集，或换一个数据源",
+            ) from exc
+    return load_panel_cache(root, provider, adjust)
+
+
+def _latest_session(provider: str, adjust: str) -> str | None:
+    """The last day the cached panel knows about, or None when there is none."""
+    settings = load_settings()
+    root = settings.data.directory
+    if not cache_path(root, provider, adjust).is_file():
+        return None
+    try:
+        panel = load_panel_cache(root, provider, adjust)
+    except (ValueError, FileNotFoundError):
+        return None
+    return pd.Timestamp(panel.prices.index.max()).date().isoformat()
+
+
+def _screen_out(result: Any, provider: str, latest: Any, note: str = "") -> ScreenOut:
+    held = to_target_weights(result).loc[result.as_of]
+    held = held[held > 0]
+    as_of = pd.Timestamp(result.as_of)
+    latest_stamp = pd.Timestamp(latest)
+    picks = [
+        ScreenPickOut(
+            symbol=str(symbol),
+            rank=position,
+            score=float(row["score"]),
+            weight=float(held.get(symbol, 0.0)),
+        )
+        for position, (symbol, row) in enumerate(result.picks.iterrows(), start=1)
+    ]
+    return ScreenOut(
+        as_of=as_of.date().isoformat(),
+        latest_session=latest_stamp.date().isoformat(),
+        provider=provider,
+        universe=result.universe,
+        picks=picks,
+        dropped=dict(result.dropped),
+        note=note,
+        # a replayed list is about an older day; say so rather than letting the
+        # panel imply it is today's opinion
+        stale=as_of < latest_stamp,
+    )
+
+
+@router.get("/screen/latest", response_model=ScreenOut)
+def screen_latest(provider: str | None = None, adjust: str | None = None) -> ScreenOut:
+    """The most recent short list on file — what the panel shows when opened."""
+    settings = load_settings()
+    wanted_provider = provider or settings.collection.provider
+    wanted_adjust = adjust or settings.collection.adjust
+    records = ScreenLedger().recent()
+    if not records:
+        raise HTTPException(status_code=404, detail="no screening runs recorded yet")
+    record = max(records, key=lambda item: item.as_of)
+
+    # the panel is only needed to say how current the list is; without it the
+    # list is still worth showing, dated by the day it was made
+    latest = _latest_session(wanted_provider, wanted_adjust) or record.as_of
+    ranked = sorted(record.picks.items(), key=lambda item: item[1], reverse=True)
+    share = 1.0 / len(ranked) if ranked else 0.0
+    return ScreenOut(
+        as_of=record.as_of,
+        latest_session=latest,
+        provider=record.provider,
+        universe=record.universe,
+        picks=[
+            ScreenPickOut(symbol=str(symbol), rank=position, score=float(score), weight=share)
+            for position, (symbol, score) in enumerate(ranked, start=1)
+        ],
+        dropped=dict(record.dropped),
+        note=record.note,
+        stale=record.as_of < latest,
+    )
+
+
+@router.get("/screen/review", response_model=ScreenReviewOut)
+def screen_review(
+    horizon: int = 5, provider: str | None = None, adjust: str | None = None
+) -> ScreenReviewOut:
+    """How earlier short lists did, bought at the next open."""
+    settings = load_settings()
+    panel = _load_panel(
+        provider or settings.collection.provider, adjust or settings.collection.adjust
+    )
+    frame = review(ScreenLedger(), panel, horizon=horizon)
+    if frame.empty:
+        return ScreenReviewOut(horizon=horizon, rows=[])
+
+    rows: list[dict[str, Any]] = []
+    for row in frame.to_dict(orient="records"):
+        rows.append(
+            {
+                key: value.isoformat() if isinstance(value, (pd.Timestamp, datetime)) else value
+                for key, value in row.items()
+            }
+        )
+    return ScreenReviewOut(
+        horizon=horizon,
+        rows=rows,
+        screens=len(frame),
+        mean_excess=float(frame["excess"].mean()),
+        beat_market=float(frame["beat_market"].mean()),
+    )
+
+
+@router.post("/jobs/screen", response_model=JobRef, status_code=202)
+def submit_screen(request: ScreenRequest, jobs: Annotated[JobStore, Depends(get_store)]) -> JobRef:
+    """Rank the market in the background; a replay is not written to the ledger."""
+    settings = load_settings()
+    provider = request.provider or settings.collection.provider
+    adjust = request.adjust or settings.collection.adjust
+
+    def task(progress: Progress, stop: Callable[[], bool]) -> dict[str, Any]:
+        progress.set_total(3)
+        progress.update(0, "读取面板…")
+        panel = _load_panel(provider, adjust)
+        if stop():
+            return {}
+        progress.update(1, "打分…")
+        result = screen(
+            panel,
+            as_of=request.as_of,
+            top_n=request.top_n,
+            min_history=request.min_history,
+            min_amount=request.min_amount,
+        )
+        progress.update(2, "归档…")
+        # a replay is a question about the past, not an opinion held that day
+        if request.record and request.as_of is None:
+            ScreenLedger().record(
+                result,
+                provider=provider,
+                adjust=adjust,
+                params={
+                    "top_n": request.top_n,
+                    "min_history": request.min_history,
+                    "min_amount": request.min_amount,
+                },
+                note=request.note,
+            )
+        return _screen_out(
+            result, provider, panel.prices.index.max(), note=request.note
+        ).model_dump()
+
+    label = f"{provider} · Top {request.top_n}"
+    if request.as_of:
+        label = f"{label} · 回放 {request.as_of}"
+    job = jobs.submit("screen", label, task, total=3)
+    return JobRef(id=job.id, kind=job.kind, label=job.label, status=job.status)
 
 
 @router.get("/experiments")
