@@ -636,6 +636,7 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
         typical_range="与价格波动同量级",
         description="DIF 的 9 日 EMA，是 DIF 的平滑版本，即信号线。",
         how_to_use="与 DIF 交叉是常见的动能转折提示，但在趋势末段滞后明显。",
+        caution="交叉天然滞后于价格：它确认的是已经发生的转折，不是将要发生的。",
     ),
     "macd_hist": IndicatorDoc(
         label="MACD·柱",
@@ -659,6 +660,7 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
         typical_range="与价格同量级",
         description="20 日均线，布林带的中枢。",
         how_to_use="作为短期均衡价，价格反复穿越说明在震荡而非趋势。",
+        caution="中轨就是同周期均线，别把它当成独立的支撑位。",
     ),
     "boll_upper": IndicatorDoc(
         label="BOLL·上轨",
@@ -674,6 +676,7 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
         typical_range="中轨 − 2σ",
         description="中轨减 2 倍总体标准差。",
         how_to_use="与上轨一起构成通道，位置比突破更有信息量。",
+        caution="下跌趋势里价格会贴着下轨走很久，那不是超跌信号。",
     ),
     "boll_width": IndicatorDoc(
         label="BOLL·带宽",
@@ -705,6 +708,7 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
         typical_range="10–90 常见",
         description="K 再平滑一次，比 K 更钝。",
         how_to_use="K 上穿 D 是常见买点提示，但在低波动区间噪声很大。",
+        caution="D 比 K 更钝，交叉更慢；横盘时两者会反复缠绕，别逐次响应。",
     ),
     "kdj_j": IndicatorDoc(
         label="KDJ·J",
@@ -744,6 +748,7 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
         typical_range="5–40",
         description="上升方向的平滑动向占真实波幅的比例。",
         how_to_use="与 −DI 比较判断多空力量对比，不看绝对值看相对位置。",
+        caution="+DI 的绝对值随波动率放大，跨标的比较没有意义。",
     ),
     "minus_di": IndicatorDoc(
         label="DMI·−DI",
@@ -751,6 +756,7 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
         typical_range="5–40",
         description="下降方向的平滑动向占真实波幅的比例。",
         how_to_use="+DI 在上方说明这段以涨为主，反转需等交叉确认。",
+        caution="−DI 上升只说明下跌动能在增强，不等于价格一定在跌。",
     ),
     "adx": IndicatorDoc(
         label="ADX（趋势强度）",

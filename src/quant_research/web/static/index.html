@@ -86,6 +86,7 @@
       <button data-view="compare">对比</button>
       <button data-view="collect">采集</button>
       <button data-view="screen">建议</button>
+      <button data-view="indicators">指标</button>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -228,6 +229,38 @@
           <button class="btn" id="scr-review">刷新</button>
         </div>
         <div id="scr-review-body"></div>
+      </div>
+    </section>
+
+    <!-- ⑥ 指标 -->
+    <section id="view-indicators" class="view">
+      <h2>指标</h2>
+      <div class="card">
+        <h3>指标面板</h3>
+        <div class="row">
+          <label>数据源</label>
+          <select id="ind-provider">
+            <option value="baostock" selected>baostock</option>
+            <option value="akshare">akshare</option>
+          </select>
+          <button class="btn" id="ind-load">加载</button>
+          <button class="btn" id="ind-rebuild">重算</button>
+          <span class="muted" id="ind-status"></span>
+        </div>
+        <p class="muted" style="margin-top:8px">
+          指标是描述，不是判断：这里只回答「现在是什么状态」，不回答「该不该买」。
+          说明与误读提醒来自代码里的指标目录，与 <code>docs/INDICATORS.md</code> 同源。
+        </p>
+      </div>
+      <div class="card" id="ind-board"></div>
+      <div class="card">
+        <h3>单只查询</h3>
+        <div class="row">
+          <input id="ind-symbol" placeholder="600519.SH" style="width:140px">
+          <button class="btn" id="ind-query">查</button>
+          <span class="muted" id="ind-query-status"></span>
+        </div>
+        <div id="ind-detail"></div>
       </div>
     </section>
 
@@ -413,6 +446,7 @@ function showView(name) {
   });
   if (name === "collect") loadCollection();
   if (name === "compare") loadExperiments();
+  if (name === "indicators") loadIndicators();
 }
 
 /* ---------- charts: hand-rolled SVG, no CDN ---------- */
@@ -1095,6 +1129,98 @@ async function runScreen() {
   }
 }
 
+/* ---------- ⑥ 指标 ---------- */
+const escapeAttr = (text) =>
+  String(text).replace(
+    /[&<>"]/g,
+    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch],
+  );
+
+const fmtValue = (value) =>
+  value === null || value === undefined
+    ? "—"
+    : Math.abs(value) >= 100
+      ? value.toFixed(1)
+      : value.toFixed(3);
+
+function renderIndicatorBoard(data) {
+  const params = data.params || {};
+  const summary = [
+    `数据截至 ${data.as_of}`,
+    `${data.symbols} 只标的`,
+    `${data.fields} 个指标`,
+    `RSI ${params.rsi_period}`,
+    `BOLL ${params.boll_period}±${params.boll_std}σ`,
+    `MA ${(params.ma_periods || []).join("/")}`,
+  ].join(" · ");
+  const rows = data.rows
+    .map(
+      (row) => `
+      <tr title="${escapeAttr(row.description)}｜注意：${escapeAttr(row.caution)}">
+        <td>${row.label}</td>
+        <td>${fmtValue(row.median)}</td>
+        <td class="muted">${row.unit === "价格" ? "—" : `${fmtValue(row.low)} ~ ${fmtValue(row.high)}`}</td>
+        <td class="muted">${row.unit} · ${row.typical_range}</td>
+        <td>${row.how_to_use}</td>
+      </tr>`,
+    )
+    .join("");
+  $("ind-board").innerHTML = `
+    <h3>当前状态</h3>
+    <p class="muted">${summary}${data.stale ? "｜指标文件比面板旧，点「重算」" : ""}</p>
+    <table>
+      <thead><tr><th>指标</th><th>中位数</th><th>区间</th><th>量纲</th><th>建议读法</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="muted">
+      中位数与区间取最后一个交易日的截面；鼠标悬停可看说明与误读提醒。
+      价格量纲（MA/EMA/BOLL/ATR/VWAP）不显示区间——不同价位的票放在一起求范围没有意义。
+      指标不含仓位与成本，界面不给「买/卖」标签。
+    </p>`;
+}
+
+async function loadIndicators(rebuild = false) {
+  const provider = $("ind-provider").value;
+  $("ind-status").textContent = rebuild ? "重算中…" : "加载中…";
+  try {
+    const query = `/indicators?provider=${provider}${rebuild ? "&rebuild=true" : ""}`;
+    renderIndicatorBoard(await api(query));
+    $("ind-status").textContent = `完成 · ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    $("ind-board").innerHTML = `<h3>当前状态</h3><p class="muted">${error.message}</p>`;
+    $("ind-status").textContent = "失败";
+  }
+}
+
+async function loadIndicatorDetail() {
+  const symbol = $("ind-symbol").value.trim();
+  if (!symbol) {
+    toast("先填一个代码");
+    return;
+  }
+  $("ind-query-status").textContent = "查询中…";
+  try {
+    const data = await api(
+      `/indicators/${encodeURIComponent(symbol)}?provider=${$("ind-provider").value}`,
+    );
+    const rows = data.values
+      .map(
+        (row) => `
+        <tr><td>${row.label}</td><td>${fmtValue(row.value)}</td>
+        <td class="muted">${row.unit}</td></tr>`,
+      )
+      .join("");
+    $("ind-detail").innerHTML = `
+      <p class="muted">${data.symbol} · ${data.as_of} · ${data.provider}</p>
+      <table><thead><tr><th>指标</th><th>值</th><th>量纲</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+    $("ind-query-status").textContent = "";
+  } catch (error) {
+    $("ind-detail").innerHTML = `<p class="muted">${error.message}</p>`;
+    $("ind-query-status").textContent = "失败";
+  }
+}
+
 /* ---------- wiring ---------- */
 async function loadDatasets() {
   try {
@@ -1128,6 +1254,9 @@ $("cmp-add").addEventListener("click", () => {
 $("col-run").addEventListener("click", runCollect);
 $("scr-run").addEventListener("click", runScreen);
 $("scr-review").addEventListener("click", loadScreenReview);
+$("ind-load").addEventListener("click", () => loadIndicators(false));
+$("ind-rebuild").addEventListener("click", () => loadIndicators(true));
+$("ind-query").addEventListener("click", loadIndicatorDetail);
 $("exp-sort").addEventListener("change", loadExperiments);
 $("exp-refresh").addEventListener("click", loadExperiments);
 $("grid-run").addEventListener("click", runGrid);

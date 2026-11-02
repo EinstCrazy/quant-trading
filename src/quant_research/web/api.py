@@ -33,6 +33,13 @@ from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers import get_provider
 from quant_research.data.providers.base import ProviderError
 from quant_research.data.store import LocalMarketStore
+from quant_research.indicators import (
+    compute_all,
+    doc_for,
+    load_bundle,
+    params_from_settings,
+    store_bundle,
+)
 from quant_research.logging_setup import get_logger
 from quant_research.metrics import benchmark_buy_hold, drawdown_series
 from quant_research.scoring import screen, to_target_weights
@@ -53,6 +60,10 @@ from .schemas import (
     DatasetOut,
     ExperimentNoteIn,
     GridRequest,
+    IndicatorBoardOut,
+    IndicatorDetailOut,
+    IndicatorRowOut,
+    IndicatorValueOut,
     JobOut,
     JobRef,
     PolicyIn,
@@ -903,6 +914,129 @@ def submit_screen(request: ScreenRequest, jobs: Annotated[JobStore, Depends(get_
         label = f"{label} · 回放 {request.as_of}"
     job = jobs.submit("screen", label, task, total=3)
     return JobRef(id=job.id, kind=job.kind, label=job.label, status=job.status)
+
+
+# --- indicators --------------------------------------------------------------
+
+
+def _load_indicators(provider: str, adjust: str, rebuild: bool = False) -> Any:
+    """The stored indicator bundle, computed from the cached panel on first ask.
+
+    Reading first and computing second keeps one source of truth: the numbers on
+    screen are the ones ``quant-indicators`` would have written, not a second
+    implementation that happens to live in the web layer.
+    """
+    settings = load_settings()
+    root = settings.indicators.output_directory
+    if not rebuild:
+        stored = load_bundle(root, provider, adjust)
+        if stored is not None:
+            return stored
+
+    panel = _load_panel(provider, adjust)
+    bundle = compute_all(panel, params_from_settings(settings))
+    store_bundle(bundle, root, provider, adjust, fmt=settings.indicators.format)
+    logger.info("computed %d indicators for %s/%s", len(bundle.frames), provider, adjust)
+    return bundle
+
+
+def _labelled(field: str, doc: Any) -> str:
+    """``ma_20`` must not read as「MA（均线）」— the period is part of the name.
+
+    An interface that says only "RSI" leaves the reader unable to tell 14 from 6,
+    and the threshold they remember belongs to one of them.
+    """
+    digits = field[len(field.rstrip("0123456789")) :]
+    return f"{doc.label}{digits}" if digits else doc.label
+
+
+@router.get("/indicators", response_model=IndicatorBoardOut)
+def indicator_board(
+    provider: str | None = None, adjust: str | None = None, rebuild: bool = False
+) -> IndicatorBoardOut:
+    """Every indicator with its last cross-section and its explanation."""
+    settings = load_settings()
+    wanted_provider = provider or settings.collection.provider
+    wanted_adjust = adjust or settings.collection.adjust
+    bundle = _load_indicators(wanted_provider, wanted_adjust, rebuild=rebuild)
+
+    sample = next(iter(bundle.frames.values()))
+    as_of = pd.Timestamp(sample.index.max())
+    rows: list[IndicatorRowOut] = []
+    for field, frame in bundle.frames.items():
+        doc = doc_for(field)
+        if doc is None:
+            # a number nobody can explain is worse than no number at all
+            logger.warning("indicator %s has no catalogue entry; leaving it out", field)
+            continue
+        latest = (frame.iloc[-1] if not frame.empty else pd.Series(dtype="float64")).dropna()
+        present = len(latest)
+        rows.append(
+            IndicatorRowOut(
+                field=field,
+                label=_labelled(field, doc),
+                unit=doc.unit,
+                typical_range=doc.typical_range,
+                description=doc.description,
+                how_to_use=doc.how_to_use,
+                caution=doc.caution,
+                median=float(latest.median()) if present else None,
+                low=float(latest.min()) if present else None,
+                high=float(latest.max()) if present else None,
+                symbols=int(present),
+            )
+        )
+
+    latest_session = _latest_session(wanted_provider, wanted_adjust)
+    return IndicatorBoardOut(
+        as_of=as_of.date().isoformat(),
+        provider=wanted_provider,
+        adjust=wanted_adjust,
+        symbols=int(sample.shape[1]),
+        fields=len(bundle.frames),
+        params=bundle.params.to_dict(),
+        rows=rows,
+        stale=latest_session is not None and as_of < pd.Timestamp(latest_session),
+    )
+
+
+@router.get("/indicators/{symbol}", response_model=IndicatorDetailOut)
+def indicator_detail(
+    symbol: str, provider: str | None = None, adjust: str | None = None
+) -> IndicatorDetailOut:
+    """One name's indicator values — what the cross-section was made of."""
+    settings = load_settings()
+    wanted_provider = provider or settings.collection.provider
+    wanted_adjust = adjust or settings.collection.adjust
+    bundle = _load_indicators(wanted_provider, wanted_adjust)
+
+    sample = next(iter(bundle.frames.values()))
+    if symbol not in sample.columns:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{symbol} 不在指标集合里（共 {sample.shape[1]} 只）",
+        )
+
+    values: list[IndicatorValueOut] = []
+    for field, frame in bundle.frames.items():
+        doc = doc_for(field)
+        if doc is None:
+            continue
+        raw = frame[symbol].iloc[-1]
+        values.append(
+            IndicatorValueOut(
+                field=field,
+                label=_labelled(field, doc),
+                unit=doc.unit,
+                value=None if pd.isna(raw) else float(raw),
+            )
+        )
+    return IndicatorDetailOut(
+        symbol=symbol,
+        as_of=pd.Timestamp(sample.index.max()).date().isoformat(),
+        provider=wanted_provider,
+        values=values,
+    )
 
 
 @router.get("/experiments")

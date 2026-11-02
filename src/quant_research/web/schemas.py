@@ -205,6 +205,57 @@ class ScreenReviewOut(BaseModel):
     beat_market: float | None = None
 
 
+class IndicatorRowOut(BaseModel):
+    """One indicator, described and summarised for a table.
+
+    ``median`` and the range are the last session's cross-section, not a single
+    value: an indicator says something per name, and collapsing that to one
+    number would suggest it says one thing about the market.
+    """
+
+    field: str
+    label: str
+    unit: str
+    typical_range: str
+    description: str
+    how_to_use: str
+    caution: str
+    median: float | None = None
+    low: float | None = None
+    high: float | None = None
+    symbols: int = 0
+
+
+class IndicatorBoardOut(BaseModel):
+    """Every indicator plus the text that explains it, from one catalogue."""
+
+    as_of: str
+    provider: str
+    adjust: str
+    symbols: int
+    fields: int
+    params: dict[str, Any]
+    rows: list[IndicatorRowOut]
+    # true when the stored indicators are older than the price panel
+    stale: bool = False
+
+
+class IndicatorValueOut(BaseModel):
+    field: str
+    label: str
+    unit: str
+    value: float | None = None
+
+
+class IndicatorDetailOut(BaseModel):
+    """One name's indicator values — the numbers behind the cross-section."""
+
+    symbol: str
+    as_of: str
+    provider: str
+    values: list[IndicatorValueOut]
+
+
 class JobProgress(BaseModel):
     done: int
     total: int
