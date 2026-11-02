@@ -94,6 +94,13 @@ quant-collect --daemon --at 18:30                                # 每个交易�
 随后 `load_price_panel("data/raw/akshare/daily")` 即可读到面板。安装、调度与故障处理见
 [docs/DATA_COLLECTION.md](docs/DATA_COLLECTION.md)。
 
+数据够了就可以打分选股（研究用的候选名单，不是投资建议，也不接实盘）：
+
+```bash
+quant-screen --provider baostock --top-n 10   # 收盘后打分，出名单并归档
+quant-screen --provider baostock --review     # 回头看这些名单到底行不行
+```
+
 本地工作台（可选）：
 
 ```bash
@@ -123,9 +130,11 @@ quant-trading/
 │   ├── config.py           YAML → 冻结 dataclass
 │   ├── collector.py        每日采集流程与调度循环
 │   ├── cli.py              `quant-collect` 命令行入口
+│   ├── screen_cli.py       `quant-screen` 命令行入口
 │   ├── web/                `quant-ui` 本地工作台（FastAPI + 静态前端）
-│   ├── data/               面板加载、元信息、质量报告、providers/、store
+│   ├── data/               面板加载、元信息、质量报告、providers/、store、面板缓存
 │   ├── strategies/         信号契约、注册表、动量与随机信号
+│   ├── scoring/            截面因子、逐日标准化、选股与选股台账
 │   ├── portfolio/          信号 → 目标权重
 │   ├── backtest/           撮合、成本、账本、日频回测引擎
 │   ├── metrics.py          绩效、风险与基准指标
