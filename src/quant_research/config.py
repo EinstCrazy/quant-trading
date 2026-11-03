@@ -217,22 +217,34 @@ class FundamentalsSettings:
             )
 
 
-_REGULATORY_FIELDS = ("output_directory", "lookback_days", "active_days", "manual_file")
+_REGULATORY_FIELDS = (
+    "output_directory",
+    "lookback_days",
+    "active_days",
+    "manual_file",
+    "pause_seconds",
+    "page_size",
+    "max_pages",
+)
 
 
 @dataclass(frozen=True)
 class RegulatorySettings:
-    """Where the regulatory-event store lives, and how far back to scan.
+    """Where the regulatory-event store lives, and how far back to search.
 
-    ``lookback_days`` only bounds the *first* scan: once a day is recorded in
-    the state file it is never fetched again, so the daily cost is one request.
-    ``active_days`` is how long an unclosed 立案 keeps a name out of the screen.
+    ``lookback_days`` is a year because a case can stay open that long; a
+    shorter window silently clears the companies put under investigation long
+    ago and never closed. ``active_days`` is how long an unclosed 立案 keeps a
+    name out of the screen — the same year, for the same reason.
     """
 
     output_directory: Path = Path("data/regulatory")
-    lookback_days: int = 60
+    lookback_days: int = 365
     active_days: int = 365
     manual_file: Path = Path("config/regulatory.yaml")
+    pause_seconds: float = 0.2
+    page_size: int = 50
+    max_pages: int = 40
 
     def __post_init__(self) -> None:
         if self.lookback_days < 1:
@@ -241,6 +253,10 @@ class RegulatorySettings:
             )
         if self.active_days < 1:
             raise ValueError(f"regulatory.active_days must be at least 1, got {self.active_days}")
+        if self.page_size < 1:
+            raise ValueError(f"regulatory.page_size must be at least 1, got {self.page_size}")
+        if self.max_pages < 1:
+            raise ValueError(f"regulatory.max_pages must be at least 1, got {self.max_pages}")
 
 
 def _parse_clock(text: str) -> time:
@@ -395,6 +411,9 @@ def _build_regulatory_settings(section: Mapping[str, Any]) -> RegulatorySettings
         lookback_days=int(section.get("lookback_days", defaults.lookback_days)),
         active_days=int(section.get("active_days", defaults.active_days)),
         manual_file=Path(section.get("manual_file", defaults.manual_file)),
+        pause_seconds=float(section.get("pause_seconds", defaults.pause_seconds)),
+        page_size=int(section.get("page_size", defaults.page_size)),
+        max_pages=int(section.get("max_pages", defaults.max_pages)),
     )
 
 

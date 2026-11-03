@@ -136,11 +136,21 @@ def main(argv: list[str] | None = None) -> int:
                 within_days=settings.regulatory.active_days,
             )
             if investigated:
-                logger.warning(
-                    "%d 只处于证监会调查中，已排除：%s",
-                    len(investigated),
-                    ", ".join(sorted(investigated)),
-                )
+                # only the issuer's own case blocks: a 5% holder being probed
+                # does not stop the company from operating or refinancing
+                hard = {symbol: event for symbol, event in investigated.items() if event.is_issuer}
+                soft = len(investigated) - len(hard)
+                if hard:
+                    # dozens of codes on one line bury whatever comes next
+                    ordered = sorted(hard)
+                    preview = ", ".join(ordered[:10])
+                    more = "" if len(ordered) <= 10 else f" 等 {len(ordered)} 只"
+                    logger.warning(
+                        "%d 只公司本体处于证监会调查中，已排除：%s%s", len(hard), preview, more
+                    )
+                if soft:
+                    logger.info("%d 只仅有股东/高管被立案，不排除", soft)
+                investigated = hard
             elif stored.empty and manual.empty:
                 # silence here would be the worst outcome: the filter looks
                 # active, drops nothing, and the user never learns why

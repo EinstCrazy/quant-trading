@@ -124,7 +124,8 @@ quant-fundamentals --provider baostock              # 财报红旗 + 立案调�
 quant-screen --provider baostock --exclude-risky    # 剔除高风险后再选股
 ```
 
-被证监会立案调查的标的属于**硬否决**，选股默认排除，提醒与数据来源见
+被证监会立案调查的标的属于**硬否决**，选股默认排除。数据来自巨潮资讯的标题检索
+（证监会官网没有「立案调查」栏目），回看一年约 2 秒，细节见
 [docs/REGULATORY.md](docs/REGULATORY.md)：
 
 ```bash

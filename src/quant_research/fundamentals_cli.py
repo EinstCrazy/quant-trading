@@ -143,28 +143,19 @@ def _regulatory(args: Any, settings: Any) -> dict[str, Any]:
     moment = pd.Timestamp(args.as_of).date() if args.as_of else date.today()
 
     if args.no_scan:
-        logger.info("跳过公告扫描（--no-scan），只用已存事件")
+        logger.info("跳过公告检索（--no-scan），只用已存事件")
     else:
-        covered = regulatory.load_state(directory)
-        days = regulatory.recent_sessions(settings.regulatory.lookback_days, today=moment)
-        pending = [day for day in days if day not in covered]
-        if pending:
-            logger.info(
-                "扫描 %d 个交易日的公告（已覆盖 %d 天，只取新增）", len(pending), len(covered)
-            )
-            outcome = regulatory.scan(pending)
-            regulatory.store(outcome.events, directory)
-            # only the days that actually got read: a failed date stays out of
-            # the state so the next run retries it instead of skipping it
-            regulatory.save_state(outcome.scanned, directory)
-            if outcome.events:
-                logger.info("新增 %d 条监管事件", len(outcome.events))
-            if outcome.failed:
-                logger.warning(
-                    "%d 个交易日取数失败，下次会重试：%s",
-                    len(outcome.failed),
-                    ", ".join(outcome.failed),
-                )
+        events = regulatory.search_events(
+            days=settings.regulatory.lookback_days,
+            today=moment,
+            page_size=settings.regulatory.page_size,
+            max_pages=settings.regulatory.max_pages,
+            pause=settings.regulatory.pause_seconds,
+        )
+        regulatory.store(events, directory)
+        logger.info(
+            "回看 %d 天，命中 %d 条立案/结案公告", settings.regulatory.lookback_days, len(events)
+        )
 
     combined = regulatory.merge(
         regulatory.load(directory),
@@ -233,16 +224,37 @@ def _print_regulatory(investigated: dict[str, Any], as_of: str | None = None) ->
         print()
         return
 
-    print(f"⚠ 监管风险 · {len(investigated)} 只正在被证监会调查（策略默认排除）")
-    print()
-    for event in sorted(
-        investigated.values(), key=lambda item: (item.date, item.symbol), reverse=True
-    ):
-        title = event.title if len(event.title) <= 44 else event.title[:43] + "…"
-        print(f"  {event.symbol:<11}{event.date:<12}{_pad(event.name, 10)}{title}")
-    print()
-    print("  立案期间再融资、重组、发行股份购买资产都会被卡住，供应商与银行也会收紧；")
-    print("  解除条件是有结案公告，不是股价反弹。名单来源：全市场公告扫描 + 手工登记。")
+    issuer = {key: event for key, event in investigated.items() if event.is_issuer}
+    parties = {key: event for key, event in investigated.items() if not event.is_issuer}
+
+    def show(events: dict[str, Any], limit: int = 12) -> None:
+        ordered = sorted(events.values(), key=lambda item: (item.date, item.symbol), reverse=True)
+        for event in ordered[:limit]:
+            # the date is the latest filing, not necessarily the opening:
+            # "立案调查进展暨风险提示" is how an old case keeps showing up
+            title = event.title if len(event.title) <= 42 else event.title[:41] + "…"
+            print(f"  {event.symbol:<11}{event.date:<12}{_pad(event.name, 10)}{title}")
+        if len(ordered) > limit:
+            # a year's worth is dozens of names; the point is to see that they
+            # exist, not to read all of them in a terminal
+            print(f"  …另有 {len(ordered) - limit} 只，完整名单见 data/regulatory/events.parquet")
+
+    if issuer:
+        print(f"⚠ 监管风险 · {len(issuer)} 只公司本体正在被证监会调查（策略默认排除）")
+        print()
+        show(issuer)
+        print()
+        print("  立案期间再融资、重组、发行股份购买资产都会被卡住，供应商与银行也会收紧；")
+        print("  解除条件是有结案公告，不是股价反弹。")
+    if parties:
+        print(f"  另有 {len(parties)} 只的股东/高管被立案（不排除，但值得知道）：")
+        print()
+        show(parties)
+        print()
+        print("  被查的是个人或股东而非上市公司：公司的资本运作照常，但治理问题通常会先")
+        print("  出现在这里。要不要避开，取决于你对「实际控制人出事」的容忍度。")
+    print("  来源：巨潮资讯标题检索（立案 / 行政处罚决定书 / 终止调查）+ 手工登记；")
+    print("  每条都带公告链接，存在 data/regulatory/events.parquet，可逐条核对。")
     if as_of:
         print(f"  按 {as_of} 当日已公告的口径：之后发布的立案未计入。")
     print()
@@ -282,7 +294,9 @@ def _print(
     print(_row([title for title, _, _ in _COLUMNS]) + "  原因")
     for risk in sorted(risks, key=lambda item: (-item.score, item.symbol)):
         snapshot = risk.snapshot
-        watch = "立案" if risk.symbol in found else "—"
+        watch = "—"
+        if risk.symbol in found:
+            watch = "立案" if found[risk.symbol].is_issuer else "关注"
         if snapshot is None:
             print(_row([risk.symbol, risk.level, "—", "—", "—", "—", "—", watch]) + "  无财报")
             continue

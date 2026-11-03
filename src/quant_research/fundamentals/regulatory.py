@@ -6,77 +6,126 @@ already being looked at, which is a different and harder kind of problem: a
 and lenders, and routinely ends in a restatement or a delisting. The price does
 not always show it — the announcement is one line in a feed of three thousand.
 
-There is no "currently under investigation" endpoint anywhere in the free data.
-What exists is the announcement stream, so the state has to be **derived**:
+There is no "currently under investigation" endpoint anywhere in the free data,
+and the obvious place to look does not have one either: the CSRC site publishes
+administrative penalties under 行政执法, but no 立案 column, and its list pages
+are filled in by JavaScript rather than served as data. cninfo (巨潮资讯) is the
+statutory disclosure platform those filings are published *through*, and it
+supports a title search over a date range — so a year of filings costs about ten
+requests instead of scanning two hundred and fifty trading days one at a time.
+
+The state is derived, because no feed reports it directly:
 
     立案  →  investigation opens
-    行政处罚决定书 / 结案 / 终止调查  →  it closes
+    行政处罚决定书 / 终止调查 / 撤销立案  →  it closes
 
 A name counts as under investigation when its latest opening has no closing
 after it, and the opening is recent enough to still matter. Both halves of that
 sentence are choices, and both are written down where the choice is made.
 
-The stream is also noisy in a specific way worth knowing: 立案 also appears in
-"法院立案受理" (a civil suit, not a regulator) and 调查 in "尽职调查" (an
+The titles are also noisy in a specific way worth knowing: 立案 also appears in
+"法院立案受理" (a civil suit, not a regulator), and 调查 in "尽职调查" (an
 adviser doing its job). Those are filtered out rather than merely tolerated,
 because a false 立案 would exclude a healthy company from every screen.
 """
 
 from __future__ import annotations
 
-import io
-import json
 import re
 import time
-from contextlib import redirect_stderr
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from quant_research.data.providers.base import ProviderUnavailable, normalize_symbol
+from quant_research.data.providers.base import ProviderError, ProviderUnavailable, normalize_symbol
 
 __all__ = [
+    "COMPANY",
     "INVESTIGATION",
+    "PARTY",
     "RESOLUTION",
     "RegulatoryEvent",
-    "ScanOutcome",
     "active",
     "load",
     "load_manual",
-    "load_state",
     "merge",
-    "recent_sessions",
-    "save_state",
-    "scan",
+    "search_events",
     "store",
 ]
 
 INVESTIGATION = "investigation"
 RESOLUTION = "resolution"
 
+# cninfo's full-text endpoint, title mode. The statutory disclosure platform:
+# every 立案告知书 a company is required to publish comes through here.
+_CNINFO = "http://www.cninfo.com.cn/new/fulltextSearch/full"
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    "Referer": "http://www.cninfo.com.cn/new/fulltextSearch",
+}
+# Beijing time, because the timestamps are epoch millis and a filing dated
+# 2026-11-03 00:00 CST would otherwise land on 11-02 in UTC
+_CST = timezone(timedelta(hours=8))
+
+#: What to search for. One keyword per kind, title-only.
+_OPEN_KEYWORDS = ("立案",)
+_CLOSE_KEYWORDS = ("行政处罚决定书", "终止调查", "撤销立案")
+
 # "立案" is the one word that appears in a CSRC filing notice and almost
 # nowhere else. "调查" alone is useless: 尽职调查 shows up in every advisory
 # opinion ever written.
 _OPEN = re.compile("立案")
-# A suit being accepted by a court is 立案受理; it has nothing to do with the
-# regulator and would otherwise flag half the companies in litigation. 纠纷
-# catches the variants that omit 受理 ("买卖合同纠纷案立案").
-_NOISE = re.compile("立案受理|纠纷|尽职调查|募集资金|三方")
+# A suit being accepted by a court is 立案受理 — and, in the wild, also
+# 受理立案, which the first pattern misses. 纠纷 catches the variants that omit
+# 受理 ("买卖合同纠纷案立案"). 立案审查/审查调查/留置 are the discipline
+# commission's vocabulary, not the CSRC's, and a 留置 is not a securities case.
+# 公安/侦查/检察: a criminal case is not a CSRC one either — "被公安机关立案
+# 侦查" is a public-security matter, and only the regulator's case freezes
+# refinancing.
+_NOISE = re.compile(
+    "立案受理|受理立案|纠纷|尽职调查|募集资金|三方|立案审查|审查调查|留置|公安|侦查|检察"
+)
 _CLOSE = re.compile("行政处罚决定书|结案|终止调查|撤销立案|不予处罚")
 # A penalty from the finance ministry or the tax bureau is not the CSRC closing
 # its case. Treating one as a closure hands a clean bill of health to a company
 # still under investigation — the one direction of error worth avoiding here.
 _OTHER_REGULATOR = re.compile("财政部|税务|环保|应急|海关|市场监管|银保监|人民银行|央行")
 
-_COLUMNS = ("symbol", "name", "kind", "date", "title", "url")
+# Who the case is about. A 5% holder being investigated is not the company
+# being investigated: excluding the stock for it would drop healthy names, and
+# a good share of filings name only such a party.
+#
+# 控股股东 and 实际控制人 stay severe even when named alone, because their
+# compliance gates the company's own refinancing and asset purchases — the same
+# freeze a company-level case causes. A director or a minority holder does not.
+#
+# Note "公司关于" is *not* a useful test: it matches "…控股子公司关于…" as
+# readily as "…公司关于…", and once mis-sorted a subsidiary's case as the
+# issuer's.
+_BLOCKER = re.compile("控股股东|实际控制人")
+# "公司及股东" / "本公司" — the issuer is among the subjects
+_INCLUDES_ISSUER = re.compile("公司及|公司、|本公司")
+_PARTY = re.compile("股东|董事|监事|高管|高级管理人员|总经理|财务总监|个人|子公司|参股公司")
+
+COMPANY = "company"
+PARTY = "party"
+
+_COLUMNS = ("symbol", "name", "kind", "date", "title", "url", "severity")
+_TAGS = re.compile(r"<[^>]+>")
 
 
 @dataclass(frozen=True)
 class RegulatoryEvent:
-    """One filing, either opening an investigation or closing one."""
+    """One filing, either opening an investigation or closing one.
+
+    ``severity`` separates "the issuer is under investigation" from "one of its
+    shareholders or executives is". Both are worth knowing; only the first
+    blocks a screen, because only the first stops the company itself from
+    refinancing or restructuring.
+    """
 
     symbol: str
     name: str
@@ -84,53 +133,26 @@ class RegulatoryEvent:
     date: str
     title: str
     url: str = ""
+    severity: str = COMPANY
 
     @property
     def is_open(self) -> bool:
         return self.kind == INVESTIGATION
 
-
-@dataclass(frozen=True)
-class ScanOutcome:
-    """What a scan produced, and which days it could not read.
-
-    ``scanned`` excludes ``failed`` on purpose: the state file is written from
-    this list, so a day that errored is retried next run instead of being
-    silently marked done. One bad response must not cost the other forty days.
-    """
-
-    events: list[RegulatoryEvent]
-    scanned: list[str]
-    failed: list[str]
+    @property
+    def is_issuer(self) -> bool:
+        return self.severity == COMPANY
 
 
-def _akshare() -> Any:
+def _requests() -> Any:
     try:
-        import akshare
+        import requests
     except ImportError as exc:  # pragma: no cover - depends on the environment
         raise ProviderUnavailable(
-            "akshare is not installed. Install the collection extras with:\n"
+            "requests is not installed. Install the collection extras with:\n"
             "    pip install -e '.[collect]'"
         ) from exc
-    return akshare
-
-
-def recent_sessions(days: int, today: date | None = None) -> list[str]:
-    """Weekdays in the last ``days`` calendar days, newest first.
-
-    Weekdays, not trading days: a public holiday costs one wasted request and
-    no correctness, whereas a holiday calendar costs a dependency that goes
-    stale every year.
-    """
-    if days < 1:
-        raise ValueError("days must be positive")
-    moment = today or date.today()
-    out: list[str] = []
-    for offset in range(days):
-        day = moment - timedelta(days=offset)
-        if day.weekday() < 5:
-            out.append(day.strftime("%Y%m%d"))
-    return out
+    return requests
 
 
 def _classify(title: str) -> str | None:
@@ -141,81 +163,136 @@ def _classify(title: str) -> str | None:
     return None
 
 
-def scan(
-    dates: list[str],
-    pause: float = 0.0,
-    skip: set[str] | None = None,
-) -> ScanOutcome:
-    """Read the whole-market announcement feed for each date and keep filings.
+def _severity(title: str) -> str:
+    """Whether the filing is about the issuer or about somebody close to it."""
+    if _BLOCKER.search(title):
+        return COMPANY
+    if _INCLUDES_ISSUER.search(title):
+        return COMPANY
+    if _PARTY.search(title):
+        return PARTY
+    return COMPANY
 
-    One request per date returns every announcement in the market that day —
-    three thousand rows — which is why ``skip`` exists: a store that already
-    covers a date should never pay for it twice.
 
-    A date that errors or comes back in an unexpected shape is recorded as
-    failed and retried next run, instead of aborting the other forty days and
-    losing the work. One bad response costing a whole scan is how a sixty-day
-    first run never finishes.
-    """
-    if not dates:
-        return ScanOutcome(events=[], scanned=[], failed=[])
-    akshare = _akshare()
-    covered = skip or set()
-    events: list[RegulatoryEvent] = []
-    scanned: list[str] = []
-    failed: list[str] = []
+def _plain(text: str) -> str:
+    """cninfo highlights the match with ``<em>``; the tag is not part of the title."""
+    return _TAGS.sub("", text).strip()
 
-    for day in dates:
-        if day in covered:
-            continue
+
+def _day(stamp: Any) -> str | None:
+    try:
+        return datetime.fromtimestamp(int(stamp) / 1000, _CST).date().isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _to_event(item: dict[str, Any]) -> RegulatoryEvent | None:
+    title = _plain(str(item.get("announcementTitle", "")))
+    kind = _classify(title)
+    if kind is None:
+        return None
+
+    code = str(item.get("secCode", "")).strip()
+    if not code.isdigit() or len(code) != 6:
+        return None
+    try:
+        symbol = normalize_symbol(code)
+    except ValueError:
+        return None  # indexes and funds share the platform; not tradable names
+
+    day = _day(item.get("announcementTime"))
+    if day is None:
+        return None
+
+    adjunct = str(item.get("adjunctUrl", "") or "")
+    return RegulatoryEvent(
+        symbol=symbol,
+        name=str(item.get("secName", "")).strip(),
+        kind=kind,
+        date=day,
+        title=title,
+        url=f"http://static.cninfo.com.cn/{adjunct}" if adjunct else "",
+        severity=_severity(title),
+    )
+
+
+def _search_pages(
+    keyword: str,
+    start: date,
+    end: date,
+    page_size: int,
+    max_pages: int,
+    pause: float,
+) -> list[dict[str, Any]]:
+    """Every title containing ``keyword`` in [start, end], page by page."""
+    requests = _requests()
+    found: list[dict[str, Any]] = []
+    total = None
+
+    for page in range(1, max_pages + 1):
+        params = {
+            "searchkey": keyword,
+            "sdate": start.isoformat(),
+            "edate": end.isoformat(),
+            "isfulltext": "false",
+            "sortName": "nothing",
+            "sortType": "desc",
+            "pageNum": str(page),
+            "pageSize": str(page_size),
+        }
         try:
-            # akshare renders a tqdm bar per page over a few dozen pages;
-            # left alone it buries the actual report
-            with redirect_stderr(io.StringIO()):
-                frame = akshare.stock_notice_report(symbol="全部", date=day)
-        except Exception:  # noqa: BLE001 - one bad date must not stop the scan
-            failed.append(day)
-            continue
+            response = requests.get(_CNINFO, params=params, headers=_HEADERS, timeout=30)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            raise ProviderError(
+                f"巨潮检索「{keyword}」第 {page} 页失败：{type(exc).__name__}: {exc}"
+            ) from exc
 
-        if frame is None:
-            failed.append(day)
-            continue
-        if frame.empty:
-            scanned.append(day)  # a holiday answering "nothing" is a result
-            continue
-        if {"代码", "公告标题"} - set(frame.columns):
-            # the API changed shape or handed back an error page; retrying
-            # tomorrow is cheaper than guessing what the columns meant
-            failed.append(day)
-            continue
-
-        scanned.append(day)
-        titles = frame["公告标题"].fillna("")
-        kinds = titles.map(_classify)
-        keep = kinds.notna()
-        subset = frame[keep]
-        for position, (_, row) in enumerate(subset.iterrows()):
-            code = str(row.get("代码", "")).strip()
-            if not code.isdigit() or len(code) != 6:
-                continue
-            try:
-                symbol = normalize_symbol(code)
-            except ValueError:
-                continue  # indexes and funds share the feed; they are not tradable names
-            events.append(
-                RegulatoryEvent(
-                    symbol=symbol,
-                    name=str(row.get("名称", "")).strip(),
-                    kind=str(kinds[keep].iloc[position]),
-                    date=str(row.get("公告日期", day)),
-                    title=str(row.get("公告标题", "")).strip(),
-                    url=str(row.get("网址", "") or ""),
-                )
-            )
+        batch = payload.get("announcements") or []
+        found.extend(batch)
+        total = int(payload.get("totalAnnouncement") or 0)
+        if not batch or len(found) >= total:
+            break
         if pause:
             time.sleep(pause)
 
-    return ScanOutcome(events=events, scanned=scanned, failed=failed)
+    if total is not None and len(found) < total:
+        # a truncated search would look like "these are all the cases this year"
+        raise ProviderError(
+            f"巨潮检索「{keyword}」只取到 {len(found)}/{total} 条，"
+            f"未翻完 {max_pages} 页上限；请调大 regulatory.max_pages"
+        )
+    return found
+
+
+def search_events(
+    days: int = 365,
+    today: date | None = None,
+    page_size: int = 50,
+    max_pages: int = 40,
+    pause: float = 0.0,
+) -> list[RegulatoryEvent]:
+    """Filings that open or close an investigation over the last ``days`` days.
+
+    A year by default, because that is how long a case can stay open — a sixty
+    day window would miss the companies that matter most, the ones put under
+    investigation long ago and never cleared.
+    """
+    if days < 1:
+        raise ValueError("days must be positive")
+    moment = today or date.today()
+    start = moment - timedelta(days=days)
+
+    seen: dict[tuple[str, str, str, str], RegulatoryEvent] = {}
+    for keyword in (*_OPEN_KEYWORDS, *_CLOSE_KEYWORDS):
+        for item in _search_pages(keyword, start, moment, page_size, max_pages, pause):
+            event = _to_event(item)
+            if event is None:
+                continue
+            # one filing matches several keywords; keep it once
+            seen.setdefault((event.symbol, event.kind, event.date, event.title), event)
+    return sorted(seen.values(), key=lambda event: (event.date, event.symbol))
 
 
 # --- storage ---------------------------------------------------------------
@@ -228,9 +305,9 @@ def _path(directory: Path | str) -> Path:
 def store(events: list[RegulatoryEvent], directory: Path | str) -> Path:
     """Append to the store, keeping every filing seen so far.
 
-    Appending rather than replacing is the whole point: the state "under
-    investigation since March" cannot be reconstructed from a thirty-day
-    window, so the history has to accumulate across runs.
+    Appending rather than replacing is the point: the search window is a year,
+    but the history you accumulate is not. Shrinking the window later must not
+    silently resurrect a company whose case was found under a wider one.
     """
     target = _path(directory)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -248,7 +325,12 @@ def load(directory: Path | str) -> pd.DataFrame:
     target = _path(directory)
     if not target.is_file():
         return pd.DataFrame(columns=list(_COLUMNS))
-    return pd.read_parquet(target)
+    frame = pd.read_parquet(target)
+    if "severity" not in frame.columns:
+        # a store written before severity existed: every filing in it was kept
+        # under the issuer rule, which is what that rule used to be
+        frame["severity"] = COMPANY
+    return frame
 
 
 def merge(*frames: pd.DataFrame) -> pd.DataFrame:
@@ -261,43 +343,14 @@ def merge(*frames: pd.DataFrame) -> pd.DataFrame:
     return combined.sort_values(["date", "symbol"]).reset_index(drop=True)
 
 
-def load_state(directory: Path | str) -> set[str]:
-    """Days already scanned, whether or not they produced a filing.
-
-    Derived from the event dates this would be wrong: six scanned days that
-    yielded five event dates would leave one day to be scanned again forever.
-    A day with no 立案 is a result, not a gap.
-    """
-    target = Path(directory) / "scan_state.json"
-    if not target.is_file():
-        return set()
-    payload = json.loads(target.read_text(encoding="utf-8"))
-    return {str(day) for day in payload.get("dates", [])}
-
-
-def save_state(days: list[str], directory: Path | str) -> Path:
-    """Remember which days are done, so the next run only fetches new ones."""
-    target = Path(directory) / "scan_state.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    merged = sorted(load_state(directory) | {str(day) for day in days})
-    # keep the file from growing without bound: older days are re-derivable
-    # from the store, and a year of ISO dates is still small
-    target.write_text(
-        json.dumps({"dates": merged[-400:]}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return target
-
-
 # --- manual list -----------------------------------------------------------
 
 
 def load_manual(path: Path | str | None) -> pd.DataFrame:
-    """Facts the scanner cannot see: a case opened before the scan window.
+    """Facts the search cannot see: a case opened before the window.
 
-    The store only knows what it watched. A company put under investigation in
-    2024 and still waiting is invisible to a sixty-day scan, and pretending
-    otherwise would give a false all-clear on exactly the names that matter.
+    A year covers most open cases. It does not cover the ones that started
+    earlier and never closed, and those are exactly the names that matter.
     """
     if path is None:
         return pd.DataFrame(columns=list(_COLUMNS))
@@ -321,6 +374,7 @@ def load_manual(path: Path | str | None) -> pd.DataFrame:
                 "date": str(row.get("date", "") or ""),
                 "title": str(row.get("note", "") or "手工登记"),
                 "url": "",
+                "severity": COMPANY if row.get("issuer", True) else PARTY,
             }
         )
     return pd.DataFrame(out, columns=list(_COLUMNS))
@@ -373,5 +427,6 @@ def active(
             date=str(latest_open["stamp"].date()),
             title=str(latest_open.get("title", "")),
             url=str(latest_open.get("url", "") or ""),
+            severity=str(latest_open.get("severity", COMPANY)),
         )
     return found

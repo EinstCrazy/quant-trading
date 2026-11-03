@@ -50,9 +50,12 @@ fundamentals:
   quarters: 8              # 最近 8 个已结束季度（两年）：够看趋势，不必翻十年
   pause_seconds: 0.0       # 每季度四次查询，标的多了再调大
 
-# 监管事件（证监会立案调查）。扫描过一次的日期不会重扫，日常只付一次请求。
+# 监管事件（证监会立案调查）。走巨潮标题检索，一年约 10 个请求、几秒钟。
 regulatory:
   output_directory: data/regulatory
-  lookback_days: 60        # 首次扫描回看多少个自然日
+  lookback_days: 365       # 回看多少天：一年，因为案子可能拖这么久
   active_days: 365         # 立案未结案的，排除多久
-  manual_file: config/regulatory.yaml   # 手工登记：自动扫描看不到的历史案件
+  manual_file: config/regulatory.yaml   # 手工登记：检索窗口外的历史悬案
+  pause_seconds: 0.2       # 每页之间停一下，别把对方站点打疼
+  page_size: 50
+  max_pages: 40            # 翻页上限；取不全时报错而不是假装齐了
