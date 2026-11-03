@@ -42,6 +42,7 @@ quant-screen = "quant_research.screen_cli:main"
 quant-nightly = "quant_research.nightly_cli:main"
 quant-indicators = "quant_research.indicators_cli:main"
 quant-factor = "quant_research.factor_cli:main"
+quant-fundamentals = "quant_research.fundamentals_cli:main"
 quant-ui = "quant_research.web.app:main"
 
 [tool.setuptools.packages.find]

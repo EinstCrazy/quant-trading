@@ -116,6 +116,14 @@ quant-factor --provider baostock --horizon 5                    # 全部因子�
 quant-factor --provider baostock --factors momentum --detail momentum   # 分层 + 衰减
 ```
 
+价格之外还有一层否决权：财报里的红旗（亏损、高杠杆、利润不含现金等），
+说明与边界见 [docs/FUNDAMENTALS.md](docs/FUNDAMENTALS.md)：
+
+```bash
+quant-fundamentals --provider baostock              # 财报红旗清单
+quant-screen --provider baostock --exclude-risky    # 剔除高风险后再选股
+```
+
 每晚一条命令（等到数据落地 → 收数 → 打分 → 归档，数据没到就不打分）：
 
 ```bash
@@ -192,6 +200,7 @@ quant-trading/
 | [docs/UI_DESIGN.md](docs/UI_DESIGN.md) | 本地工作台：架构、视图、API 契约与演进路径 |
 | [docs/INDICATORS.md](docs/INDICATORS.md) | 常用技术指标：公式、参数与实现细节（RSI / MACD / BOLL / KDJ / ATR 等） |
 | [docs/FACTORS.md](docs/FACTORS.md) | 因子检验：IC、分层收益、衰减，以及为什么不能拿样本内结果调参数 |
+| [docs/FUNDAMENTALS.md](docs/FUNDAMENTALS.md) | 财报红旗：六个阈值、脏数据校验、金融口径豁免与防前视 |
 | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | 研究约定与回测防坑清单 |
 
 ## 路线图摘要

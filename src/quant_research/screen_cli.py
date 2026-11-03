@@ -19,6 +19,9 @@ from quant_research.data.cache import (
     cache_path,
     load_panel_cache,
 )
+from quant_research.fundamentals import assess_many
+from quant_research.fundamentals.fetch import load as load_reports
+from quant_research.fundamentals.risk import LEVEL_HIGH, LEVEL_MEDIUM
 from quant_research.indicators import params_from_settings
 from quant_research.logging_setup import get_logger
 from quant_research.scoring import screen, to_target_weights
@@ -75,6 +78,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="comma-separated name=weight, e.g. momentum=1.0,rsi_reversal=0.3",
     )
+    parser.add_argument(
+        "--exclude-risky",
+        nargs="?",
+        const="高",
+        default="",
+        choices=["", "高", "中"],
+        help=(
+            "drop names at or above this financial risk level (default 高); "
+            "needs reports from quant-fundamentals"
+        ),
+    )
     parser.add_argument("--note", default="", help="free-text note stored with the record")
     parser.add_argument(
         "--no-record", action="store_true", help="print the list but do not write it down"
@@ -107,6 +121,21 @@ def main(argv: list[str] | None = None) -> int:
             _print_review(ScreenLedger(), panel, horizon=args.horizon)
             return 0
 
+        financial_risks = None
+        risk_levels: tuple[str, ...] = (LEVEL_HIGH,)
+        if args.exclude_risky:
+            reports = load_reports(settings.fundamentals.output_directory)
+            if reports.frame.empty:
+                logger.error(
+                    "没有财报数据，无法按财务风险过滤。先运行：quant-fundamentals --provider baostock"
+                )
+                return 1
+            # as_of, not "latest": a replay in June must not read the August filing
+            financial_risks = assess_many(reports, as_of=args.as_of)
+            risk_levels = (
+                (LEVEL_HIGH,) if args.exclude_risky == "高" else (LEVEL_HIGH, LEVEL_MEDIUM)
+            )
+
         result = screen(
             panel,
             as_of=args.as_of,
@@ -116,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
             factor_weights=factor_weights,
             indicator_factors=indicator_factors,
             indicator_params=params_from_settings(settings),
+            financial_risks=financial_risks,
+            exclude_risk_levels=risk_levels,
         )
         _print_picks(result)
 
@@ -133,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                     # reconstructable from the picks themselves
                     "indicator_factors": list(indicator_factors),
                     "factor_weights": factor_weights,
+                    "exclude_risky": args.exclude_risky,
                 },
                 note=args.note,
             )

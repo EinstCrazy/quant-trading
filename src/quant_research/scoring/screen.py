@@ -10,10 +10,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 
 from quant_research.data.loader import PricePanel
+from quant_research.fundamentals.risk import LEVEL_HIGH
 from quant_research.indicators import IndicatorParams
 from quant_research.logging_setup import get_logger
 from quant_research.portfolio.weights import signal_to_weights
@@ -95,6 +97,8 @@ def screen(
     skip_recent: int = 5,
     indicator_factors: Sequence[str] = (),
     indicator_params: IndicatorParams | None = None,
+    financial_risks: Sequence[Any] | None = None,
+    exclude_risk_levels: tuple[str, ...] = (LEVEL_HIGH,),
 ) -> ScreenResult:
     """Score the market as of one day and keep the top ``top_n`` buyable names.
 
@@ -183,6 +187,16 @@ def screen(
         locked = locked.fillna(False)
         dropped["limit_up_locked"] = int(locked.sum())
         usable = usable[~locked]
+
+    if financial_risks is not None:
+        # last filter before ranking: a name that fails here was already
+        # buyable on price and liquidity, so the only thing being removed is
+        # the reason a human would have vetoed it anyway
+        blocked = {risk.symbol for risk in financial_risks if risk.level in exclude_risk_levels}
+        if blocked:
+            flagged = usable.index.isin(blocked)
+            dropped["financial_risk"] = int(flagged.sum())
+            usable = usable[~flagged]
 
     if positive_only:
         # scores are daily z-scores, so a negative one lost to the average name

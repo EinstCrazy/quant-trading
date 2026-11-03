@@ -192,6 +192,31 @@ class IndicatorSettings:
             raise ValueError(f"indicators.boll_std must be positive, got {self.boll_std}")
 
 
+_FUNDAMENTALS_FIELDS = ("output_directory", "quarters", "pause_seconds")
+
+
+@dataclass(frozen=True)
+class FundamentalsSettings:
+    """How much financial history to keep, and where.
+
+    ``quarters`` defaults to eight: two years shows a trend, while asking for ten
+    years of filings multiplies the round trips by five to answer a question the
+    last two already answered.
+    """
+
+    output_directory: Path = Path("data/fundamentals")
+    quarters: int = 8
+    pause_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.quarters < 1:
+            raise ValueError(f"fundamentals.quarters must be at least 1, got {self.quarters}")
+        if self.pause_seconds < 0:
+            raise ValueError(
+                f"fundamentals.pause_seconds cannot be negative, got {self.pause_seconds}"
+            )
+
+
 def _parse_clock(text: str) -> time:
     try:
         hour, minute = (int(part) for part in str(text).split(":", maxsplit=1))
@@ -208,6 +233,7 @@ class Settings:
     backtest: BacktestSettings
     collection: CollectionSettings = field(default_factory=CollectionSettings)
     indicators: IndicatorSettings = field(default_factory=IndicatorSettings)
+    fundamentals: FundamentalsSettings = field(default_factory=FundamentalsSettings)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain nested dict (paths serialised as strings)."""
@@ -218,6 +244,7 @@ class Settings:
         payload["indicators"]["output_directory"] = str(self.indicators.output_directory)
         payload["indicators"]["ma_periods"] = list(self.indicators.ma_periods)
         payload["indicators"]["ema_periods"] = list(self.indicators.ema_periods)
+        payload["fundamentals"]["output_directory"] = str(self.fundamentals.output_directory)
         return payload
 
 
@@ -323,6 +350,15 @@ def _build_indicator_settings(section: Mapping[str, Any]) -> IndicatorSettings:
     )
 
 
+def _build_fundamentals_settings(section: Mapping[str, Any]) -> FundamentalsSettings:
+    defaults = FundamentalsSettings()
+    return FundamentalsSettings(
+        output_directory=Path(section.get("output_directory", defaults.output_directory)),
+        quarters=int(section.get("quarters", defaults.quarters)),
+        pause_seconds=float(section.get("pause_seconds", defaults.pause_seconds)),
+    )
+
+
 def load_settings(path: str | Path | None = None) -> Settings:
     """Load research settings from a YAML file into frozen dataclasses.
 
@@ -352,17 +388,22 @@ def load_settings(path: str | Path | None = None) -> Settings:
     indicator_section = config.get("indicators") or {}
     if not isinstance(indicator_section, Mapping):
         raise TypeError(f"Settings section 'indicators' must be a mapping: {settings_path}")
+    fundamental_section = config.get("fundamentals") or {}
+    if not isinstance(fundamental_section, Mapping):
+        raise TypeError(f"Settings section 'fundamentals' must be a mapping: {settings_path}")
 
     _reject_unknown(data_section, _DATA_FIELDS, "data")
     _reject_unknown(backtest_section, _BACKTEST_FIELDS, "backtest")
     _reject_unknown(collection_section, _COLLECTION_FIELDS, "collection")
     _reject_unknown(indicator_section, _INDICATOR_FIELDS, "indicators")
+    _reject_unknown(fundamental_section, _FUNDAMENTALS_FIELDS, "fundamentals")
 
     return Settings(
         data=_build_data_settings(data_section),
         backtest=_build_backtest_settings(backtest_section),
         collection=_build_collection_settings(collection_section),
         indicators=_build_indicator_settings(indicator_section),
+        fundamentals=_build_fundamentals_settings(fundamental_section),
     )
 
 
@@ -372,6 +413,7 @@ __all__ = [
     "BacktestSettings",
     "CollectionSettings",
     "DataSettings",
+    "FundamentalsSettings",
     "IndicatorSettings",
     "Settings",
     "load_settings",

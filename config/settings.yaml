@@ -43,3 +43,9 @@ indicators:
   cci_period: 14
   adx_period: 14
   volatility_period: 20
+
+# Financial reports. Run `quant-fundamentals --help` for CLI overrides.
+fundamentals:
+  output_directory: data/fundamentals
+  quarters: 8              # 最近 8 个已结束季度（两年）：够看趋势，不必翻十年
+  pause_seconds: 0.0       # 每季度四次查询，标的多了再调大
