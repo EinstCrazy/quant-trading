@@ -7,7 +7,7 @@ report that will not survive contact with the opening auction.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -99,6 +99,8 @@ def screen(
     indicator_params: IndicatorParams | None = None,
     financial_risks: Sequence[Any] | None = None,
     exclude_risk_levels: tuple[str, ...] = (LEVEL_HIGH,),
+    investigated: Mapping[str, Any] | None = None,
+    exclude_investigated: bool = True,
 ) -> ScreenResult:
     """Score the market as of one day and keep the top ``top_n`` buyable names.
 
@@ -187,6 +189,14 @@ def screen(
         locked = locked.fillna(False)
         dropped["limit_up_locked"] = int(locked.sum())
         usable = usable[~locked]
+
+    if investigated and exclude_investigated:
+        # a hard veto, not a score deduction: a company under CSRC investigation
+        # cannot refinance or restructure for as long as it lasts, and the price
+        # can stay cheerful right up to the restatement
+        watched = usable.index.isin(list(investigated))
+        dropped["under_investigation"] = int(watched.sum())
+        usable = usable[~watched]
 
     if financial_risks is not None:
         # last filter before ranking: a name that fails here was already

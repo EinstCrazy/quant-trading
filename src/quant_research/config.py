@@ -217,6 +217,32 @@ class FundamentalsSettings:
             )
 
 
+_REGULATORY_FIELDS = ("output_directory", "lookback_days", "active_days", "manual_file")
+
+
+@dataclass(frozen=True)
+class RegulatorySettings:
+    """Where the regulatory-event store lives, and how far back to scan.
+
+    ``lookback_days`` only bounds the *first* scan: once a day is recorded in
+    the state file it is never fetched again, so the daily cost is one request.
+    ``active_days`` is how long an unclosed 立案 keeps a name out of the screen.
+    """
+
+    output_directory: Path = Path("data/regulatory")
+    lookback_days: int = 60
+    active_days: int = 365
+    manual_file: Path = Path("config/regulatory.yaml")
+
+    def __post_init__(self) -> None:
+        if self.lookback_days < 1:
+            raise ValueError(
+                f"regulatory.lookback_days must be at least 1, got {self.lookback_days}"
+            )
+        if self.active_days < 1:
+            raise ValueError(f"regulatory.active_days must be at least 1, got {self.active_days}")
+
+
 def _parse_clock(text: str) -> time:
     try:
         hour, minute = (int(part) for part in str(text).split(":", maxsplit=1))
@@ -234,6 +260,7 @@ class Settings:
     collection: CollectionSettings = field(default_factory=CollectionSettings)
     indicators: IndicatorSettings = field(default_factory=IndicatorSettings)
     fundamentals: FundamentalsSettings = field(default_factory=FundamentalsSettings)
+    regulatory: RegulatorySettings = field(default_factory=RegulatorySettings)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain nested dict (paths serialised as strings)."""
@@ -245,6 +272,8 @@ class Settings:
         payload["indicators"]["ma_periods"] = list(self.indicators.ma_periods)
         payload["indicators"]["ema_periods"] = list(self.indicators.ema_periods)
         payload["fundamentals"]["output_directory"] = str(self.fundamentals.output_directory)
+        payload["regulatory"]["output_directory"] = str(self.regulatory.output_directory)
+        payload["regulatory"]["manual_file"] = str(self.regulatory.manual_file)
         return payload
 
 
@@ -359,6 +388,16 @@ def _build_fundamentals_settings(section: Mapping[str, Any]) -> FundamentalsSett
     )
 
 
+def _build_regulatory_settings(section: Mapping[str, Any]) -> RegulatorySettings:
+    defaults = RegulatorySettings()
+    return RegulatorySettings(
+        output_directory=Path(section.get("output_directory", defaults.output_directory)),
+        lookback_days=int(section.get("lookback_days", defaults.lookback_days)),
+        active_days=int(section.get("active_days", defaults.active_days)),
+        manual_file=Path(section.get("manual_file", defaults.manual_file)),
+    )
+
+
 def load_settings(path: str | Path | None = None) -> Settings:
     """Load research settings from a YAML file into frozen dataclasses.
 
@@ -391,12 +430,16 @@ def load_settings(path: str | Path | None = None) -> Settings:
     fundamental_section = config.get("fundamentals") or {}
     if not isinstance(fundamental_section, Mapping):
         raise TypeError(f"Settings section 'fundamentals' must be a mapping: {settings_path}")
+    regulatory_section = config.get("regulatory") or {}
+    if not isinstance(regulatory_section, Mapping):
+        raise TypeError(f"Settings section 'regulatory' must be a mapping: {settings_path}")
 
     _reject_unknown(data_section, _DATA_FIELDS, "data")
     _reject_unknown(backtest_section, _BACKTEST_FIELDS, "backtest")
     _reject_unknown(collection_section, _COLLECTION_FIELDS, "collection")
     _reject_unknown(indicator_section, _INDICATOR_FIELDS, "indicators")
     _reject_unknown(fundamental_section, _FUNDAMENTALS_FIELDS, "fundamentals")
+    _reject_unknown(regulatory_section, _REGULATORY_FIELDS, "regulatory")
 
     return Settings(
         data=_build_data_settings(data_section),
@@ -404,6 +447,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         collection=_build_collection_settings(collection_section),
         indicators=_build_indicator_settings(indicator_section),
         fundamentals=_build_fundamentals_settings(fundamental_section),
+        regulatory=_build_regulatory_settings(regulatory_section),
     )
 
 
@@ -415,6 +459,7 @@ __all__ = [
     "DataSettings",
     "FundamentalsSettings",
     "IndicatorSettings",
+    "RegulatorySettings",
     "Settings",
     "load_settings",
 ]

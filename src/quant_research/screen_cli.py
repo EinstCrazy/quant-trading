@@ -19,7 +19,7 @@ from quant_research.data.cache import (
     cache_path,
     load_panel_cache,
 )
-from quant_research.fundamentals import assess_many
+from quant_research.fundamentals import assess_many, regulatory
 from quant_research.fundamentals.fetch import load as load_reports
 from quant_research.fundamentals.risk import LEVEL_HIGH, LEVEL_MEDIUM
 from quant_research.indicators import params_from_settings
@@ -89,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
             "needs reports from quant-fundamentals"
         ),
     )
+    parser.add_argument(
+        "--allow-investigated",
+        action="store_true",
+        help="keep names under CSRC investigation (excluded by default)",
+    )
     parser.add_argument("--note", default="", help="free-text note stored with the record")
     parser.add_argument(
         "--no-record", action="store_true", help="print the list but do not write it down"
@@ -121,6 +126,28 @@ def main(argv: list[str] | None = None) -> int:
             _print_review(ScreenLedger(), panel, horizon=args.horizon)
             return 0
 
+        investigated = None
+        if not args.allow_investigated:
+            stored = regulatory.load(settings.regulatory.output_directory)
+            manual = regulatory.load_manual(settings.regulatory.manual_file)
+            investigated = regulatory.active(
+                regulatory.merge(stored, manual),
+                as_of=args.as_of,
+                within_days=settings.regulatory.active_days,
+            )
+            if investigated:
+                logger.warning(
+                    "%d 只处于证监会调查中，已排除：%s",
+                    len(investigated),
+                    ", ".join(sorted(investigated)),
+                )
+            elif stored.empty and manual.empty:
+                # silence here would be the worst outcome: the filter looks
+                # active, drops nothing, and the user never learns why
+                logger.warning(
+                    "没有监管事件数据，立案过滤未生效。先运行：quant-fundamentals --provider baostock"
+                )
+
         financial_risks = None
         risk_levels: tuple[str, ...] = (LEVEL_HIGH,)
         if args.exclude_risky:
@@ -147,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
             indicator_params=params_from_settings(settings),
             financial_risks=financial_risks,
             exclude_risk_levels=risk_levels,
+            investigated=investigated,
+            exclude_investigated=not args.allow_investigated,
         )
         _print_picks(result)
 
@@ -165,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
                     "indicator_factors": list(indicator_factors),
                     "factor_weights": factor_weights,
                     "exclude_risky": args.exclude_risky,
+                    "allow_investigated": args.allow_investigated,
                 },
                 note=args.note,
             )

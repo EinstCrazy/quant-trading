@@ -120,8 +120,15 @@ quant-factor --provider baostock --factors momentum --detail momentum   # 分层
 说明与边界见 [docs/FUNDAMENTALS.md](docs/FUNDAMENTALS.md)：
 
 ```bash
-quant-fundamentals --provider baostock              # 财报红旗清单
+quant-fundamentals --provider baostock              # 财报红旗 + 立案调查提醒
 quant-screen --provider baostock --exclude-risky    # 剔除高风险后再选股
+```
+
+被证监会立案调查的标的属于**硬否决**，选股默认排除，提醒与数据来源见
+[docs/REGULATORY.md](docs/REGULATORY.md)：
+
+```bash
+quant-screen --provider baostock --allow-investigated   # 放行，查看完整名单
 ```
 
 每晚一条命令（等到数据落地 → 收数 → 打分 → 归档，数据没到就不打分）：
@@ -201,6 +208,7 @@ quant-trading/
 | [docs/INDICATORS.md](docs/INDICATORS.md) | 常用技术指标：公式、参数与实现细节（RSI / MACD / BOLL / KDJ / ATR 等） |
 | [docs/FACTORS.md](docs/FACTORS.md) | 因子检验：IC、分层收益、衰减，以及为什么不能拿样本内结果调参数 |
 | [docs/FUNDAMENTALS.md](docs/FUNDAMENTALS.md) | 财报红旗：六个阈值、脏数据校验、金融口径豁免与防前视 |
+| [docs/REGULATORY.md](docs/REGULATORY.md) | 证监会立案调查：状态推导、关键词去噪、增量扫描与硬否决 |
 | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | 研究约定与回测防坑清单 |
 
 ## 路线图摘要

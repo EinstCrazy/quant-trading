@@ -49,3 +49,10 @@ fundamentals:
   output_directory: data/fundamentals
   quarters: 8              # 最近 8 个已结束季度（两年）：够看趋势，不必翻十年
   pause_seconds: 0.0       # 每季度四次查询，标的多了再调大
+
+# 监管事件（证监会立案调查）。扫描过一次的日期不会重扫，日常只付一次请求。
+regulatory:
+  output_directory: data/regulatory
+  lookback_days: 60        # 首次扫描回看多少个自然日
+  active_days: 365         # 立案未结案的，排除多久
+  manual_file: config/regulatory.yaml   # 手工登记：自动扫描看不到的历史案件

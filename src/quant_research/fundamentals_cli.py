@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import unicodedata
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ import pandas as pd
 
 from quant_research.config import load_settings
 from quant_research.data.cache import load_panel_cache
-from quant_research.fundamentals import assess_many, collect, load, merge, store
+from quant_research.fundamentals import assess_many, collect, load, merge, regulatory, store
 from quant_research.fundamentals.risk import LEVEL_HIGH, LEVEL_MEDIUM, LEVEL_UNKNOWN
 from quant_research.logging_setup import get_logger
 
@@ -43,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quarters", type=int, default=0, help="how many quarters to fetch")
     parser.add_argument("--as-of", dest="as_of", help="judge with reports public on this date")
     parser.add_argument("--refresh", action="store_true", help="refetch instead of using the store")
+    parser.add_argument(
+        "--no-scan",
+        action="store_true",
+        help="skip the announcement scan; use only what is already stored",
+    )
     parser.add_argument(
         "--min-level",
         default="",
@@ -118,11 +124,53 @@ def main(argv: list[str] | None = None) -> int:
             floor = _ORDER[args.min_level]
             risks = [risk for risk in risks if _ORDER.get(risk.level, 0) >= floor]
 
-        _print(risks, panel, as_of=args.as_of)
+        investigated = _regulatory(args, settings)
+        _print(risks, panel, as_of=args.as_of, investigated=investigated)
         return 0
     except (ValueError, FileNotFoundError, KeyError) as exc:
         logger.error("财报评估失败：%s: %s", type(exc).__name__, exc)
         return 1
+
+
+def _regulatory(args: Any, settings: Any) -> dict[str, Any]:
+    """Anyone under investigation, from the store, the manual list, and a scan.
+
+    The scan is incremental by design: a day once read is never read again, so
+    the steady-state cost is one request. The manual list covers what a window
+    cannot — cases opened before the scan started and still open today.
+    """
+    directory = Path(settings.regulatory.output_directory)
+    moment = pd.Timestamp(args.as_of).date() if args.as_of else date.today()
+
+    if args.no_scan:
+        logger.info("跳过公告扫描（--no-scan），只用已存事件")
+    else:
+        covered = regulatory.load_state(directory)
+        days = regulatory.recent_sessions(settings.regulatory.lookback_days, today=moment)
+        pending = [day for day in days if day not in covered]
+        if pending:
+            logger.info(
+                "扫描 %d 个交易日的公告（已覆盖 %d 天，只取新增）", len(pending), len(covered)
+            )
+            outcome = regulatory.scan(pending)
+            regulatory.store(outcome.events, directory)
+            # only the days that actually got read: a failed date stays out of
+            # the state so the next run retries it instead of skipping it
+            regulatory.save_state(outcome.scanned, directory)
+            if outcome.events:
+                logger.info("新增 %d 条监管事件", len(outcome.events))
+            if outcome.failed:
+                logger.warning(
+                    "%d 个交易日取数失败，下次会重试：%s",
+                    len(outcome.failed),
+                    ", ".join(outcome.failed),
+                )
+
+    combined = regulatory.merge(
+        regulatory.load(directory),
+        regulatory.load_manual(settings.regulatory.manual_file),
+    )
+    return regulatory.active(combined, as_of=moment, within_days=settings.regulatory.active_days)
 
 
 def _number(value: float | None, scale: float = 1.0, digits: int = 2) -> str:
@@ -154,16 +202,60 @@ _COLUMNS: tuple[tuple[str, int, bool], ...] = (
     ("流动比", 8, True),
     ("现金/利润", 11, True),
     ("净利同比", 10, True),
+    ("监管", 7, False),
 )
 
 
+def _percent(value: float | None, scale: float = 100.0, digits: int = 1) -> str:
+    """``—`` when missing, not ``—%``: a dash with a unit still claims a unit."""
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{value * scale:.{digits}f}%"
+
+
 def _row(cells: list[str]) -> str:
-    return "".join(
+    # one space between columns: a right-aligned cell has no trailing space of
+    # its own, so without this the last column butts against the next label
+    return " ".join(
         _pad(text, width, right) for text, (_, width, right) in zip(cells, _COLUMNS, strict=True)
     )
 
 
-def _print(risks: list[Any], panel: Any, as_of: str | None = None) -> None:
+def _print_regulatory(investigated: dict[str, Any], as_of: str | None = None) -> None:
+    """The alert that matters most, printed before everything else.
+
+    A ratio that looks wrong invites a second look. A 立案告知书 is not a
+    judgement call: refinancing and restructuring stop, and the outcome is
+    usually a restatement or a delisting. It belongs at the top, not in a column.
+    """
+    if not investigated:
+        print("监管风险 · 未发现处于证监会调查中的标的")
+        print()
+        return
+
+    print(f"⚠ 监管风险 · {len(investigated)} 只正在被证监会调查（策略默认排除）")
+    print()
+    for event in sorted(
+        investigated.values(), key=lambda item: (item.date, item.symbol), reverse=True
+    ):
+        title = event.title if len(event.title) <= 44 else event.title[:43] + "…"
+        print(f"  {event.symbol:<11}{event.date:<12}{_pad(event.name, 10)}{title}")
+    print()
+    print("  立案期间再融资、重组、发行股份购买资产都会被卡住，供应商与银行也会收紧；")
+    print("  解除条件是有结案公告，不是股价反弹。名单来源：全市场公告扫描 + 手工登记。")
+    if as_of:
+        print(f"  按 {as_of} 当日已公告的口径：之后发布的立案未计入。")
+    print()
+
+
+def _print(
+    risks: list[Any],
+    panel: Any,
+    as_of: str | None = None,
+    investigated: dict[str, Any] | None = None,
+) -> None:
+    found = investigated or {}
+    _print_regulatory(found, as_of)
     if not risks:
         print("没有符合条件的结果")
         return
@@ -190,17 +282,19 @@ def _print(risks: list[Any], panel: Any, as_of: str | None = None) -> None:
     print(_row([title for title, _, _ in _COLUMNS]) + "  原因")
     for risk in sorted(risks, key=lambda item: (-item.score, item.symbol)):
         snapshot = risk.snapshot
+        watch = "立案" if risk.symbol in found else "—"
         if snapshot is None:
-            print(_row([risk.symbol, risk.level, "—", "—", "—", "—", "—"]) + "  无财报")
+            print(_row([risk.symbol, risk.level, "—", "—", "—", "—", "—", watch]) + "  无财报")
             continue
         cells = [
             risk.symbol,
             risk.level,
             f"{risk.score:.0f}",
-            _number(snapshot.liability_to_asset, 100, 1) + "%",
+            _percent(snapshot.liability_to_asset),
             _number(snapshot.current_ratio),
             _number(snapshot.cfo_to_profit),
-            _number(snapshot.net_profit_yoy, 100, 1) + "%",
+            _percent(snapshot.net_profit_yoy),
+            watch,
         ]
         print(_row(cells) + f"  {risk.reason}")
     print()
