@@ -88,6 +88,26 @@ class AkshareProvider(MarketDataProvider):
             raise ProviderError("stock_info_a_code_name returned no usable 'code' column")
         return [normalize_symbol(str(code).zfill(6)) for code in table["code"]]
 
+    def list_named_symbols(self) -> dict[str, str]:
+        """The universe with the names this call already carries.
+
+        Same request as ``list_symbols``, which is why the names cost nothing
+        extra — only the willingness to keep the column.
+        """
+        akshare = self._akshare()
+        try:
+            table = akshare.stock_info_a_code_name()
+        except Exception as exc:
+            raise ProviderError(f"failed to list A-share names: {exc}") from exc
+
+        if table is None or table.empty or "code" not in table.columns:
+            raise ProviderError("stock_info_a_code_name returned no usable 'code' column")
+        names = table["name"] if "name" in table.columns else ["" for _ in range(len(table))]
+        named: dict[str, str] = {}
+        for code, name in zip(table["code"], names):
+            named[normalize_symbol(str(code).zfill(6))] = str(name or "").strip()
+        return named
+
     def fetch_daily(
         self,
         symbols: list[str],

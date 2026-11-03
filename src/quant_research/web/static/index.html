@@ -64,6 +64,17 @@
            padding: 10px 14px; border-radius: 8px; font-size: 13px; opacity: 0;
            transition: opacity .2s; pointer-events: none; max-width: 60ch; }
   #toast.show { opacity: 1; }
+  /* 代码补全：菜单挂在 body 上（fixed），不挤动表单布局 */
+  .ac-menu { position: fixed; z-index: 50; background: var(--panel); border: 1px solid var(--line);
+             border-radius: 6px; box-shadow: 0 8px 24px rgba(15, 23, 42, .12);
+             max-height: 280px; overflow: auto; padding: 4px; }
+  .ac-item { display: flex; gap: 10px; align-items: baseline; padding: 5px 8px;
+             border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .ac-item.active, .ac-item:hover { background: var(--bg); }
+  .ac-item .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                   color: var(--muted); flex: none; }
+  .ac-item .nm { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ac-empty { padding: 8px; font-size: 12px; color: var(--muted); }
   .job { border-top: 1px solid var(--line); padding: 8px 0; font-size: 12px; }
   .job:first-child { border-top: 0; }
   .job-head { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
@@ -256,7 +267,7 @@
       <div class="card">
         <h3>单只查询</h3>
         <div class="row">
-          <input id="ind-symbol" placeholder="600519.SH" style="width:140px">
+          <input id="ind-symbol" data-ac="symbol" placeholder="600519.SH 或 茅台" style="width:180px">
           <label>天数</label>
           <input id="ind-days" type="number" value="120" style="width:80px">
           <button class="btn" id="ind-query">查</button>
@@ -974,7 +985,7 @@ function buildCollectForm() {
     <div class="field"><label>范围</label><select id="col-all">
       <option value="false">指定标的</option><option value="true">全市场</option></select></div>
     <div class="field" style="flex:2"><label>标的（逗号分隔，留空=已存全部）</label>
-      <input id="col-symbols-input" placeholder="600519.SH,000001.SZ"></div>
+      <input id="col-symbols-input" data-ac="symbol-multi" placeholder="600519.SH, 000001.SZ"></div>
     <div class="field"><label>开始日期</label><input id="col-start" type="date"></div>
     <div class="field"><label>结束日期</label><input id="col-end" type="date"></div>
     <div class="field"><label>全量重拉</label><select id="col-full">
@@ -1369,6 +1380,135 @@ $("ind-query").addEventListener("click", loadIndicatorDetail);
 $("exp-sort").addEventListener("change", loadExperiments);
 $("exp-refresh").addEventListener("click", loadExperiments);
 $("grid-run").addEventListener("click", runGrid);
+
+/* ---------- 代码补全 ---------- */
+/* 输入 600519 或 茅台，从 /api/symbols 取候选，项里同时给代码和中文名。
+   菜单挂在 body 上用 fixed 定位：表单布局是 flex，插 wrapper 会挤动兄弟元素。
+   状态按输入框隔离（hits/cursor/seq），seq 用来丢弃过期的响应——打字比网络快。 */
+function attachSymbolAutocomplete(input, multiple) {
+  const menu = document.createElement("div");
+  menu.className = "ac-menu";
+  menu.hidden = true;
+  document.body.appendChild(menu);
+
+  let hits = [];
+  let cursor = -1;
+  let timer = null;
+  let seq = 0;
+
+  function fragment() {
+    if (!multiple) return input.value.trim();
+    const parts = input.value.split(",");
+    return parts[parts.length - 1].trim();
+  }
+
+  function close() {
+    menu.hidden = true;
+    hits = [];
+    cursor = -1;
+  }
+
+  function place() {
+    const box = input.getBoundingClientRect();
+    menu.style.left = `${box.left}px`;
+    menu.style.top = `${box.bottom + 2}px`;
+    menu.style.minWidth = `${Math.max(box.width, 240)}px`;
+  }
+
+  function paint() {
+    if (!hits.length) return;
+    menu.innerHTML = hits.map((hit, index) => `
+      <div class="ac-item${index === cursor ? " active" : ""}" data-i="${index}">
+        <span class="code">${hit.symbol}</span>
+        <span class="nm">${hit.name || ""}</span>
+      </div>`).join("");
+    place();
+    menu.hidden = false;
+  }
+
+  function apply(hit) {
+    if (multiple) {
+      const parts = input.value.split(",");
+      parts[parts.length - 1] = " " + hit.symbol;
+      input.value = parts.map((part) => part.trim()).filter(Boolean).join(", ") + ", ";
+    } else {
+      input.value = hit.symbol;
+    }
+    close();
+    input.dispatchEvent(new Event("change"));
+    input.focus();
+  }
+
+  function notice(text) {
+    menu.innerHTML = `<div class="ac-empty">${text}</div>`;
+    place();
+    menu.hidden = false;
+  }
+
+  async function ask() {
+    const text = fragment();
+    if (!text) { close(); return; }
+    const mine = ++seq;
+    try {
+      const payload = await api(`/symbols?q=${encodeURIComponent(text)}&limit=8`);
+      if (mine !== seq) return;  // 更晚的按键已经赢了
+      hits = payload.items || [];
+      cursor = hits.length ? 0 : -1;
+      if (hits.length) paint();
+      else if (!payload.available) notice("名称表未建立：先运行 quant-symbols --refresh");
+      else close();
+    } catch (error) {
+      close();
+    }
+  }
+
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(ask, 200);
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (menu.hidden) return;
+    if (event.key === "Escape") { close(); return; }
+    if (!hits.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      cursor = (cursor + 1) % hits.length;
+      paint();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      cursor = (cursor - 1 + hits.length) % hits.length;
+      paint();
+    } else if (event.key === "Enter" && cursor >= 0) {
+      event.preventDefault();
+      apply(hits[cursor]);
+    }
+  });
+
+  // mousedown 而不是 click：blur 会先于 click 触发，等 click 时菜单已经关了
+  menu.addEventListener("mousedown", (event) => {
+    const item = event.target.closest(".ac-item");
+    if (!item) return;
+    event.preventDefault();
+    apply(hits[Number(item.dataset.i)]);
+  });
+
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  window.addEventListener("scroll", close, true);
+}
+
+/* 表单会被 innerHTML 整块重绘（采集页每次刷新都重建），所以用 observer 补挂，
+   而不是在初始化时绑一次。WeakSet 保证同一个输入框只增强一次。 */
+const enhancedInputs = new WeakSet();
+function enhanceSymbolInputs() {
+  document.querySelectorAll("input[data-ac]").forEach((input) => {
+    if (enhancedInputs.has(input)) return;
+    enhancedInputs.add(input);
+    attachSymbolAutocomplete(input, input.dataset.ac === "symbol-multi");
+  });
+}
+new MutationObserver(enhanceSymbolInputs).observe(document.body, { childList: true, subtree: true });
+enhanceSymbolInputs();
 
 (async function start() {
   await loadDatasets();

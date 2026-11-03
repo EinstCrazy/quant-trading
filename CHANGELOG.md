@@ -6,6 +6,27 @@
 
 ### Added
 
+- 代码补全与中文名称（`quant-symbols` + `GET /api/symbols`）：Web 里的代码输入框边打
+  边补全，候选同时给出代码与中文名。名称不是新请求——baostock 的 `query_all_stock`
+  与 akshare 的 `stock_info_a_code_name` 本来就带回 `code_name`，只是 `list_symbols`
+  把它丢了，新增的 `provider.list_named_symbols()` 把它留下来。
+  - **落表而不是每次查**：全市场清单 akshare 几十秒、baostock 8 秒，而名称几乎不变，
+    所以存 `data/universe/names.parquet`，`quant-symbols --refresh` 按需刷新；
+    接口只读磁盘，不把几十秒的抓取放进按键路径
+  - **排序先代码后名称**：完整代码 → 裸代码 → 代码前缀 → 名称前缀 → 名称子串。
+    敲了六位数字的人要的是那一只，不是所有含这串数字的东西
+  - **200ms 防抖 + `seq` 丢弃过期响应**：`6005` 的响应可能在 `600519` 之后回来，
+    不丢弃会让下拉退回到上一次的结果
+  - **菜单挂 body（fixed）**：表单是 flex，插一层 wrapper 会挤动兄弟元素；
+    用 `mousedown` 而非 `click`，因为 `blur` 先于 `click` 触发，等 click 时菜单已关
+  - **`MutationObserver` 补挂**：采集页每次刷新都整块重绘表单，绑在元素上的监听会消失
+  - 多选输入替换最后一个逗号后的片段并补回 `", "`，方便接着敲下一只
+  - 空表拒绝写入（`universe.save({})` 抛错）：用空表覆盖好表会让所有输入框悄悄退化
+    成只能补代码，界面上看不出任何异常；接口用 `available: false` 明说此事
+  - 17 条测试：完整代码/裸代码/交易所前缀/名称前缀/名称子串/空查询/空表/limit/
+    无名称行、存取往返、mock 刷新、异常包装、接口命中与 `available: false`、超长查询 422
+  - 实测 baostock 全市场 7441 只 8 秒，见 docs/SYMBOLS.md
+
 - 本地 Web 工作台 `quant-ui`（FastAPI + 零构建前端）：数据质量、回测、策略对比、
   采集状态与补数四个视图。可选依赖 `pip install -e '.[web]'`，默认只监听本机。
 - 工作台任务队列：回测 / 对比 / 采集可提交为后台任务，带进度、协作式取消，

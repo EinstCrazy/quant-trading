@@ -88,8 +88,8 @@ class BaostockProvider(MarketDataProvider):
             raise ProviderError(f"{normalised}: BaoStock does not cover this exchange")
         return f"{tag}.{code}"
 
-    def list_symbols(self) -> list[str]:
-        """Every tradable listing, as of the most recent trading day.
+    def _tradable_rows(self) -> list[list[str]]:
+        """``[code, tradeStatus, code_name]`` for the latest day that answers.
 
         ``query_all_stock`` answers only for a trading day: asked on a weekend, or
         before the day's first update, it returns nothing at all. So walk back from
@@ -111,11 +111,21 @@ class BaostockProvider(MarketDataProvider):
         finally:
             baostock.logout()
 
-        # rows are [code, tradeStatus, code_name]; keep what can actually trade
-        symbols = [normalize_symbol(row[0]) for row in rows if row[1] == "1"]
-        if not symbols:
+        tradable = [row for row in rows if len(row) > 1 and row[1] == "1"]
+        if not tradable:
             raise ProviderError("query_all_stock returned no tradable symbol")
-        return symbols
+        return tradable
+
+    def list_symbols(self) -> list[str]:
+        """Every tradable listing, as of the most recent trading day."""
+        return [normalize_symbol(row[0]) for row in self._tradable_rows()]
+
+    def list_named_symbols(self) -> dict[str, str]:
+        """The same universe, keeping the ``code_name`` column it already carries."""
+        return {
+            normalize_symbol(row[0]): (row[2].strip() if len(row) > 2 else "")
+            for row in self._tradable_rows()
+        }
 
     def fetch_daily(
         self,

@@ -27,7 +27,7 @@ from quant_research.backtest import (
 from quant_research.backtest.engine import BacktestResult, run_signal_backtest
 from quant_research.collector import collect_once
 from quant_research.config import Settings, load_settings
-from quant_research.data import describe_panel, load_price_panel
+from quant_research.data import describe_panel, load_price_panel, universe
 from quant_research.data.cache import build_panel_cache, cache_path, load_panel_cache
 from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers import get_provider
@@ -76,12 +76,40 @@ from .schemas import (
     ScreenReviewOut,
     SeriesLineOut,
     SeriesPanelOut,
+    SymbolOut,
+    SymbolSearchOut,
     VariantIn,
 )
 
 logger = get_logger("web.api")
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/symbols", response_model=SymbolSearchOut)
+def symbol_search(
+    q: str = Query("", max_length=32),
+    limit: int = Query(20, ge=1, le=50),
+) -> SymbolSearchOut:
+    """Autocomplete for the code inputs: match a code prefix or a name substring.
+
+    Read-only and request-cheap: the table is loaded from disk, never fetched
+    here, because the universe query costs tens of seconds and typists do not
+    wait that long between keystrokes.
+    """
+    settings = load_settings()
+    frame = universe.load(settings.data.directory)
+    if frame.empty:
+        return SymbolSearchOut(items=[], available=False, total=0)
+
+    hits = universe.search(frame, q, limit=limit)
+    stamp = frame["updated_at"].iloc[0] if "updated_at" in frame.columns else None
+    return SymbolSearchOut(
+        items=[SymbolOut(symbol=item.symbol, name=item.name) for item in hits],
+        available=True,
+        total=len(frame),
+        updated_at=None if stamp is None else str(stamp)[:19],
+    )
 
 
 # --- datasets ----------------------------------------------------------------

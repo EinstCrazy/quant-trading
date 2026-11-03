@@ -178,6 +178,16 @@ class MarketDataProvider(ABC):
     def list_symbols(self) -> list[str]:
         """Return every symbol the source can serve, normalised."""
 
+    def list_named_symbols(self) -> dict[str, str]:
+        """``{symbol: Chinese name}`` for the whole universe.
+
+        Not abstract: a source that publishes no names still answers, with empty
+        strings, so autocomplete degrades to bare codes instead of failing. Both
+        real adapters already receive the names in the same call that lists the
+        universe — they simply used to drop them.
+        """
+        return {symbol: "" for symbol in self.list_symbols()}
+
     @abstractmethod
     def fetch_daily(
         self,

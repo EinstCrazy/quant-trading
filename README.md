@@ -157,6 +157,15 @@ quant-ui                 # 打开 http://127.0.0.1:8000
 六个视图：数据质量、回测、策略对比、采集状态与补数、今日建议、技术指标。设计与取舍见
 [docs/UI_DESIGN.md](docs/UI_DESIGN.md)。
 
+代码输入框会边打边补全，候选里同时给出中文名（先刷一次名称表，之后不用再管）：
+
+```bash
+quant-symbols --refresh              # 拉全市场代码+名称（baostock 约 8 秒）
+quant-symbols -q 茅台                # 命令行也能查：600519.SH 贵州茅台
+```
+
+输入 `600519`、`sh600519` 或 `茅台` 都能命中，细节见 [docs/SYMBOLS.md](docs/SYMBOLS.md)。
+
 ## 项目结构
 
 ```text

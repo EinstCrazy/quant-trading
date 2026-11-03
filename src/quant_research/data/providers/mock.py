@@ -41,6 +41,10 @@ class MockProvider(MarketDataProvider):
     def list_symbols(self) -> list[str]:
         return list(self._symbols)
 
+    def list_named_symbols(self) -> dict[str, str]:
+        # synthetic names keep the autocomplete path testable without a network
+        return {symbol: f"示例{symbol.partition('.')[0]}" for symbol in self._symbols}
+
     def fetch_daily(
         self,
         symbols: list[str],

@@ -19,6 +19,7 @@ data/cache/**
 data/indicators/**
 data/fundamentals/**
 data/regulatory/**
+data/universe/**
 reports/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep

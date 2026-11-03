@@ -330,6 +330,27 @@ class CompareRowOut(BaseModel):
     mean_turnover: float
 
 
+class SymbolOut(BaseModel):
+    """One autocomplete hit: the code to submit, and the name to read."""
+
+    symbol: str
+    name: str = ""
+
+
+class SymbolSearchOut(BaseModel):
+    """Hits plus whether the name table exists at all.
+
+    ``available=False`` is not an error: the inputs still accept a code, they
+    just cannot complete it. Saying so lets the UI prompt for ``quant-symbols
+    --refresh`` instead of quietly showing nothing.
+    """
+
+    items: list[SymbolOut] = Field(default_factory=list)
+    available: bool = False
+    total: int = 0
+    updated_at: str | None = None
+
+
 __all__ = [
     "BacktestOut",
     "BacktestRequest",
@@ -340,5 +361,7 @@ __all__ = [
     "DatasetOut",
     "PolicyIn",
     "RebalanceIn",
+    "SymbolOut",
+    "SymbolSearchOut",
     "VariantIn",
 ]
