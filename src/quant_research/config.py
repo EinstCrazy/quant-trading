@@ -33,6 +33,7 @@ _COLLECTION_FIELDS = (
     "retries",
     "pause_seconds",
     "report_directory",
+    "provider_options",
 )
 
 
@@ -92,6 +93,10 @@ class CollectionSettings:
     retries: int = 2
     pause_seconds: float = 0.5
     report_directory: Path = Path("reports/collection")
+    # extra kwargs handed to the provider constructor — futu's host/port/markets
+    # live here, because no other source needs them and a field per source is
+    # how config classes rot
+    provider_options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.format not in STORAGE_FORMATS:
@@ -360,6 +365,7 @@ def _build_collection_settings(section: Mapping[str, Any]) -> CollectionSettings
         retries=int(section.get("retries", defaults.retries)),
         pause_seconds=float(section.get("pause_seconds", defaults.pause_seconds)),
         report_directory=Path(section.get("report_directory", defaults.report_directory)),
+        provider_options=dict(section.get("provider_options", defaults.provider_options) or {}),
     )
 
 

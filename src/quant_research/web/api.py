@@ -494,7 +494,11 @@ def _collect_report(
 ) -> dict[str, Any]:
     settings = load_settings()
     try:
-        provider = get_provider(request.provider, adjust=settings.collection.adjust)
+        provider = get_provider(
+            request.provider,
+            adjust=settings.collection.adjust,
+            **settings.collection.provider_options,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -671,7 +675,11 @@ def submit_collect(
 ) -> JobRef:
     settings = load_settings()
     try:
-        get_provider(request.provider, adjust=settings.collection.adjust)
+        get_provider(
+            request.provider,
+            adjust=settings.collection.adjust,
+            **settings.collection.provider_options,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

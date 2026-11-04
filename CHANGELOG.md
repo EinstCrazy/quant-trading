@@ -6,6 +6,16 @@
 
 ### Added
 
+- futu 数据源接入采集链路（`collection.provider_options`）：把网关参数（`host`、
+  `port`、`markets`）从 YAML 原样传给 provider 构造函数。采集 CLI 与 Web 采集都从
+  settings 构造 provider、从不走命令行旗标——一个进不了配置的键，就是网关永远
+  看不到的键；按数据源逐个加字段则是配置类腐烂的开始。
+  - futu 的定位写在 provider 头部：快照行情按频率计费（每批 100 只），适合盯候选
+    名单；历史 K 线按 7 天滚动额度计费、每只代码一次，全市场历史仍归 baostock
+  - Web 采集表单加了 futu 选项与提示（OpenD 需先启动并登录，`127.0.0.1:11111`）
+  - 网关仍未实测：OpenD 是用户侧安装，SDK 需 `pip install -e '.[futu]'`；
+    mock 全链路已验证（`provider_options` 为空时其余数据源不受影响）
+
 - 代码补全与中文名称（`quant-symbols` + `GET /api/symbols`）：Web 里的代码输入框边打
   边补全，候选同时给出代码与中文名。名称不是新请求——baostock 的 `query_all_stock`
   与 akshare 的 `stock_info_a_code_name` 本来就带回 `code_name`，只是 `list_symbols`

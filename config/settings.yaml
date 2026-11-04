@@ -12,7 +12,7 @@ backtest:
 
 # Daily A-share collection. Run `quant-collect --help` for CLI overrides.
 collection:
-  provider: akshare        # akshare | mock
+  provider: akshare        # akshare | baostock | sse | futu | mock
   symbols: []              # empty = use --symbols / --all / whatever is already stored
   output_directory: data/raw
   format: parquet          # parquet | csv
@@ -22,6 +22,12 @@ collection:
   timezone: Asia/Shanghai
   retries: 2
   pause_seconds: 0.5
+  # 原样传给 provider 构造函数。futu 需要本地 OpenD 网关（先启动并登录）：
+  #   provider: futu
+  #   provider_options: { host: 127.0.0.1, port: 11111, markets: [SH, SZ] }
+  # 注意 futu 的历史 K 线按 7 天滚动额度计费（每只代码一次），全市场历史别走它；
+  # 快照行情按频率计费，适合盯候选名单。其他数据源不需要这个键。
+  provider_options: {}
   report_directory: reports/collection
 
 # Technical indicators. Run `quant-indicators --help` for CLI overrides.

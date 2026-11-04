@@ -981,6 +981,7 @@ function buildCollectForm() {
       <option value="akshare">akshare</option>
       <option value="baostock">baostock</option>
       <option value="sse">sse（仅清单，无行情）</option>
+      <option value="futu">futu（需 OpenD）</option>
       <option value="mock">mock（离线）</option></select></div>
     <div class="field"><label>范围</label><select id="col-all">
       <option value="false">指定标的</option><option value="true">全市场</option></select></div>
@@ -1008,7 +1009,9 @@ function syncCollectForm() {
       "标的常有数千只，预计几十分钟；可在「最近任务」里随时取消，中断后再次运行会从断点续采。"
     : provider === "sse"
       ? "sse 只有沪市官方证券清单，不提供行情，无法下载历史数据。"
-      : "";
+      : provider === "futu"
+        ? "futu 走本地 OpenD 网关（默认 127.0.0.1:11111，先启动并登录）。历史 K 线按 7 天滚动额度计费、每只代码一次，全市场历史请勿走 futu；快照行情按频率计费，适合盯候选名单。连接参数在 config/settings.yaml 的 collection.provider_options 里调。"
+        : "";
 }
 
 async function loadCollection() {

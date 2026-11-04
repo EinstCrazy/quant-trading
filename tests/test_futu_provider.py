@@ -210,3 +210,39 @@ def test_the_registry_builds_it_by_name(monkeypatch):
 
     assert "futu" in AVAILABLE_PROVIDERS
     assert isinstance(get_provider("futu"), FutuProvider)
+
+
+def test_collection_settings_reach_the_gateway(tmp_path):
+    """The YAML ``provider_options`` block is the only path host/port/markets
+    have: the collector builds providers from settings, never from flags, so a
+    key that stops here is a key the gateway never sees."""
+    from quant_research.config import load_settings
+    from quant_research.data.providers import get_provider
+
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(
+        "data: { directory: data, timezone: UTC, price_adjustment: adjusted }\n"
+        "backtest: { initial_cash: 100000, commission_bps: 10, slippage_bps: 5, allow_short: false }\n"
+        "collection:\n"
+        "  provider: futu\n"
+        "  provider_options: { host: 10.0.0.8, port: 11112, markets: [SH, SZ, HK] }\n"
+    )
+    settings = load_settings(settings_path)
+
+    provider = get_provider(
+        settings.collection.provider,
+        adjust=settings.collection.adjust,
+        **settings.collection.provider_options,
+    )
+
+    assert provider.host == "10.0.0.8"
+    assert provider.port == 11112
+    assert provider.markets == ("SH", "SZ", "HK")
+
+
+def test_other_providers_ignore_the_empty_options():
+    """An empty block must not reach sources with no such parameters."""
+    from quant_research.data.providers import get_provider
+
+    provider = get_provider("mock", adjust="qfq")
+    assert provider.adjust == "qfq"

@@ -159,6 +159,7 @@ def _run(
     provider = get_provider(
         args.provider or settings.provider,
         adjust=args.adjust or settings.adjust,
+        **settings.provider_options,
     )
     symbols = _pick_symbols(args, settings, provider, store)
     if not symbols:
