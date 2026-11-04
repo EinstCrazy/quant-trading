@@ -7,9 +7,28 @@ response was produced by ``quant_research`` itself, never recomputed here.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+from quant_research.data.providers.base import normalize_symbol
+
+
+def _canonical_symbols(value: list[str] | None) -> list[str] | None:
+    """Bare codes are fine: the digits decide the exchange, so ``600519`` is
+    ``600519.SH`` and ``000001`` is ``000001.SZ`` without anyone typing a dot."""
+    if value is None:
+        return None
+    out: list[str] = []
+    for item in value:
+        try:
+            out.append(normalize_symbol(item))
+        except ValueError as exc:
+            raise ValueError(f"无法识别的代码 {item!r}：{exc}") from exc
+    return out
+
+
+CanonicalSymbols = Annotated[list[str], BeforeValidator(_canonical_symbols)]
 
 WeightMethod = Literal["fixed", "equal_weight", "inverse_volatility"]
 ExecPrice = Literal["close", "open"]
@@ -36,7 +55,7 @@ class PolicyIn(BaseModel):
 
 class BacktestRequest(BaseModel):
     dataset: str
-    symbols: list[str] | None = None
+    symbols: CanonicalSymbols | None = None
     start: str | None = None
     end: str | None = None
     strategy: str = "ma_cross"
@@ -76,7 +95,7 @@ class CompareRequest(BaseModel):
 
 class CollectRequest(BaseModel):
     provider: str = "akshare"
-    symbols: list[str] = Field(default_factory=list)
+    symbols: CanonicalSymbols = Field(default_factory=list)
     start: str | None = None
     end: str | None = None
     full: bool = False

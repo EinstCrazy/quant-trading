@@ -540,3 +540,24 @@ def test_a_sweep_honours_cancellation_before_any_download(client, monkeypatch):
 
     assert job["status"] == "cancelled"
     assert (job.get("result") or {}).get("requested") == 0  # nothing was downloaded
+
+
+def test_bare_codes_are_completed_with_their_exchange():
+    """The digits decide the exchange: 600519 is 600519.SH, no dot required."""
+    from quant_research.web.schemas import BacktestRequest, CollectRequest
+
+    backtest = BacktestRequest(dataset="x", symbols=["600519", "000001", "sh600036"])
+    assert backtest.symbols == ["600519.SH", "000001.SZ", "600036.SH"]
+    assert CollectRequest(symbols=["300750"]).symbols == ["300750.SZ"]
+    # omitting symbols and passing null stay the same thing
+    assert BacktestRequest(dataset="x").symbols is None
+
+
+def test_an_unrecognisable_code_is_a_422_with_a_readable_reason():
+    """HZ is not an exchange this project knows; say so instead of guessing."""
+    from pydantic import ValidationError
+
+    from quant_research.web.schemas import CollectRequest
+
+    with pytest.raises(ValidationError, match="999999"):
+        CollectRequest(symbols=["999999.HZ"])
