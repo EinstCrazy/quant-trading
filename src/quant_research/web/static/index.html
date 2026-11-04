@@ -478,6 +478,11 @@ function chart(target, series, options = {}) {
   const all = usable
     .flatMap((s) => s.points.map((p) => p[1]))
     .filter((v) => v !== null && v !== undefined);
+  // candles participate in the scale: a wick outside the line range must not
+  // be clipped, or the chart lies about where the day actually traded
+  (options.candles || []).forEach((c) => {
+    all.push(c[2], c[3]);
+  });
   if (!all.length) {
     // a short window can leave a panel entirely inside its warm-up
     target.innerHTML = '<div class="empty">这段窗口里没有可绘制的数据</div>';
@@ -558,6 +563,21 @@ function chart(target, series, options = {}) {
     return fill + lines;
   }).join("");
 
+  // 蜡烛画在网格之上、叠加线之下：均线和布林带浮在 K 线上方才可读。
+  // 红涨绿跌是 A 股的颜色习惯，与美股软件相反。
+  const candleW = Math.max(1.5, Math.min(10, barWidth));
+  const candleMarks = (options.candles || [])
+    .map((c, i) => {
+      const [, o, h, l, close] = c;
+      const color = close >= o ? "#d64541" : "#2e9e5b";
+      const cx = x(i).toFixed(1);
+      const top = Math.min(y(o), y(close));
+      const bodyH = Math.max(0.8, Math.abs(y(o) - y(close)));
+      return `<line x1="${cx}" y1="${y(h).toFixed(1)}" x2="${cx}" y2="${y(l).toFixed(1)}" stroke="${color}" stroke-width="1"/>` +
+        `<rect x="${(x(i) - candleW / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${candleW.toFixed(1)}" height="${bodyH.toFixed(1)}" fill="${color}"/>`;
+    })
+    .join("");
+
   const guideLines = (options.reference || []).map((level) => {
     const yy = y(level).toFixed(1);
     return `<line x1="${pad.left}" y1="${yy}" x2="${width - pad.right}" y2="${yy}" stroke="#c3c9d1" stroke-dasharray="4 4"/>
@@ -575,6 +595,7 @@ function chart(target, series, options = {}) {
     <svg viewBox="0 0 ${width} ${height}" style="width:100%;height:auto">
       ${grid}
       ${guideLines}
+      ${candleMarks}
       ${paths}
       <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" stroke="#d7dbe0"/>
       <text x="${pad.left}" y="${height - 8}" font-size="10" fill="#6b7280">${first[0][0]}</text>
@@ -1339,6 +1360,7 @@ function renderIndicatorSeries(data) {
         digits: panel.key === "price" ? 2 : 1,
         reference: panel.reference || [],
         zeroLine: panel.key === "macd",
+        candles: panel.candles || [],
       },
     );
   });

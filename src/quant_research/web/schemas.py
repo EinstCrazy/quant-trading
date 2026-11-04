@@ -293,6 +293,9 @@ class SeriesPanelOut(BaseModel):
     # horizontal guides, e.g. 20/80 for RSI — the thresholds readers remember
     reference: list[float] = Field(default_factory=list)
     lines: list[SeriesLineOut]
+    # ``[date, open, high, low, close]`` rows for the price panel; empty for the
+    # oscillator panels, which have no candle semantics
+    candles: list[list[Any]] = Field(default_factory=list)
 
 
 class IndicatorSeriesOut(BaseModel):

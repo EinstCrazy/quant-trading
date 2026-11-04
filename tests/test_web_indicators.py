@@ -276,11 +276,25 @@ def test_the_series_arrives_panel_by_panel(client):
     assert lengths == {120}  # every line covers the same window
 
 
-def test_the_price_panel_carries_the_close_and_the_band(client):
-    fields = [line["field"] for line in _panels(client)["price"]["lines"]]
+def test_the_price_panel_carries_candles_with_the_band_and_the_averages(client):
+    """The candle is the close (no separate close line); overlays ride on top."""
+    panel = _panels(client)["price"]
 
-    assert fields[0] == "close"
+    candles = panel["candles"]
+    assert len(candles) == 120
+    assert [len(row) for row in candles[:3]] == [5, 5, 5]  # date, o, h, l, c
+    fields = [line["field"] for line in panel["lines"]]
     assert {"boll_mid", "boll_upper", "boll_lower"} <= set(fields)
+    assert {"ma_5", "ma_20"} <= set(fields)  # the periods the settings asked for
+    assert "close" not in fields  # the candles already show it
+
+
+def test_the_oscillator_panels_carry_no_candles(client):
+    """RSI of 56 has no OHLC; an empty candle list keeps the chart honest."""
+    panels = _panels(client)
+
+    assert panels["rsi"]["candles"] == []
+    assert panels["macd"]["candles"] == []
 
 
 def test_the_histogram_is_sent_as_bars(client):

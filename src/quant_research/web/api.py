@@ -27,7 +27,7 @@ from quant_research.backtest import (
 from quant_research.backtest.engine import BacktestResult, run_signal_backtest
 from quant_research.collector import collect_once
 from quant_research.config import Settings, load_settings
-from quant_research.data import describe_panel, load_price_panel, universe
+from quant_research.data import PricePanel, describe_panel, load_price_panel, universe
 from quant_research.data.cache import build_panel_cache, cache_path, load_panel_cache
 from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers import get_provider
@@ -1108,7 +1108,9 @@ def indicator_detail(
 # Chart panels, described by indicator *family* rather than by field name: with
 # ``rsi_period: 21`` the line still appears instead of the chart going empty.
 _PANELS: tuple[tuple[str, str, str, tuple[str, ...], tuple[float, ...]], ...] = (
-    ("price", "价格与布林带", "价格", ("boll_mid", "boll_upper", "boll_lower"), ()),
+    # the price panel's overlays are assembled dynamically (bollinger + whatever
+    # MA periods the settings asked for), so its family tuple stays empty here
+    ("price", "K线 · 均线 · 布林带", "价格", (), ()),
     ("rsi", "RSI", "0–100", ("rsi",), (20.0, 80.0)),
     ("macd", "MACD", "价格", ("macd_dif", "macd_dea", "macd_hist"), ()),
     ("kdj", "KDJ", "0–100", ("kdj_k", "kdj_d", "kdj_j"), (20.0, 80.0)),
@@ -1126,6 +1128,27 @@ def _indicator_points(series: pd.Series, days: int) -> list[list[Any]]:
         [stamp.date().isoformat(), None if pd.isna(value) else round(float(value), 4)]
         for stamp, value in tail.items()
     ]
+
+
+def _candles(panel: PricePanel, symbol: str, days: int) -> list[list[Any]]:
+    """``[date, open, high, low, close]`` for the candlestick chart.
+
+    A bar whose OHLC is incomplete (a suspended session, a missing field) is
+    dropped rather than drawn as a stub: a candle with one leg missing reads as
+    data, and it would be the wrong data.
+    """
+    opens = panel.extra.get("open", panel.prices)[symbol]
+    highs = panel.extra.get("high", panel.prices)[symbol]
+    lows = panel.extra.get("low", panel.prices)[symbol]
+    closes = panel.prices[symbol]
+    out: list[list[Any]] = []
+    for stamp in closes.index[-days:]:
+        values = [opens[stamp], highs[stamp], lows[stamp], closes[stamp]]
+        if any(pd.isna(value) for value in values):
+            continue
+        o, h, l, c = (round(float(value), 4) for value in values)
+        out.append([pd.Timestamp(stamp).date().isoformat(), o, h, l, c])
+    return out
 
 
 @router.get("/indicators/{symbol}/series", response_model=IndicatorSeriesOut)
@@ -1155,13 +1178,20 @@ def indicator_series(
     panels: list[SeriesPanelOut] = []
     for key, title, unit, families, reference in _PANELS:
         lines: list[SeriesLineOut] = []
+        candles: list[list[Any]] = []
         if key == "price":
-            close = _load_panel(wanted_provider, wanted_adjust).prices[symbol]
-            lines.append(
-                SeriesLineOut(field="close", label="收盘", points=_indicator_points(close, days))
+            # the candle already carries the close, so no separate close line;
+            # the overlays (bollinger + every configured MA) go on top of it
+            panel = _load_panel(wanted_provider, wanted_adjust)
+            candles = _candles(panel, symbol, days)
+            families = ("boll_mid", "boll_upper", "boll_lower") + tuple(
+                field for field in bundle.frames if field.startswith("ma_")
             )
         for family in families:
-            field = by_family.get(family)
+            # a family name ("rsi") picks the first field of that family; an
+            # explicit field name ("ma_5") must survive the lookup untouched,
+            # because the price panel pins specific moving averages
+            field = by_family.get(family, family if family in bundle.frames else None)
             if field is None:
                 continue
             doc = doc_for(field)
@@ -1174,7 +1204,7 @@ def indicator_series(
                     points=_indicator_points(bundle.frames[field][symbol], days),
                 )
             )
-        if lines:
+        if lines or candles:
             panels.append(
                 SeriesPanelOut(
                     key=key,
@@ -1182,6 +1212,7 @@ def indicator_series(
                     unit=unit,
                     reference=list(reference),
                     lines=lines,
+                    candles=candles,
                 )
             )
 
