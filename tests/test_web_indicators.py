@@ -89,6 +89,15 @@ def client(tmp_path, monkeypatch):
         api, "_latest_session", lambda provider, adjust: str(panel.prices.index.max().date())
     )
     monkeypatch.setattr(api, "load_settings", lambda *args, **kwargs: _settings(tmp_path))
+    # a small in-repo name table: the 404 hints read Chinese names from it, and
+    # the tests must not depend on whatever the real table holds today
+    monkeypatch.setattr(
+        api.universe,
+        "load",
+        lambda directory: pd.DataFrame(
+            {"symbol": list(_NAMES), "name": ["浦发银行", "贵州茅台", "平安银行"], "updated_at": ""}
+        ),
+    )
     return TestClient(create_app())
 
 
@@ -196,6 +205,36 @@ def test_an_unknown_name_is_a_404(client):
 
     assert response.status_code == 404
     assert "不在指标集合里" in response.json()["detail"]
+
+
+def test_a_mistyped_suffix_is_forgiven(client):
+    """600519.HZ is 600519.SH with a typo'd exchange, not a different stock."""
+    payload = client.get("/api/indicators/600519.HZ").json()
+
+    assert payload["symbol"] == "600519.SH"
+
+
+def test_a_bare_code_is_completed_with_its_exchange(client):
+    """600519 alone is unambiguous — the digits say Shanghai."""
+    payload = client.get("/api/indicators/600519").json()
+
+    assert payload["symbol"] == "600519.SH"
+
+
+def test_a_missing_code_names_the_stock_it_would_be(client):
+    """The 404 says which stock is missing, in the language the user typed."""
+    response = client.get("/api/indicators/000002.HZ")
+
+    assert response.status_code == 404
+    assert "000002.SZ 不在指标集合里" in response.json()["detail"]
+
+
+def test_a_code_with_no_near_match_points_at_rebuilding(client):
+    """Nothing shares the digits: the set is missing it, say so and how to fix."""
+    response = client.get("/api/indicators/300750.SZ")
+
+    assert response.status_code == 404
+    assert "重建" in response.json()["detail"]
 
 
 def test_a_source_with_no_data_says_so_rather_than_failing_obscurely(client, monkeypatch):

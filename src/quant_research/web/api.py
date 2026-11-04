@@ -31,7 +31,7 @@ from quant_research.data import describe_panel, load_price_panel, universe
 from quant_research.data.cache import build_panel_cache, cache_path, load_panel_cache
 from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers import get_provider
-from quant_research.data.providers.base import ProviderError
+from quant_research.data.providers.base import ProviderError, normalize_symbol
 from quant_research.data.store import LocalMarketStore
 from quant_research.indicators import (
     compute_all,
@@ -1040,6 +1040,36 @@ def indicator_board(
     )
 
 
+def _canonical_symbol(raw: str, sample: pd.DataFrame, settings: Settings) -> str:
+    """Whatever was typed, reduced to a code the indicator set can answer for.
+
+    ``600519`` and even ``600519.HZ`` are the same stock as ``600519.SH`` — the
+    exchange is inferable from the digits, so a typo'd suffix deserves forgiving,
+    not "not in the set". When the code truly is missing, the 404 names the stock
+    and the closest match: ``600519.HZ 不在指标集合里`` reads like the set is
+    broken, when the input is what is broken.
+    """
+    try:
+        wanted = normalize_symbol(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"无法识别的代码 {raw!r}：{exc}") from exc
+    if wanted in sample.columns:
+        return wanted
+
+    # the digits fix the exchange, so a normalised code either is in the set or
+    # has no same-digit cousin in it — "did you mean" has nothing to point at
+    name = ""
+    table = universe.load(settings.data.directory)
+    if not table.empty:
+        hit = table.loc[table["symbol"] == wanted, "name"]
+        if len(hit):
+            name = str(hit.iloc[0]).strip()
+
+    detail = f"{wanted}{f' {name}' if name else ''} 不在指标集合里（共 {sample.shape[1]} 只）"
+    detail += "；先运行 quant-indicators 重建指标缓存"
+    raise HTTPException(status_code=404, detail=detail)
+
+
 @router.get("/indicators/{symbol}", response_model=IndicatorDetailOut)
 def indicator_detail(
     symbol: str, provider: str | None = None, adjust: str | None = None
@@ -1051,11 +1081,7 @@ def indicator_detail(
     bundle = _load_indicators(wanted_provider, wanted_adjust)
 
     sample = next(iter(bundle.frames.values()))
-    if symbol not in sample.columns:
-        raise HTTPException(
-            status_code=404,
-            detail=f"{symbol} 不在指标集合里（共 {sample.shape[1]} 只）",
-        )
+    symbol = _canonical_symbol(symbol, sample, settings)
 
     values: list[IndicatorValueOut] = []
     for field, frame in bundle.frames.items():
@@ -1120,11 +1146,7 @@ def indicator_series(
     bundle = _load_indicators(wanted_provider, wanted_adjust)
 
     sample = next(iter(bundle.frames.values()))
-    if symbol not in sample.columns:
-        raise HTTPException(
-            status_code=404,
-            detail=f"{symbol} 不在指标集合里（共 {sample.shape[1]} 只）",
-        )
+    symbol = _canonical_symbol(symbol, sample, settings)
 
     by_family: dict[str, str] = {}
     for field in bundle.frames:
