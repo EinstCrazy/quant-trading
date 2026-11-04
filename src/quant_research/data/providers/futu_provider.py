@@ -143,10 +143,9 @@ class FutuProvider(MarketDataProvider):
             import futu
         except ImportError as exc:  # pragma: no cover - depends on the environment
             raise ProviderUnavailable(
-                "futu-api is not installed. Futu also needs the OpenD gateway "
-                "running and logged in:\n"
+                "futu-api 未安装；futu 还需要本机 OpenD 网关运行并已登录：\n"
                 "    pip install -e '.[futu]'\n"
-                "    # start OpenD, log in with a 牛牛 / moomoo account"
+                "    # 启动 OpenD，用牛牛 / moomoo 账号登录"
             ) from exc
         return futu
 
@@ -157,8 +156,8 @@ class FutuProvider(MarketDataProvider):
             return futu.OpenQuoteContext(host=self.host, port=self.port)
         except Exception as exc:
             raise SourceUnreachable(
-                f"could not reach OpenD at {self.host}:{self.port} — "
-                f"is the gateway running and logged in? ({type(exc).__name__}: {exc})"
+                f"连不上 OpenD（{self.host}:{self.port}）——网关是否已启动并登录？"
+                f"（{type(exc).__name__}: {exc}）"
             ) from exc
 
     def list_symbols(self) -> list[str]:

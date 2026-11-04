@@ -157,6 +157,45 @@ def test_collect_rejects_unknown_provider(client):
         "/api/collection/collect", json={"provider": "nope", "symbols": ["600000.SH"]}
     )
     assert response.status_code == 400
+    # "失败" is not a reason: the name the caller typed must come back
+    assert "nope" in response.json()["detail"]
+
+
+def test_a_failed_sweep_keeps_the_reason(client, monkeypatch):
+    """A gateway that refuses to list is a reason, not a bare failure."""
+    from quant_research.data.providers.base import ProviderError
+    from quant_research.data.providers.mock import MockProvider
+
+    def broken(self):
+        raise ProviderError("gateway refused the connection")
+
+    monkeypatch.setattr(MockProvider, "list_symbols", broken)
+
+    response = client.post(
+        "/api/collection/collect", json={"provider": "mock", "all_symbols": True}
+    )
+
+    assert response.status_code == 502
+    assert "gateway refused the connection" in response.json()["detail"]
+
+
+def test_a_failed_job_keeps_the_reason(client, monkeypatch):
+    """The job card has one line worth reading; it must not be just 'failed'."""
+    from quant_research.data.providers.base import SourceUnreachable
+    from quant_research.web import api as api_module
+
+    def boom(**kwargs):
+        raise SourceUnreachable("could not reach OpenD at 127.0.0.1:11111")
+
+    monkeypatch.setattr(api_module, "collect_once", boom)
+
+    ref = client.post(
+        "/api/jobs/collect", json={"provider": "mock", "symbols": ["600000.SH"]}
+    ).json()
+    job = _wait(client, ref)
+
+    assert job["status"] == "failed"
+    assert "OpenD" in job["error"]
 
 
 def test_index_is_served(client):

@@ -26,6 +26,7 @@ from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers.base import (
     MarketDataProvider,
     ProviderError,
+    ProviderUnavailable,
     SourceUnreachable,
     normalize_symbol,
 )
@@ -141,6 +142,10 @@ def _fetch_with_retry(
     while True:
         try:
             return provider.fetch_daily(symbols, start, end)
+        except ProviderUnavailable:
+            # a missing SDK is not transient: retrying the same import only
+            # delays the one line the user actually needs to read
+            raise
         except ProviderError as exc:
             attempt += 1
             if attempt > retries:

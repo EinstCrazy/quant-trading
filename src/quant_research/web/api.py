@@ -499,7 +499,7 @@ def _collect_report(
             adjust=settings.collection.adjust,
             **settings.collection.provider_options,
         )
-    except ValueError as exc:
+    except (ValueError, ProviderError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     store = LocalMarketStore(
@@ -515,7 +515,7 @@ def _collect_report(
             symbols = provider.list_symbols()
         except ProviderError as exc:
             raise HTTPException(
-                status_code=502, detail=f"{provider.name} could not list the market: {exc}"
+                status_code=502, detail=f"{provider.name} 取全市场清单失败：{exc}"
             ) from exc
         # Listing the market takes seconds and cannot be interrupted from the
         # inside, so honour a cancellation as soon as it returns rather than
@@ -529,7 +529,8 @@ def _collect_report(
         symbols = request.symbols or store.stored_symbols()
         if not symbols:
             raise HTTPException(
-                status_code=400, detail="no symbols supplied and none are stored yet"
+                status_code=400,
+                detail="没有指定标的，本地也还没有已存数据：填几只标的，或勾选全市场",
             )
 
     pause = max(request.pause, _MIN_SWEEP_PAUSE) if sweep else request.pause
@@ -680,7 +681,10 @@ def submit_collect(
             adjust=settings.collection.adjust,
             **settings.collection.provider_options,
         )
-    except ValueError as exc:
+    except (ValueError, ProviderError) as exc:
+        # a source that cannot even be constructed (unknown name, missing SDK,
+        # gateway not running) is the caller's problem to fix: 400 with the
+        # reason, not a 500 with a stack trace
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     market = LocalMarketStore(
@@ -690,7 +694,7 @@ def submit_collect(
     if not sweep and not (request.symbols or market.stored_symbols()):
         raise HTTPException(
             status_code=400,
-            detail="no symbols supplied and none are stored yet; try all_symbols=true",
+            detail="没有指定标的，本地也还没有已存数据：填几只标的，或勾选全市场",
         )
 
     def task(progress: Progress, stop: Callable[[], bool]) -> dict[str, Any]:

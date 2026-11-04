@@ -220,6 +220,15 @@
 - `RebalancePolicy`：换手缓冲带（`buffer`）与最小成交额阈值，只在 `accounting="shares"` 生效。
 - `run_signal_backtest` 支持 `policy` 与 `risk`。
 
+### Fixed
+
+- 采集失败不再只说「失败」：`get_provider` 的构造错误（未知数据源、SDK 未装、网关未启动）
+  从 500 改成 400 并附原因；结果区在摘要后列出失败标的与各自原因（最多三条），
+  任务卡片直接显示 `job.error`。
+- `ProviderUnavailable` 不再参与重试：SDK 没装时重试同一个 import 只是把要读的那行
+  错误往后拖三秒。实测 futu 未装现在 0.0 秒返回中文原因与安装命令。
+- futu 的两条关键错误（未安装、连不上 OpenD）改为中文，界面一致。
+
 ### Changed
 
 - 样例数据上的等权组合在开启 `buffer=0.05` 后交易笔数由 703 降至 70，成本下降约 9%。

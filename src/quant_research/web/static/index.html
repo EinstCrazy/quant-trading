@@ -79,6 +79,8 @@
   .job:first-child { border-top: 0; }
   .job-head { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
   .job-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* the reason a job failed is the one line worth reading in that card */
+  .job-error { color: #b42318; margin-top: 4px; line-height: 1.4; word-break: break-word; }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 5px; }
   .bar > i { display: block; height: 100%; background: var(--accent); }
   .job button { border: 0; background: transparent; color: var(--bad); cursor: pointer;
@@ -368,6 +370,7 @@ function renderJobs(jobs) {
         <span>${job.archived ? '<span class="badge">归档</span> ' : ""}<span class="badge ${badgeKind[job.status] || ""}">${job.status}</span></span>
       </div>
       <div class="muted">${job.message || job.kind}</div>
+      ${job.error ? `<div class="job-error">${job.error}</div>` : ""}
       <div class="bar"><i style="width:${pct}%"></i></div>
       <div class="job-head" style="margin-top:4px">
         <span class="muted">${pct}%</span>${cancel}
@@ -1119,14 +1122,25 @@ async function runCollect() {
       `更新 ${summary.updated ?? 0} · 新增行数 ${summary.rows_added ?? 0} · ` +
       `跳过 ${summary.skipped ?? 0} · 失败 ${summary.failed ?? 0}` +
       (swept ? ` · 全市场 ${swept.symbols} 只（间隔 ${swept.pause}s）` : "") +
-      (report.note ? " · " + report.note : "");
+      (report.note ? " · " + report.note : "") +
+      failureReasons(report.failed);
     toast("采集完成");
     await loadCollection();
     await loadDatasets();
   } catch (error) {
     toast(error.message);
-    $("col-result").textContent = "失败";
+    // "失败" alone tells the user nothing they can act on: keep the reason
+    $("col-result").textContent = `失败：${error.message}`;
   }
+}
+
+/* 每只标的的失败原因就是排查线索（额度用尽、代码不认、网关掉线各是一回事），
+   摘要里只给计数等于让人去翻日志。最多列三条，其余给个总数。 */
+function failureReasons(failed) {
+  const entries = Object.entries(failed || {});
+  if (!entries.length) return "";
+  const shown = entries.slice(0, 3).map(([symbol, why]) => `${symbol}：${why}`);
+  return "｜" + shown.join("；") + (entries.length > 3 ? `；等共 ${entries.length} 只` : "");
 }
 
 /* ---------- ⑤ 今日建议 ---------- */
