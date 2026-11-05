@@ -797,7 +797,13 @@ def submit_grid(request: GridRequest, jobs: Annotated[JobStore, Depends(get_stor
 
 
 def _load_panel(provider: str, adjust: str):
-    """The cached wide panel, built the first time it is asked for."""
+    """The cached wide panel, built the first time it is asked for.
+
+    Also rebuilt when the store holds files the panel does not know: a collection
+    refreshes the cache itself, but a hand-copied file or an interrupted run can
+    leave the two out of step, and the symptom is always the same — data on disk
+    that no screen can see.
+    """
     settings = load_settings()
     root = settings.data.directory
     if not cache_path(root, provider, adjust).is_file():
@@ -809,7 +815,28 @@ def _load_panel(provider: str, adjust: str):
                 status_code=400,
                 detail=f"{provider} 还没有落盘数据（{exc}）；先采集，或换一个数据源",
             ) from exc
-    return load_panel_cache(root, provider, adjust)
+    panel = load_panel_cache(root, provider, adjust)
+    if _store_outgrew_panel(root, provider, panel):
+        logger.info("panel cache for %s/%s is behind the store; rebuilding", provider, adjust)
+        try:
+            build_panel_cache(root, provider, adjust)
+        except (ValueError, FileNotFoundError):
+            return panel  # serve what we have rather than fail a working request
+        panel = load_panel_cache(root, provider, adjust)
+    return panel
+
+
+def _store_outgrew_panel(root: str | Path, provider: str, panel: PricePanel) -> bool:
+    """True when the store holds more symbols than the cached panel does.
+
+    One directory listing is cheaper than trusting every writer to have refreshed
+    the cache, and a false negative merely delays the rebuild to the next run.
+    """
+    daily = Path(root).expanduser() / "raw" / provider / "daily"
+    if not daily.is_dir():
+        return False
+    stored = sum(1 for path in daily.iterdir() if path.suffix in {".parquet", ".csv"})
+    return stored > len(panel.symbols)
 
 
 def _latest_session(provider: str, adjust: str) -> str | None:
@@ -963,6 +990,25 @@ def submit_screen(request: ScreenRequest, jobs: Annotated[JobStore, Depends(get_
 # --- indicators --------------------------------------------------------------
 
 
+def _cache_is_stale(bundle: Any, provider: str, adjust: str) -> bool:
+    """A stored bundle goes obsolete when names appear or a new session closes.
+
+    Recomputing here rather than answering 404 with "run quant-indicators" — the
+    user just collected the stock they want to look at, and the next click should
+    show it. Rebuilding is what a cache miss is *for*; making a human remember a
+    command is just moving the work.
+    """
+    try:
+        panel = _load_panel(provider, adjust)
+    except HTTPException:
+        return False  # nothing to compare against; serve what is stored
+    cached = next(iter(bundle.frames.values()))
+    if not set(panel.prices.columns) <= set(cached.columns):
+        return True
+    latest = panel.prices.index.max()
+    return bool(pd.notna(latest) and cached.index.max() < latest)
+
+
 def _load_indicators(provider: str, adjust: str, rebuild: bool = False) -> Any:
     """The stored indicator bundle, computed from the cached panel on first ask.
 
@@ -974,7 +1020,7 @@ def _load_indicators(provider: str, adjust: str, rebuild: bool = False) -> Any:
     root = settings.indicators.output_directory
     if not rebuild:
         stored = load_bundle(root, provider, adjust)
-        if stored is not None:
+        if stored is not None and not _cache_is_stale(stored, provider, adjust):
             return stored
 
     panel = _load_panel(provider, adjust)
@@ -1044,7 +1090,19 @@ def indicator_board(
     )
 
 
-def _canonical_symbol(raw: str, sample: pd.DataFrame, settings: Settings) -> str:
+def _stored_sources(symbol: str, settings: Settings) -> list[str]:
+    """Which stored sources actually hold this code, e.g. ``['akshare']``.
+
+    The point of the check is a one-line answer to "then where is it?": the code
+    is in the store, just under another source's folder.
+    """
+    root = Path(settings.collection.output_directory).expanduser()
+    if not root.is_dir():
+        return []
+    return sorted({path.parent.parent.name for path in root.glob(f"*/daily/{symbol}.*")})
+
+
+def _canonical_symbol(raw: str, sample: pd.DataFrame, settings: Settings, provider: str) -> str:
     """Whatever was typed, reduced to a code the indicator set can answer for.
 
     ``600519`` and even ``600519.HZ`` are the same stock as ``600519.SH`` — the
@@ -1070,7 +1128,11 @@ def _canonical_symbol(raw: str, sample: pd.DataFrame, settings: Settings) -> str
             name = str(hit.iloc[0]).strip()
 
     detail = f"{wanted}{f' {name}' if name else ''} 不在指标集合里（共 {sample.shape[1]} 只）"
-    detail += "；先运行 quant-indicators 重建指标缓存"
+    elsewhere = [source for source in _stored_sources(wanted, settings) if source != provider]
+    if elsewhere:
+        detail += f"；{provider} 源里没有它的行情，{'、'.join(elsewhere)} 源里有——切换数据源即可"
+    else:
+        detail += f"；先采集：quant-collect --provider {provider} --symbols {wanted}"
     raise HTTPException(status_code=404, detail=detail)
 
 
@@ -1085,7 +1147,7 @@ def indicator_detail(
     bundle = _load_indicators(wanted_provider, wanted_adjust)
 
     sample = next(iter(bundle.frames.values()))
-    symbol = _canonical_symbol(symbol, sample, settings)
+    symbol = _canonical_symbol(symbol, sample, settings, wanted_provider)
 
     values: list[IndicatorValueOut] = []
     for field, frame in bundle.frames.items():
@@ -1173,7 +1235,7 @@ def indicator_series(
     bundle = _load_indicators(wanted_provider, wanted_adjust)
 
     sample = next(iter(bundle.frames.values()))
-    symbol = _canonical_symbol(symbol, sample, settings)
+    symbol = _canonical_symbol(symbol, sample, settings, wanted_provider)
 
     by_family: dict[str, str] = {}
     for field in bundle.frames:

@@ -155,3 +155,20 @@ def test_suspended_names_survive_the_cache(tmp_path):
 def test_loading_a_cache_that_was_never_built_says_so(tmp_path):
     with pytest.raises(FileNotFoundError, match="build it first"):
         load_panel_cache(tmp_path, "baostock", "qfq")
+
+
+def test_refreshing_symbols_into_a_missing_cache_keeps_the_whole_store(tmp_path):
+    """Merging into nothing must build, not write only this run's symbols.
+
+    A partial write here shrinks the panel to the few names the run touched, and
+    every other stored name silently disappears from screens that read the cache.
+    """
+    from quant_research.data.cache import refresh_symbols
+
+    panel = _panel()
+    _write_store(tmp_path, "baostock", panel)
+
+    refresh_symbols(tmp_path, "baostock", "qfq", ["A.SH"])
+
+    loaded = load_panel_cache(tmp_path, "baostock", "qfq")
+    assert set(loaded.symbols) == {"A.SH", "B.SH"}

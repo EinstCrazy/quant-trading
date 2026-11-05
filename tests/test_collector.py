@@ -476,3 +476,18 @@ def test_a_refused_source_backs_off_further_than_a_broken_one(tmp_path):
     # the guidance reaches the report the UI shows, type name and all
     assert refused_failed["600000.SH"] == "服务端断开：疑似限流"
     assert broken_failed["600000.SH"] == "bad columns"
+
+
+def test_collect_once_folds_the_run_into_the_panel_cache(tmp_path):
+    """Collected names must reach the panel the screens read, not just the files.
+
+    Without this the next screen or indicator read serves a panel from before the
+    run, and freshly collected symbols are invisible everywhere but ``ls``.
+    """
+    from quant_research.data.cache import cache_path, load_panel_cache
+
+    _collect(tmp_path)
+
+    path = cache_path(tmp_path, "mock", "none")
+    assert path.is_file()
+    assert set(load_panel_cache(tmp_path, "mock", "none").symbols) == {"000001.SZ", "600000.SH"}

@@ -144,8 +144,12 @@ quant-nightly --provider baostock --daemon    # 每个交易日自动跑一次
 
 ```bash
 quant-indicators --provider baostock --symbols 600519.SH   # 拉数并计算
-quant-indicators --from-cache                              # 用已缓存的面板，不联网
+quant-indicators --from-cache                              # 把已落盘的全部标的算一遍，不联网
 ```
+
+指标缓存**不用手动维护**：Web 端读取时会自己检查缓存是否过期——新采集的标的出现、
+或来了新交易日，就自动重算并写回，所以「采集完 → 打开指标页」中间没有一步要记。
+`--from-cache` 只是显式重算的兜底入口。
 
 本地工作台（可选）：
 

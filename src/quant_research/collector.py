@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from quant_research.data.cache import refresh_symbols
 from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers.base import (
     MarketDataProvider,
@@ -166,6 +167,24 @@ def _fetch_with_retry(
             sleep(wait)
 
 
+def refresh_panel_cache(*, store: LocalMarketStore, adjust: str, report: CollectionReport) -> None:
+    """Fold a finished run into the wide panel cache.
+
+    Without this the next screen or indicator read serves a panel from before the
+    run: freshly collected symbols sit on disk and are invisible everywhere else
+    — exactly the "I collected it, why can't I see it" moment. A failure here is
+    logged rather than raised: the data is safely stored, and the next read
+    rebuilds the cache anyway.
+    """
+    symbols = sorted(set(report.updated) | set(report.added))
+    if not symbols:
+        return
+    try:
+        refresh_symbols(store.root.parent, store.provider, adjust, symbols)
+    except (OSError, ValueError, KeyError) as exc:
+        logger.warning("panel cache not refreshed (%s); next read will rebuild it", exc)
+
+
 def collect_once(
     *,
     provider: MarketDataProvider,
@@ -284,6 +303,9 @@ def collect_once(
             # for a retry if the operator invokes the collector again.
             state.last_run_date = today.isoformat()
         store.save_state(state)
+        refresh_panel_cache(
+            store=store, adjust=str(getattr(provider, "adjust", "none")), report=report
+        )
 
     report.finished_at = now_in(timezone).isoformat(timespec="seconds")
     logger.info(

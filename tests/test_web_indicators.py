@@ -47,6 +47,7 @@ def _settings(tmp_path, **overrides):
     class _Collection:
         provider = "baostock"
         adjust = "qfq"
+        output_directory = tmp_path / "raw"
 
     class _Data:
         directory = "data"
@@ -229,12 +230,26 @@ def test_a_missing_code_names_the_stock_it_would_be(client):
     assert "000002.SZ 不在指标集合里" in response.json()["detail"]
 
 
-def test_a_code_with_no_near_match_points_at_rebuilding(client):
-    """Nothing shares the digits: the set is missing it, say so and how to fix."""
+def test_a_code_with_no_stored_rows_names_the_fix(client):
+    """Not a cache problem: the source has no rows for it, so name the command."""
     response = client.get("/api/indicators/300750.SZ")
 
     assert response.status_code == 404
-    assert "重建" in response.json()["detail"]
+    assert "quant-collect --provider baostock --symbols 300750.SZ" in response.json()["detail"]
+
+
+def test_a_code_stored_under_another_source_points_there(client, tmp_path):
+    """The store has it, just under another source's folder — say which one."""
+    daily = tmp_path / "raw" / "akshare" / "daily"
+    daily.mkdir(parents=True)
+    (daily / "300750.SZ.parquet").write_bytes(b"")
+
+    response = client.get("/api/indicators/300750.SZ")
+
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert "akshare 源里有" in detail
+    assert "切换数据源" in detail
 
 
 def test_a_source_with_no_data_says_so_rather_than_failing_obscurely(client, monkeypatch):
@@ -358,3 +373,32 @@ def test_changing_the_period_moves_the_line_instead_of_emptying_the_chart(tmp_pa
 
     assert rsi["lines"][0]["field"] == "rsi_21"
     assert "21" in rsi["lines"][0]["label"]
+
+
+def test_a_newly_stored_name_rebuilds_the_bundle(tmp_path, monkeypatch):
+    """Collecting a stock then opening it must just work — no command to remember."""
+    current = {"panel": _panel()}
+    monkeypatch.setattr(
+        api, "_load_panel", lambda provider="baostock", adjust="qfq": current["panel"]
+    )
+    monkeypatch.setattr(
+        api,
+        "_latest_session",
+        lambda provider, adjust: str(current["panel"].prices.index.max().date()),
+    )
+    monkeypatch.setattr(api, "load_settings", lambda *args, **kwargs: _settings(tmp_path))
+    client = TestClient(create_app())
+
+    assert client.get("/api/indicators").json()["symbols"] == 3
+
+    # a fourth name lands in the store; the next read must include it
+    close = current["panel"].prices
+    extended = close.assign(**{"603881.SH": close.iloc[:, 0] * 0.9})
+    extra = {
+        key: frame.assign(**{"603881.SH": frame.iloc[:, 0]})
+        for key, frame in current["panel"].extra.items()
+    }
+    current["panel"] = PricePanel(prices=extended, extra=extra)
+
+    assert client.get("/api/indicators").json()["symbols"] == 4
+    assert client.get("/api/indicators/603881").json()["symbol"] == "603881.SH"

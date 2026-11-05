@@ -214,8 +214,12 @@ def refresh_symbols(
     directory = Path(root).expanduser() / "raw" / provider / "daily"
     incoming = _read_store(directory, symbols=wanted)
     path = cache_path(root, provider, adjust)
-    if path.is_file():
-        kept = pd.read_parquet(path)
-        kept = kept[~kept[SYMBOL_COLUMN].isin(wanted)]
-        incoming = pd.concat([kept, incoming], ignore_index=True)
+    if not path.is_file():
+        # no cache to merge into: writing only this run's symbols would shrink
+        # the panel to them, and every other stored name would silently vanish
+        # from screens and indicator boards
+        return build_panel_cache(root, provider, adjust)
+    kept = pd.read_parquet(path)
+    kept = kept[~kept[SYMBOL_COLUMN].isin(wanted)]
+    incoming = pd.concat([kept, incoming], ignore_index=True)
     return _write(incoming, path)
