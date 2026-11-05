@@ -79,6 +79,10 @@
   .job:first-child { border-top: 0; }
   .job-head { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
   .job-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 列表里的代码可点：跳到指标视图看这只票的K线与指标 */
+  .sym-link { color: #2563eb; cursor: pointer; text-decoration: none;
+              border-bottom: 1px dashed rgba(37, 99, 235, .5); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .sym-link:hover { text-decoration: underline; border-bottom-style: solid; }
   /* the reason a job failed is the one line worth reading in that card */
   .job-error { color: #b42318; margin-top: 4px; line-height: 1.4; word-break: break-word; }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 5px; }
@@ -638,7 +642,7 @@ function renderOverview(data) {
   const q = data.quality || {};
   const missing = q.missing_rate || {};
   const rows = Object.keys(missing).map((symbol) => [
-    symbol,
+    symbolCell(symbol),
     (missing[symbol] * 100).toFixed(2) + "%",
     String((q.non_positive || {})[symbol] ?? 0),
   ]);
@@ -772,7 +776,7 @@ function renderBacktest(result) {
   const trades = (result.trades || []).slice(0, 50);
   $("bt-trades").innerHTML = trades.length
     ? table(["日期", "标的", "股数", "成交价", "名义额", "成本", "原因"],
-        trades.map((t) => [String(t.date).slice(0, 10), t.symbol, fmt(t.shares, 0),
+        trades.map((t) => [String(t.date).slice(0, 10), symbolCell(t.symbol), fmt(t.shares, 0),
           fmt(t.fill_price ?? t.price, 2), fmtMoney(t.gross), fmt(t.cost, 2), t.reason ?? ""]))
       + `<div class="muted" style="margin-top:8px">显示前 ${trades.length} 条，共 ${result.trade_count} 条</div>`
     : '<div class="empty">本次运行没有成交</div>';
@@ -1056,7 +1060,7 @@ async function loadCollection() {
     const symbols = providers.flatMap((p) => p.symbols || []);
     $("col-symbols").innerHTML = symbols.length
       ? table(["标的", "行数", "首日", "末日", "更新时间"],
-          symbols.map((s) => [s.symbol, String(s.rows ?? "—"), s.first_date ?? "—",
+          symbols.map((s) => [symbolCell(s.symbol), String(s.rows ?? "—"), s.first_date ?? "—",
             s.last_date ?? "—", String(s.updated_at ?? "—").slice(0, 19)]))
       : '<div class="empty">无</div>';
 
@@ -1172,7 +1176,7 @@ function renderScreen(data) {
     return;
   }
   const rows = data.picks.map((pick) => `
-    <tr><td>${pick.rank}</td><td>${pick.symbol}</td>
+    <tr><td>${pick.rank}</td><td>${symbolCell(pick.symbol)}</td>
     <td>${pick.score >= 0 ? "+" : ""}${pick.score.toFixed(3)}</td>
     <td>${(pick.weight * 100).toFixed(1)}%</td></tr>`).join("");
   const dropped = Object.entries(data.dropped || {})
@@ -1379,6 +1383,26 @@ function renderIndicatorSeries(data) {
     );
   });
 }
+
+/* ---------- 代码点击跳转 ---------- */
+/* 各列表里的代码都可点：跳到指标视图、填入查询框、直接出图。
+   用事件委托而不是逐行绑事件——表格行是 innerHTML 整块生成的，逐行绑会随重绘消失。 */
+function symbolCell(symbol) {
+  return `<a class="sym-link" data-jump="${symbol}" title="查看这只票的K线与指标">${symbol}</a>`;
+}
+
+function jumpToSymbol(symbol) {
+  $("ind-symbol").value = symbol;
+  showView("indicators");
+  loadIndicatorDetail();
+}
+
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("[data-jump]");
+  if (!link) return;
+  event.preventDefault();
+  jumpToSymbol(link.dataset.jump);
+});
 
 /* ---------- wiring ---------- */
 async function loadDatasets() {
