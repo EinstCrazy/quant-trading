@@ -232,3 +232,57 @@ class TestAnalysis:
 
         assert payload["market"] is None
         assert "落盘" in payload["unavailable"]
+
+
+# --- 板块关联与异动 ------------------------------------------------------------
+
+
+class TestSectorMovers:
+    def _write_sectors(self, wl_client):
+        """板块表写进 fixture 的 data 目录，API 从同一目录读。"""
+        from quant_research.data.universe import save_sectors
+        from quant_research.web import api as api_module
+
+        settings = api_module.load_settings()
+        save_sectors(
+            {"600000.SH": "银行", "000001.SZ": "银行", "300001.SZ": "半导体"},
+            settings.data.directory,
+        )
+
+    def test_movers_rank_relative_moves(self, wl_client, monkeypatch):
+        _mock_research(wl_client, monkeypatch)
+        self._write_sectors(wl_client)
+
+        payload = wl_client.get("/api/sectors/movers?days=5").json()
+
+        assert payload["n_sectors"] == 2
+        assert {s["sector"] for s in payload["leading"]} <= {"银行", "半导体"}
+        assert all("change" in s and "up_ratio" in s for s in payload["all"])
+        # 领涨是相对排名的两端，不与全体中位混为一谈
+        changes = [s["change"] for s in payload["all"]]
+        assert payload["leading"][0]["change"] == max(changes)
+
+    def test_missing_sector_table_is_a_clear_400(self, wl_client, monkeypatch):
+        _mock_research(wl_client, monkeypatch)
+
+        response = wl_client.get("/api/sectors/movers")
+
+        assert response.status_code == 400
+        assert "--sectors" in response.json()["detail"]
+
+    def test_watchlist_carries_the_sector(self, wl_client, monkeypatch):
+        _mock_research(wl_client, monkeypatch)
+        self._write_sectors(wl_client)
+        wl_client.post("/api/watchlist", json={"symbol": "600000.SH"})
+
+        payload = wl_client.get("/api/watchlist").json()
+
+        assert payload["stocks"][0]["sector"] == "银行"
+
+    def test_detail_carries_the_sector(self, wl_client, monkeypatch):
+        _mock_research(wl_client, monkeypatch)
+        self._write_sectors(wl_client)
+
+        payload = wl_client.get("/api/indicators/600000").json()
+
+        assert payload["sector"] == "银行"

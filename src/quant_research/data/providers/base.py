@@ -188,6 +188,17 @@ class MarketDataProvider(ABC):
         """
         return {symbol: "" for symbol in self.list_symbols()}
 
+    def list_industries(self) -> dict[str, str]:
+        """``{symbol: 行业/板块名}`` for the whole universe.
+
+        An empty mapping is a legitimate answer, not an error: a source that
+        publishes no sectors degrades the same way names do — the UI shows a
+        "build the table first" hint instead of a broken card. Implementations
+        that do have sectors answer with them; skip unnormalisable rows rather
+        than failing the whole table.
+        """
+        return {}
+
     @abstractmethod
     def fetch_daily(
         self,

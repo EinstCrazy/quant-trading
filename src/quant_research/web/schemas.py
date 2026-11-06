@@ -283,6 +283,7 @@ class IndicatorDetailOut(BaseModel):
     symbol: str
     as_of: str
     provider: str
+    sector: str | None = None
     values: list[IndicatorValueOut]
 
 

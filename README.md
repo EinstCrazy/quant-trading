@@ -145,6 +145,7 @@ quant-nightly --provider baostock --daemon    # 每个交易日自动跑一次
 ```bash
 quant-indicators --provider baostock --symbols 600519.SH   # 拉数并计算
 quant-indicators --from-cache                              # 把已落盘的全部标的算一遍，不联网
+quant-symbols --sectors                                    # 刷新行业板块表（板块异动用）
 ```
 
 指标缓存**不用手动维护**：Web 端读取时会自己检查缓存是否过期——新采集的标的出现、

@@ -173,3 +173,55 @@ def test_the_endpoint_rejects_an_overlong_query(tmp_path, monkeypatch):
 
     response = TestClient(create_app()).get("/api/symbols", params={"q": "x" * 40})
     assert response.status_code == 422
+
+
+# --- 板块表 -------------------------------------------------------------------
+
+
+def test_sector_table_roundtrip(tmp_path):
+    from quant_research.data.universe import load_sectors, save_sectors, sectors_path
+
+    target = save_sectors({"600519.SH": "白酒", "000001.SZ": "银行"}, tmp_path)
+
+    assert target == sectors_path(tmp_path)
+    frame = load_sectors(tmp_path)
+    assert set(zip(frame["symbol"], frame["sector"])) == {
+        ("600519.SH", "白酒"),
+        ("000001.SZ", "银行"),
+    }
+
+
+def test_empty_sector_table_is_refused(tmp_path):
+    """覆盖一张好表为空表，等于悄悄剥掉所有板块标签——这种失败必须挡下。"""
+    import pytest
+
+    from quant_research.data.universe import save_sectors
+
+    with pytest.raises(ValueError):
+        save_sectors({}, tmp_path)
+
+
+def test_missing_sector_table_reads_as_empty(tmp_path):
+    from quant_research.data.universe import load_sectors
+
+    assert load_sectors(tmp_path).empty
+
+
+def test_refresh_sectors_requires_data_from_the_source(tmp_path):
+    """源不发布行业时明确报错，而不是把空表存成「已刷新」。"""
+    import pytest
+
+    from quant_research.data.providers.base import MarketDataProvider, ProviderError
+    from quant_research.data.universe import refresh_sectors
+
+    class Empty(MarketDataProvider):
+        name = "empty"
+
+        def list_symbols(self):
+            return ["600519.SH"]
+
+        def fetch_daily(self, symbols, start=None, end=None):
+            return {}
+
+    with pytest.raises(ProviderError):
+        refresh_sectors(Empty(), tmp_path)

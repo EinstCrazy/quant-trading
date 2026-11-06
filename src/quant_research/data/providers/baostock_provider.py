@@ -30,6 +30,9 @@ from quant_research.data.providers.base import (
     normalise_bars,
     normalize_symbol,
 )
+from quant_research.logging_setup import get_logger
+
+logger = get_logger("data.providers.baostock")
 
 # BaoStock tags codes with the exchange: sh.600519 / sz.000001 / bj.430047.
 _EXCHANGE_TAG: dict[str, str] = {"SH": "sh", "SZ": "sz", "BJ": "bj"}
@@ -126,6 +129,30 @@ class BaostockProvider(MarketDataProvider):
             normalize_symbol(row[0]): (row[2].strip() if len(row) > 2 else "")
             for row in self._tradable_rows()
         }
+
+    def list_industries(self) -> dict[str, str]:
+        """申万行业（``query_stock_industry``）：``{symbol: 行业名}``。
+
+        行业接口不带日期参数，一次给全市场。个别代码归一化失败就跳过那一行——
+        一条脏行不该抬走整张板块表。
+        """
+        baostock = self._connect()
+        found: dict[str, str] = {}
+        try:
+            result = baostock.query_stock_industry()
+            if getattr(result, "error_code", "1") != "0":
+                raise ProviderError(f"query_stock_industry failed: {result.error_msg}")
+            while result.next():
+                row = result.get_row_data()
+                if len(row) < 3 or not row[2].strip():
+                    continue
+                try:
+                    found[normalize_symbol(row[0])] = row[2].strip()
+                except ValueError:
+                    logger.debug("skipping unnormalisable industry row %s", row[0])
+        finally:
+            baostock.logout()
+        return found
 
     def fetch_daily(
         self,

@@ -33,9 +33,21 @@ import pandas as pd
 
 from quant_research.data.providers.base import MarketDataProvider, ProviderError, normalize_symbol
 
-__all__ = ["Symbol", "load", "refresh", "save", "search", "table_path"]
+__all__ = [
+    "Symbol",
+    "load",
+    "load_sectors",
+    "refresh",
+    "refresh_sectors",
+    "save",
+    "save_sectors",
+    "search",
+    "sectors_path",
+    "table_path",
+]
 
 _COLUMNS = ["symbol", "name", "updated_at"]
+_SECTOR_COLUMNS = ["symbol", "sector", "updated_at"]
 
 
 class Symbol(NamedTuple):
@@ -133,3 +145,57 @@ def _normalised_or_none(text: str) -> str:
         return normalize_symbol(text)
     except ValueError:
         return ""
+
+
+# --- 板块表 -------------------------------------------------------------------
+
+
+def sectors_path(directory: Path | str) -> Path:
+    """Where the sector table lives under a data root."""
+    return Path(directory) / "universe" / "sectors.parquet"
+
+
+def save_sectors(industries: dict[str, str], directory: Path | str) -> Path:
+    """Write the whole sector table. An empty mapping is refused, not written.
+
+    Same rule as the name table: overwriting a good table with nothing would
+    silently strip every sector label and board aggregate until the next
+    refresh, and nothing would look broken.
+    """
+    if not industries:
+        raise ValueError("refusing to save an empty sector table")
+    target = sectors_path(directory)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).isoformat(timespec="seconds")
+    frame = pd.DataFrame(
+        [(symbol, sector, stamp) for symbol, sector in sorted(industries.items())],
+        columns=_SECTOR_COLUMNS,
+    )
+    frame.to_parquet(target, index=False)
+    return target
+
+
+def load_sectors(directory: Path | str) -> pd.DataFrame:
+    """The stored sector table, or an empty frame when never refreshed."""
+    target = sectors_path(directory)
+    if not target.is_file():
+        return pd.DataFrame(columns=_SECTOR_COLUMNS)
+    frame = pd.read_parquet(target)
+    missing = [column for column in _SECTOR_COLUMNS if column not in frame.columns]
+    if missing:
+        return pd.DataFrame(columns=_SECTOR_COLUMNS)
+    return frame
+
+
+def refresh_sectors(provider: MarketDataProvider, directory: Path | str) -> int:
+    """Pull the sector table from ``provider`` and persist it. Returns rows."""
+    try:
+        industries = provider.list_industries()
+    except ProviderError:
+        raise
+    except Exception as exc:
+        raise ProviderError(f"刷新板块表失败：{type(exc).__name__}: {exc}") from exc
+    if not industries:
+        raise ProviderError(f"{provider.name} 没有发布行业数据；换个源，或手动维护板块表")
+    save_sectors(industries, directory)
+    return len(industries)

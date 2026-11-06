@@ -240,6 +240,20 @@
         <div id="wl-market"></div>
       </div>
       <div class="card">
+        <h3>板块异动 <span class="muted" id="wl-movers-note"></span></h3>
+        <div class="row" style="margin-bottom:6px">
+          <label>回看</label>
+          <select id="wl-movers-days">
+            <option value="1">1 日</option>
+            <option value="3">3 日</option>
+            <option value="5" selected>5 日</option>
+            <option value="10">10 日</option>
+          </select>
+          <button class="btn" id="wl-movers-refresh">刷新</button>
+        </div>
+        <div id="wl-movers"></div>
+      </div>
+      <div class="card">
         <h3>自选概览 <span class="muted" id="wl-overview-note"></span></h3>
         <div id="wl-overview"></div>
       </div>
@@ -1381,7 +1395,7 @@ async function loadIndicatorDetail() {
     $("ind-detail").innerHTML = `
       <div class="row" style="align-items:center;gap:10px;margin-bottom:8px">
         <button class="btn" data-watch="${data.symbol}">☆ 加入自选</button>
-        <p class="muted" style="margin:0">${data.symbol} · ${data.as_of} · ${data.provider}</p>
+        <p class="muted" style="margin:0">${data.symbol}${data.sector ? " · " + data.sector : ""} · ${data.as_of} · ${data.provider}</p>
       </div>
       <table><thead><tr><th>指标</th><th>值</th><th>量纲</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
@@ -1464,16 +1478,73 @@ function inWatchlist(symbol) {
   return WATCHLIST.stocks.some((s) => s.symbol === symbol);
 }
 
+let MOVERS = null;
+
 async function loadWatchlist() {
-  const [list, analysis] = await Promise.all([
+  const [list, analysis, movers] = await Promise.all([
     api("/watchlist").catch(() => ({ categories: [], stocks: [] })),
     api("/watchlist/analysis").catch(() => null),
+    loadMovers(),
   ]);
   WATCHLIST = list;
   ANALYSIS = analysis;
+  MOVERS = movers;
   renderWatchlist();
   refreshWatchButtons();
 }
+
+/* 板块异动：领涨/领跌是相对排名——普涨日的 1% 领涨毫无信息，
+   排在分布两端才值得看。板块表没建时给出建立命令而不是空表。 */
+async function loadMovers() {
+  const days = $("wl-movers-days").value;
+  return api(`/sectors/movers?days=${days}`).catch((error) => ({ error: error.message }));
+}
+
+function renderMovers() {
+  const note = $("wl-movers-note");
+  const target = $("wl-movers");
+  if (!MOVERS) {
+    note.textContent = "";
+    target.innerHTML = '<div class="empty">暂无数据</div>';
+    return;
+  }
+  if (MOVERS.error) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${MOVERS.error}</div>`;
+    return;
+  }
+  note.textContent = `近 ${MOVERS.days} 日 · ${MOVERS.as_of} · ${MOVERS.n_sectors} 个板块`;
+  const chipRow = (items, kind) =>
+    items
+      .map(
+        (s) =>
+          `<span class="badge ${kind}">${s.sector} ${s.change > 0 ? "+" : ""}${s.change?.toFixed(2)}%<span class="muted">（${s.n}只）</span></span>`,
+      )
+      .join(" ");
+  target.innerHTML = `
+    <div style="margin-bottom:8px"><b>领涨</b><div style="margin-top:4px">${chipRow(MOVERS.leading, "good") || '<span class="muted">—</span>'}</div></div>
+    ${MOVERS.lagging.length ? `<div><b>领跌</b><div style="margin-top:4px">${chipRow(MOVERS.lagging, "bad")}</div></div>` : ""}
+    <details style="margin-top:8px"><summary class="muted">全部 ${MOVERS.n_sectors} 个板块</summary>
+      <div id="wl-movers-all" style="margin-top:6px"></div></details>`;
+  $("wl-movers-all").innerHTML = table(
+    ["板块", "成分数", "等权涨幅", "上涨占比"],
+    MOVERS.all.map((s) => [
+      s.sector,
+      String(s.n),
+      `${s.change > 0 ? "+" : ""}${s.change?.toFixed(2)}%`,
+      `${s.up_ratio?.toFixed(0)}%`,
+    ]),
+  );
+}
+
+$("wl-movers-refresh").addEventListener("click", async () => {
+  MOVERS = await loadMovers();
+  renderMovers();
+});
+$("wl-movers-days").addEventListener("change", async () => {
+  MOVERS = await loadMovers();
+  renderMovers();
+});
 
 /* 大盘分析：宽度统计 + 等权指数曲线。诚实标注样本范围——
    这里的「大盘」是已落盘样本的等权统计，不是上证指数；
@@ -1540,6 +1611,7 @@ const RSI_LABELS = { overbought: "超买", oversold: "超卖", neutral: "中性"
 
 function renderWatchlist() {
   renderMarketCard();
+  renderMovers();
   renderOverviewCard();
   const filter = $("wl-filter");
   const active = filter.dataset.active || "";
@@ -1575,6 +1647,7 @@ function renderWatchlist() {
       return `<tr>
         <td>${symbolCell(s.symbol)}</td>
         <td>${s.name || "—"}</td>
+        <td>${s.sector ? `<span class="badge">${s.sector}</span>` : '<span class="muted">—</span>'}</td>
         <td>${s.categories.length ? s.categories.map((c) => `<span class="badge">${c}</span>`).join(" ") : '<span class="muted">未分类</span>'}</td>
         <td>${s.last_close == null ? "—" : fmt(s.last_close, 2)}</td>
         <td class="${tone}">${change}</td>
@@ -1585,7 +1658,7 @@ function renderWatchlist() {
       </tr>`;
     });
   $("wl-table").innerHTML = rows.length
-    ? `<table><thead><tr><th>代码</th><th>名称</th><th>分类</th><th>最新收盘</th><th>日涨跌</th><th>RSI</th><th>MA20</th><th>备注</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+    ? `<table><thead><tr><th>代码</th><th>名称</th><th>板块</th><th>分类</th><th>最新收盘</th><th>日涨跌</th><th>RSI</th><th>MA20</th><th>备注</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`
     : `<div class="empty">自选还是空的：在上面加一只，或在指标页点「加入自选」</div>`;
 
   filter.querySelectorAll("[data-wl-filter]").forEach((el) => {

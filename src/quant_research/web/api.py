@@ -1166,10 +1166,12 @@ def indicator_detail(
                 value=None if pd.isna(raw) else float(raw),
             )
         )
+    sector_map, _ = _sector_map(settings)
     return IndicatorDetailOut(
         symbol=symbol,
         as_of=pd.Timestamp(sample.index.max()).date().isoformat(),
         provider=wanted_provider,
+        sector=sector_map.get(symbol),
         values=values,
     )
 
@@ -1369,6 +1371,7 @@ def _watchlist_payload(settings: Settings) -> dict[str, Any]:
         panel = None  # no data yet: the list still works, quotes just stay blank
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    sector_map, _ = _sector_map(settings)
 
     stocks = []
     for symbol, entry in sorted(data["stocks"].items()):
@@ -1376,6 +1379,7 @@ def _watchlist_payload(settings: Settings) -> dict[str, Any]:
             {
                 "symbol": symbol,
                 "name": entry.get("name") or name_of.get(symbol, ""),
+                "sector": sector_map.get(symbol),
                 "categories": entry.get("categories", []),
                 "note": entry.get("note", ""),
                 "added_at": entry.get("added_at"),
@@ -1436,10 +1440,12 @@ def _watchlist_payload_set(settings: Settings, data: dict[str, Any]) -> dict[str
         panel = None
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    sector_map, _ = _sector_map(settings)
     stocks = [
         {
             "symbol": symbol,
             "name": entry.get("name") or name_of.get(symbol, ""),
+            "sector": sector_map.get(symbol),
             "categories": entry.get("categories", []),
             "note": entry.get("note", ""),
             "added_at": entry.get("added_at"),
@@ -1577,3 +1583,70 @@ def _clean(value: float | None) -> float | None:
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return None
     return round(value, 2)
+
+
+# --- 板块 ---------------------------------------------------------------------
+
+
+def _sector_map(settings: Settings) -> tuple[dict[str, str], str | None]:
+    """``{symbol: sector}`` plus the table's refresh stamp, or ({} , None)."""
+    frame = universe.load_sectors(settings.data.directory)
+    if frame.empty:
+        return {}, None
+    stamp = str(frame["updated_at"].iloc[0]) if "updated_at" in frame.columns else None
+    return dict(zip(frame["symbol"], frame["sector"])), stamp
+
+
+@router.get("/sectors/movers")
+def sector_movers(
+    days: int = Query(default=5, ge=2, le=60), top: int = Query(default=8, ge=3, le=20)
+) -> dict[str, Any]:
+    """板块异动：近 ``days`` 日各板块成分股的等权涨幅与上涨占比。
+
+    「异动」是相对的：一个板块涨幅排在全体板块分布的两端才值得看，绝对涨幅
+    1% 在普涨日毫无信息。板块表未建立时 400 并给出建立命令——空表算出来的
+    「无异动」和真无异动是两回事。
+    """
+    settings = load_settings()
+    sector_map, stamp = _sector_map(settings)
+    if not sector_map:
+        raise HTTPException(
+            status_code=400,
+            detail="板块表尚未建立：先运行 quant-symbols --sectors 建立行业归属",
+        )
+
+    panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    close = panel.prices
+    if len(close) < days + 1:
+        raise HTTPException(
+            status_code=400, detail=f"面板不足 {days + 1} 个交易日，算不了 {days} 日板块涨幅"
+        )
+
+    window_change = (close.iloc[-1] / close.iloc[-1 - days] - 1) * 100
+
+    rows: list[dict[str, Any]] = []
+    grouped = pd.DataFrame({"sector": pd.Series(sector_map), "change": window_change}).dropna()
+    for sector, chunk in grouped.groupby("sector"):
+        rows.append(
+            {
+                "sector": str(sector),
+                "n": len(chunk),
+                "change": _clean(float(chunk["change"].mean())),
+                "up_ratio": _clean(float((chunk["change"] > 0).mean()) * 100),
+            }
+        )
+    rows.sort(key=lambda item: item["change"] if item["change"] is not None else -1e9, reverse=True)
+    if len(rows) <= top:
+        leading, lagging = rows, []
+    else:
+        leading, lagging = rows[:top], list(reversed(rows[-top:]))
+
+    return {
+        "days": days,
+        "as_of": str(close.index[-1].date()),
+        "updated_at": stamp,
+        "n_sectors": len(rows),
+        "leading": leading,
+        "lagging": lagging,
+        "all": rows,
+    }

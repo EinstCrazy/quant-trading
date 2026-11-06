@@ -1,6 +1,7 @@
 """Command line entry point for the symbol ↔ name table.
 
     quant-symbols --refresh             # 从数据源重拉全市场代码+名称（几十秒）
+    quant-symbols --sectors             # 重拉全市场行业板块表
     quant-symbols --query 茅台          # 按名称或代码搜索
     quant-symbols --query 3007 --limit 5
     quant-symbols                       # 表的状态：多少只、什么时候刷新过
@@ -29,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="维护「股票代码 → 中文名称」表，供 Web 输入框补全与命令行查询。",
     )
     parser.add_argument("--refresh", action="store_true", help="从数据源重拉全市场代码与名称")
+    parser.add_argument("--sectors", action="store_true", help="从数据源重拉全市场行业板块表")
     parser.add_argument("--query", "-q", default="", help="按代码前缀或名称搜索，例如 茅台 / 6005")
     parser.add_argument("--limit", type=int, default=20, help="最多返回几条（默认 20）")
     parser.add_argument("--provider", help="数据源（默认取 settings.collection.provider）")
@@ -88,9 +90,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {item.symbol:<11}{item.name}")
         return 0
 
-    if not args.refresh:
+    if args.sectors:
+        provider_name = args.provider or settings.collection.provider
+        adjust = args.adjust or settings.collection.adjust
+        provider = get_provider(provider_name, adjust=adjust)
+        logger.info("从 %s 拉取全市场行业板块…", provider_name)
+        try:
+            count = universe.refresh_sectors(provider, directory)
+        except Exception as exc:  # noqa: BLE001 - the message is the point
+            logger.error("板块表刷新失败：%s", exc)
+            return 1
+        stamp = datetime.now().strftime("%H:%M:%S")
+        print(f"已刷新 {count} 只的板块归属 → {universe.sectors_path(directory)}（{stamp}）")
+
+    if not args.refresh and not args.sectors:
         _print_status(table, directory)
+        _print_sector_status(directory)
     return 0
+
+
+def _print_sector_status(directory) -> None:
+    frame = universe.load_sectors(directory)
+    if frame.empty:
+        print("板块表尚未建立：quant-symbols --sectors")
+        return
+    print(f"板块表：{len(frame)} 只，覆盖 {frame['sector'].nunique()} 个板块")
 
 
 if __name__ == "__main__":  # pragma: no cover
