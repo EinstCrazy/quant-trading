@@ -286,3 +286,115 @@ class TestSectorMovers:
         payload = wl_client.get("/api/indicators/600000").json()
 
         assert payload["sector"] == "银行"
+
+
+# --- 最近大事件 ----------------------------------------------------------------
+
+
+def _events_panel():
+    """40 天面板：前 30 天平稳，末段确定性地制造四类事件。
+
+    全部用显式价格而不用随机数：随机漂移会自己产生「事件」，断言就变成了
+    与种子耦合的赌博。事件窗口（iloc[30..39]）逐日可核对。
+    """
+    import numpy as np
+    import pandas as pd
+
+    from quant_research.data.loader import PricePanel
+
+    index = pd.bdate_range("2024-01-01", periods=40, name="date")
+    values = np.full((40, 3), 100.0)
+    values[30] = [98.0, 98.0, 100.0]  # 普跌日：银行两只 -2%，中位 -2%
+    values[31] = [106.8, 106.8, 100.0]  # 银行集体 +8.9%（板块事件 + 两只个股事件）
+    values[32] = [100.0, 100.0, 107.0]  # 300001 单日 +7% 且创 60 日新高
+    values[33:] = [100.0, 100.0, 107.0]  # 收平：新高只报 32 那一次
+    return PricePanel(
+        prices=pd.DataFrame(values, index=index, columns=["600000.SH", "000001.SZ", "300001.SZ"]),
+        extra={
+            k: pd.DataFrame(1.0, index=index, columns=["x"])
+            for k in ("open", "high", "low", "volume", "amount")
+        },
+    )
+
+
+def _sector_map_for_events():
+    return {"600000.SH": "银行", "000001.SZ": "银行", "300001.SZ": "半导体"}
+
+
+class TestEvents:
+    def test_detects_market_sector_and_stock_events(self):
+        from quant_research.market_events import detect_events
+
+        events = detect_events(_events_panel(), _sector_map_for_events(), days=10)
+
+        kinds = [e["kind"] for e in events]
+        assert "market" in kinds
+        assert "sector" in kinds
+        assert "stock" in kinds
+        assert "high" in kinds
+
+    def test_sector_event_requires_consensus(self):
+        """一涨一跌的板块不能报「集体上涨」：单票拉动不是板块异动。"""
+        import pandas as pd
+
+        from quant_research.data.loader import PricePanel
+        from quant_research.market_events import detect_events
+
+        panel = _events_panel()
+        values = panel.prices.to_numpy(copy=True)
+        values[31] = [106.8, 88.2, 100.0]  # 600000 +9%、000001 -10%：均值近零且反向
+        split = PricePanel(
+            prices=pd.DataFrame(values, index=panel.prices.index, columns=panel.prices.columns),
+            extra=panel.extra,
+        )
+
+        events = detect_events(split, _sector_map_for_events(), days=10)
+
+        assert all("银行" not in e["title"] for e in events if e["kind"] == "sector")
+
+    def test_consecutive_new_highs_report_once(self):
+        """连涨十天是一段趋势，报一次就够——每天报会把事件淹没成噪音。"""
+        import numpy as np
+        import pandas as pd
+
+        from quant_research.data.loader import PricePanel
+        from quant_research.market_events import detect_events
+
+        index = pd.bdate_range("2024-01-01", periods=40, name="date")
+        values = np.full((40, 1), 100.0)
+        values[30:, 0] = 100.0 + np.arange(10) * 1.5  # 最后十天连续新高
+        panel = PricePanel(
+            prices=pd.DataFrame(values, index=index, columns=["600000.SH"]),
+            extra={
+                k: pd.DataFrame(1.0, index=index, columns=["x"])
+                for k in ("open", "high", "low", "volume", "amount")
+            },
+        )
+
+        events = detect_events(panel, {}, days=10)
+
+        highs = [e for e in events if e["kind"] == "high" and e["title"].startswith("600000.SH")]
+        assert len(highs) == 1
+
+    def test_missing_sector_table_only_drops_sector_events(self):
+        from quant_research.market_events import detect_events
+
+        events = detect_events(_events_panel(), None, days=10)
+
+        kinds = [e["kind"] for e in events]
+        assert "sector" not in kinds
+        assert "market" in kinds and "stock" in kinds
+
+    def test_events_endpoint_with_real_app(self, wl_client, monkeypatch):
+        from quant_research.web import api as api_module
+
+        monkeypatch.setattr(api_module, "_load_panel", lambda *a, **k: _events_panel())
+        monkeypatch.setattr(
+            api_module, "_sector_map", lambda settings: (_sector_map_for_events(), None)
+        )
+
+        payload = wl_client.get("/api/events?days=10").json()
+
+        assert payload["days"] == 10
+        assert payload["events"]
+        assert payload["sector_table"] is True

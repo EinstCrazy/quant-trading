@@ -89,6 +89,9 @@
   .chip.on { border-color: #2563eb; color: #2563eb; font-weight: 600; }
   .wl-star { color: #e6a23c; margin-right: 3px; }
   .up { color: #d64541; } .down { color: #2e9e5b; }
+  /* 事件时间线：一行一条，日期靠左对齐扫读 */
+  .ev-row { padding: 3px 0; border-bottom: 1px dashed var(--line, #e5e7eb); font-size: 13px; }
+  .ev-row:last-child { border-bottom: none; }
   /* the reason a job failed is the one line worth reading in that card */
   .job-error { color: #b42318; margin-top: 4px; line-height: 1.4; word-break: break-word; }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 5px; }
@@ -252,6 +255,19 @@
           <button class="btn" id="wl-movers-refresh">刷新</button>
         </div>
         <div id="wl-movers"></div>
+      </div>
+      <div class="card">
+        <h3>最近大事件 <span class="muted" id="wl-events-note"></span></h3>
+        <div class="row" style="margin-bottom:6px">
+          <label>回看</label>
+          <select id="wl-events-days">
+            <option value="5">5 日</option>
+            <option value="10" selected>10 日</option>
+            <option value="20">20 日</option>
+            <option value="30">30 日</option>
+          </select>
+        </div>
+        <div id="wl-events"></div>
       </div>
       <div class="card">
         <h3>自选概览 <span class="muted" id="wl-overview-note"></span></h3>
@@ -1479,19 +1495,75 @@ function inWatchlist(symbol) {
 }
 
 let MOVERS = null;
+let EVENTS = null;
 
 async function loadWatchlist() {
-  const [list, analysis, movers] = await Promise.all([
+  const [list, analysis, movers, events] = await Promise.all([
     api("/watchlist").catch(() => ({ categories: [], stocks: [] })),
     api("/watchlist/analysis").catch(() => null),
     loadMovers(),
+    loadEvents(),
   ]);
   WATCHLIST = list;
   ANALYSIS = analysis;
   MOVERS = movers;
+  EVENTS = events;
   renderWatchlist();
   refreshWatchButtons();
 }
+
+/* 最近大事件：从行情本身检测——普涨普跌、板块集体异动、个股暴涨暴跌、
+   创阶段新高/新低。没有新闻源就不假装知道新闻；每条事件自带样本信息。 */
+async function loadEvents() {
+  return api(`/events?days=${$("wl-events-days").value}`).catch((error) => ({ error: error.message }));
+}
+
+const EVENT_KINDS = {
+  market: ["市场", ""],
+  sector: ["板块", "good"],
+  stock: ["个股", "warn"],
+  high: ["新高", "good"],
+  low: ["新低", "bad"],
+};
+
+function renderEvents() {
+  const note = $("wl-events-note");
+  const target = $("wl-events");
+  if (!EVENTS) {
+    note.textContent = "";
+    target.innerHTML = '<div class="empty">暂无数据</div>';
+    return;
+  }
+  if (EVENTS.error) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${EVENTS.error}</div>`;
+    return;
+  }
+  note.textContent = EVENTS.unavailable
+    ? ""
+    : `近 ${EVENTS.days} 日 · ${EVENTS.as_of} · ${EVENTS.n_symbols} 只样本` + (EVENTS.sector_table ? "" : " · 板块表未建，缺板块类事件");
+  if (EVENTS.unavailable) {
+    target.innerHTML = `<div class="empty">${EVENTS.unavailable}</div>`;
+    return;
+  }
+  target.innerHTML = EVENTS.events.length
+    ? EVENTS.events
+        .map((ev) => {
+          const [label, kind] = EVENT_KINDS[ev.kind] || [ev.kind, ""];
+          const badgeHtml = `<span class="badge ${kind}">${label}</span>`;
+          const title = ev.symbols && ev.symbols.length && ev.kind !== "market"
+            ? ev.title.replace(ev.symbols[0], symbolCell(ev.symbols[0]))
+            : ev.title;
+          return `<div class="ev-row">${badgeHtml} <span class="muted">${ev.date}</span> ${title}${ev.detail ? ` <span class="muted">— ${ev.detail}</span>` : ""}</div>`;
+        })
+        .join("")
+    : '<div class="empty">窗口内没有触发阈值的事件：平静的日子，本身也是一种信息</div>';
+}
+
+$("wl-events-days").addEventListener("change", async () => {
+  EVENTS = await loadEvents();
+  renderEvents();
+});
 
 /* 板块异动：领涨/领跌是相对排名——普涨日的 1% 领涨毫无信息，
    排在分布两端才值得看。板块表没建时给出建立命令而不是空表。 */
@@ -1612,6 +1684,7 @@ const RSI_LABELS = { overbought: "超买", oversold: "超卖", neutral: "中性"
 function renderWatchlist() {
   renderMarketCard();
   renderMovers();
+  renderEvents();
   renderOverviewCard();
   const filter = $("wl-filter");
   const active = filter.dataset.active || "";

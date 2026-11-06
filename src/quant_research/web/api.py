@@ -43,6 +43,7 @@ from quant_research.indicators import (
     store_bundle,
 )
 from quant_research.logging_setup import get_logger
+from quant_research.market_events import detect_events
 from quant_research.metrics import benchmark_buy_hold, drawdown_series
 from quant_research.scoring import screen, to_target_weights
 from quant_research.scoring.ledger import ScreenLedger, review
@@ -1649,4 +1650,29 @@ def sector_movers(
         "leading": leading,
         "lagging": lagging,
         "all": rows,
+    }
+
+
+# --- 大事件 -------------------------------------------------------------------
+
+
+@router.get("/events")
+def recent_events(days: int = Query(default=10, ge=2, le=30)) -> dict[str, Any]:
+    """最近大事件：从行情本身检测，不假装知道新闻。
+
+    普涨普跌、板块集体异动、个股暴涨暴跌、创阶段新高/新低——这四类是面板
+    数据里可验证的全部。没有新闻源就不接新闻，事件列表标明样本范围。
+    """
+    settings = load_settings()
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    except HTTPException as exc:
+        return {"days": days, "events": [], "sector_table": False, "unavailable": str(exc.detail)}
+    sector_map, _ = _sector_map(settings)
+    return {
+        "days": days,
+        "as_of": str(panel.prices.index[-1].date()),
+        "n_symbols": int(panel.prices.shape[1]),
+        "sector_table": bool(sector_map),
+        "events": detect_events(panel, sector_map, days=days),
     }
