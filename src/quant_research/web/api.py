@@ -1448,3 +1448,132 @@ def _watchlist_payload_set(settings: Settings, data: dict[str, Any]) -> dict[str
         for symbol, entry in sorted(data["stocks"].items())
     ]
     return {"categories": data["categories"], "stocks": stocks}
+
+
+@router.get("/watchlist/analysis")
+def watchlist_analysis() -> dict[str, Any]:
+    """自选个股的技术截面 + 基于已落盘样本的大盘宽度。
+
+    「大盘」在这里只能诚实地叫作「已落盘样本的等权统计」：项目没有接指数行情，
+    拿 30 只票的等权均值冒充上证指数是编造。样本范围由 UI 明示——宽度数字的
+    价值在于相对变化，不在于和官方指数对数。
+    """
+    settings = load_settings()
+    data = watchlist_store.load(settings.data.directory)
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+        bundle = _load_indicators(settings.collection.provider, settings.collection.adjust)
+    except HTTPException as exc:
+        # 没有落盘数据时大盘卡也看得见——只是空着，并说明为什么空着
+        return {
+            "market": None,
+            "market_curve": [],
+            "stocks": [],
+            "summary": None,
+            "unavailable": str(exc.detail),
+        }
+    if data["stocks"] and not bundle.frames:
+        pass  # bundle 为空不致命：只是截面列缺失
+
+    close = panel.prices
+    if len(close) < 2 or close.empty:
+        raise HTTPException(status_code=400, detail="面板至少要两个交易日才能分析涨跌")
+    last, prev = close.iloc[-1], close.iloc[-2]
+    changes = last / prev - 1
+
+    ma20 = bundle.frames.get("ma_20")
+    above_ma20: pd.Series | None = None
+    if ma20 is not None:
+        aligned = ma20.iloc[-1].reindex(close.columns).dropna()
+        above_ma20 = last.loc[aligned.index] > aligned
+
+    window = close.tail(20)
+    new_high = int((close.iloc[-1] >= window.max()).sum())
+    new_low = int((close.iloc[-1] <= window.min()).sum())
+    median_change = _clean(float(changes.median()) * 100)
+
+    equal = close.mean(axis=1).dropna()
+    curve_src = equal.tail(60)
+    base = float(curve_src.iloc[0]) if float(curve_src.iloc[0]) else 1.0
+    market_curve = [
+        [str(idx.date()), round(float(v) / base * 100, 2)] for idx, v in curve_src.items()
+    ]
+
+    market = {
+        "as_of": str(close.index[-1].date()),
+        "n_symbols": len(changes),
+        "up": int((changes > 0).sum()),
+        "down": int((changes < 0).sum()),
+        "flat": int((changes == 0).sum()),
+        "median_change": median_change,
+        "above_ma20_ratio": (
+            _clean(float(above_ma20.mean()) * 100)
+            if above_ma20 is not None and len(above_ma20)
+            else None
+        ),
+        "new_high_20d": new_high,
+        "new_low_20d": new_low,
+    }
+
+    rsi = bundle.frames.get("rsi_14")
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+
+    stocks: list[dict[str, Any]] = []
+    watch_changes: list[float] = []
+    for symbol, entry in sorted(data["stocks"].items()):
+        quote = _quote(panel, symbol)
+        change = quote["change_pct"]
+        if change is not None:
+            watch_changes.append(change)
+
+        rsi_value = rsi_state = None
+        if rsi is not None and symbol in rsi.columns:
+            series = rsi[symbol].dropna()
+            if len(series):
+                rsi_value = round(float(series.iloc[-1]), 1)
+                rsi_state = (
+                    "overbought" if rsi_value > 70 else "oversold" if rsi_value < 30 else "neutral"
+                )
+
+        position = None
+        if above_ma20 is not None and symbol in above_ma20.index:
+            position = "above" if bool(above_ma20[symbol]) else "below"
+
+        stocks.append(
+            {
+                "symbol": symbol,
+                "name": entry.get("name") or name_of.get(symbol, ""),
+                "categories": entry.get("categories", []),
+                "note": entry.get("note", ""),
+                **quote,
+                "rsi_14": rsi_value,
+                "rsi_state": rsi_state,
+                "ma20_position": position,
+            }
+        )
+
+    watch_avg = sum(watch_changes) / len(watch_changes) if watch_changes else None
+    summary = (
+        {
+            "watch_count": len(stocks),
+            "watch_up": sum(1 for c in watch_changes if c > 0),
+            "watch_down": sum(1 for c in watch_changes if c < 0),
+            "avg_change": _clean(watch_avg),
+            "vs_market": (
+                _clean(watch_avg - median_change)
+                if watch_avg is not None and median_change is not None
+                else None
+            ),
+        }
+        if data["stocks"]
+        else None
+    )
+    return {"market": market, "market_curve": market_curve, "stocks": stocks, "summary": summary}
+
+
+def _clean(value: float | None) -> float | None:
+    """NaN 与 None 在 JSON 里是两回事：NaN 会变成非法的 ``NaN`` 字面量。"""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    return round(value, 2)

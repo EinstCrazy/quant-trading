@@ -236,6 +236,14 @@
     <section id="view-watchlist" class="view">
       <h2>自选股</h2>
       <div class="card">
+        <h3>大盘分析 <span class="muted" id="wl-market-note"></span></h3>
+        <div id="wl-market"></div>
+      </div>
+      <div class="card">
+        <h3>自选概览 <span class="muted" id="wl-overview-note"></span></h3>
+        <div id="wl-overview"></div>
+      </div>
+      <div class="card">
         <h3>添加标的</h3>
         <div class="row">
           <label>代码</label>
@@ -1450,18 +1458,89 @@ document.addEventListener("click", (event) => {
    WATCHLIST 缓存一份全量，供各列表的 ★ 标记与详情页按钮判断，不必每次查询
    都打一遍后端。 */
 let WATCHLIST = { categories: [], stocks: [] };
+let ANALYSIS = null;
 
 function inWatchlist(symbol) {
   return WATCHLIST.stocks.some((s) => s.symbol === symbol);
 }
 
 async function loadWatchlist() {
-  WATCHLIST = await api("/watchlist").catch(() => ({ categories: [], stocks: [] }));
+  const [list, analysis] = await Promise.all([
+    api("/watchlist").catch(() => ({ categories: [], stocks: [] })),
+    api("/watchlist/analysis").catch(() => null),
+  ]);
+  WATCHLIST = list;
+  ANALYSIS = analysis;
   renderWatchlist();
   refreshWatchButtons();
 }
 
+/* 大盘分析：宽度统计 + 等权指数曲线。诚实标注样本范围——
+   这里的「大盘」是已落盘样本的等权统计，不是上证指数；
+   宽度数字的价值在于相对变化，不在于和官方指数对数。 */
+function renderMarketCard() {
+  const note = $("wl-market-note");
+  const target = $("wl-market");
+  if (!ANALYSIS || (!ANALYSIS.market && ANALYSIS.unavailable)) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${(ANALYSIS && ANALYSIS.unavailable) || "暂无分析"}</div>`;
+    return;
+  }
+  const m = ANALYSIS.market;
+  note.textContent = `基于已落盘 ${m.n_symbols} 只样本 · ${m.as_of}`;
+  const pct = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
+  target.innerHTML = `
+    <div class="row" style="gap:18px;flex-wrap:wrap;margin-bottom:6px">
+      ${badge(m.up > m.down ? "good" : m.down > m.up ? "bad" : "", `涨 ${m.up} · 跌 ${m.down} · 平 ${m.flat}`)}
+      <span class="muted">中位涨幅 <b>${pct(m.median_change)}</b></span>
+      ${m.above_ma20_ratio == null ? "" : `<span class="muted">MA20 之上 <b>${m.above_ma20_ratio.toFixed(0)}%</b></span>`}
+      <span class="muted">20 日新高 <b>${m.new_high_20d}</b> · 新低 <b>${m.new_low_20d}</b></span>
+    </div>
+    <div id="wl-market-chart"></div>`;
+  if (ANALYSIS.market_curve.length > 1) {
+    chart($("wl-market-chart"), [{ label: "等权指数（首日=100）", points: ANALYSIS.market_curve }]);
+  }
+}
+
+/* 自选概览：汇总对比 + 每只票的技术截面（RSI 状态、MA20 位置）。
+   超买/超卖只报状态不下结论——70/30 是参考线，不是买卖信号。 */
+function renderOverviewCard() {
+  const note = $("wl-overview-note");
+  const target = $("wl-overview");
+  if (!ANALYSIS || !ANALYSIS.summary) {
+    note.textContent = "";
+    target.innerHTML = '<div class="empty">自选还是空的，加入后这里给出每只票的技术截面</div>';
+    return;
+  }
+  const s = ANALYSIS.summary;
+  const pct = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
+  const vs = s.vs_market;
+  note.textContent = s.watch_count ? `${s.watch_count} 只` : "";
+  const verdict =
+    vs == null
+      ? ""
+      : vs > 0
+        ? badge("good", `跑赢样本中位 ${pct(vs)}`)
+        : vs < 0
+          ? badge("bad", `落后样本中位 ${pct(vs)}`)
+          : badge("", "与样本中位持平");
+  target.innerHTML = `
+    <div class="row" style="gap:14px;flex-wrap:wrap;margin-bottom:8px">
+      <span class="muted">上涨 <b>${s.watch_up}</b> · 下跌 <b>${s.watch_down}</b></span>
+      <span class="muted">平均涨幅 <b>${pct(s.avg_change)}</b></span>
+      ${verdict}
+    </div>`;
+}
+
+function analysisFor(symbol) {
+  return ((ANALYSIS && ANALYSIS.stocks) || []).find((s) => s.symbol === symbol) || null;
+}
+
+const RSI_LABELS = { overbought: "超买", oversold: "超卖", neutral: "中性" };
+
 function renderWatchlist() {
+  renderMarketCard();
+  renderOverviewCard();
   const filter = $("wl-filter");
   const active = filter.dataset.active || "";
   const chips = ["", ...WATCHLIST.categories].map((category) => {
@@ -1482,18 +1561,31 @@ function renderWatchlist() {
     .map((s) => {
       const change = s.change_pct == null ? "—" : `${s.change_pct > 0 ? "+" : ""}${s.change_pct.toFixed(2)}%`;
       const tone = s.change_pct > 0 ? "up" : s.change_pct < 0 ? "down" : "muted";
+      const a = analysisFor(s.symbol);
+      const rsi =
+        a && a.rsi_14 != null
+          ? `<span class="badge ${a.rsi_state === "overbought" ? "warn" : a.rsi_state === "oversold" ? "good" : ""}">${a.rsi_14} ${RSI_LABELS[a.rsi_state] || ""}</span>`
+          : '<span class="muted">—</span>';
+      const ma =
+        a && a.ma20_position
+          ? a.ma20_position === "above"
+            ? '<span class="up">MA20 上方</span>'
+            : '<span class="down">MA20 下方</span>'
+          : '<span class="muted">—</span>';
       return `<tr>
         <td>${symbolCell(s.symbol)}</td>
         <td>${s.name || "—"}</td>
         <td>${s.categories.length ? s.categories.map((c) => `<span class="badge">${c}</span>`).join(" ") : '<span class="muted">未分类</span>'}</td>
         <td>${s.last_close == null ? "—" : fmt(s.last_close, 2)}</td>
         <td class="${tone}">${change}</td>
+        <td>${rsi}</td>
+        <td>${ma}</td>
         <td class="muted">${s.note || ""}</td>
         <td><a data-wl-del="${s.symbol}" class="muted" style="cursor:pointer">移除</a></td>
       </tr>`;
     });
   $("wl-table").innerHTML = rows.length
-    ? `<table><thead><tr><th>代码</th><th>名称</th><th>分类</th><th>最新收盘</th><th>日涨跌</th><th>备注</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+    ? `<table><thead><tr><th>代码</th><th>名称</th><th>分类</th><th>最新收盘</th><th>日涨跌</th><th>RSI</th><th>MA20</th><th>备注</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`
     : `<div class="empty">自选还是空的：在上面加一只，或在指标页点「加入自选」</div>`;
 
   filter.querySelectorAll("[data-wl-filter]").forEach((el) => {

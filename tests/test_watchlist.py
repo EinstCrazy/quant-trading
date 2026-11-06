@@ -124,3 +124,111 @@ class TestAPI:
 
     def test_blank_category_name_is_rejected(self, wl_client):
         assert wl_client.post("/api/watchlist/categories", json={"name": "  "}).status_code == 422
+
+
+# --- 分析与大盘 ---------------------------------------------------------------
+
+
+class _Indicators:
+    """params_from_settings 所需的完整 indicators 段。"""
+
+    ma_periods = (5, 20)
+    ema_periods = (12, 26)
+    macd_fast = 12
+    macd_slow = 26
+    macd_signal = 9
+    rsi_period = 14
+    boll_period = 20
+    boll_std = 2.0
+    kdj_period = 9
+    kdj_smooth = 3
+    atr_period = 14
+    williams_period = 14
+    cci_period = 14
+    adx_period = 14
+    volatility_period = 20
+
+
+class _S:
+    indicators = _Indicators()
+
+
+def _mock_research(wl_client, monkeypatch):
+    """一只确定性的三票面板 + 由它算出的指标束。"""
+    import numpy as np
+    import pandas as pd
+
+    from quant_research.data.loader import PricePanel
+    from quant_research.indicators import compute_all, params_from_settings
+    from quant_research.web import api as api_module
+
+    index = pd.bdate_range("2024-01-01", periods=40, name="date")
+    rng = np.random.default_rng(3)
+    prices = pd.DataFrame(
+        100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.01, (40, 3)), axis=0),
+        index=index,
+        columns=["600000.SH", "000001.SZ", "300001.SZ"],
+    )
+    panel = PricePanel(
+        prices=prices,
+        extra={
+            k: prices * f
+            for k, f in (
+                ("open", 0.999),
+                ("high", 1.002),
+                ("low", 0.998),
+                ("volume", 1000.0),
+                ("amount", 1e6),
+            )
+        },
+    )
+    bundle = compute_all(panel, params_from_settings(_S()))
+    monkeypatch.setattr(api_module, "_load_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(api_module, "_load_indicators", lambda *a, **k: bundle)
+    return panel
+
+
+class TestAnalysis:
+    def test_breadth_and_cross_sections(self, wl_client, monkeypatch):
+        _mock_research(wl_client, monkeypatch)
+        wl_client.post("/api/watchlist", json={"symbol": "600000.SH"})
+
+        payload = wl_client.get("/api/watchlist/analysis").json()
+
+        market = payload["market"]
+        assert market["n_symbols"] == 3
+        assert set(market) >= {
+            "up",
+            "down",
+            "flat",
+            "median_change",
+            "above_ma20_ratio",
+            "new_high_20d",
+            "new_low_20d",
+        }
+        # 等权指数归一化到首日 = 100
+        assert len(payload["market_curve"]) == 40
+        assert payload["market_curve"][0][1] == 100.0
+
+        stock = payload["stocks"][0]
+        assert stock["symbol"] == "600000.SH"
+        assert stock["last_close"] is not None
+        assert stock["rsi_14"] is not None
+        assert stock["ma20_position"] in ("above", "below")
+        assert payload["summary"]["watch_count"] == 1
+
+    def test_the_market_survives_an_empty_watchlist(self, wl_client, monkeypatch):
+        """大盘卡不该等人先加自选——空表时宽度照算，自选列为空。"""
+        _mock_research(wl_client, monkeypatch)
+
+        payload = wl_client.get("/api/watchlist/analysis").json()
+
+        assert payload["market"]["n_symbols"] == 3
+        assert payload["stocks"] == []
+        assert payload["summary"] is None
+
+    def test_without_stored_data_it_says_why_not(self, wl_client):
+        payload = wl_client.get("/api/watchlist/analysis").json()
+
+        assert payload["market"] is None
+        assert "落盘" in payload["unavailable"]
