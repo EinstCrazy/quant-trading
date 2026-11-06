@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from quant_research import watchlist as watchlist_store
 from quant_research.backtest import (
     BacktestConfig,
     CostConfig,
@@ -54,6 +55,7 @@ from .jobs import JobStore, Progress, get_store
 from .schemas import (
     BacktestOut,
     BacktestRequest,
+    CategoryIn,
     CollectRequest,
     CompareRequest,
     CompareRowOut,
@@ -79,6 +81,7 @@ from .schemas import (
     SymbolOut,
     SymbolSearchOut,
     VariantIn,
+    WatchlistIn,
 )
 
 logger = get_logger("web.api")
@@ -1337,3 +1340,111 @@ def delete_experiment(
 
 
 __all__ = ["router"]
+
+
+# --- watchlist ---------------------------------------------------------------
+
+
+def _quote(panel: PricePanel | None, symbol: str) -> dict[str, Any]:
+    """Last close and the day-over-day change, read live from the panel.
+
+    The watchlist never stores prices: a stored quote is a stale quote, and
+    reading the panel costs milliseconds for the handful of names on it.
+    """
+    if panel is None or symbol not in panel.prices.columns:
+        return {"last_close": None, "change_pct": None}
+    close = panel.prices[symbol].dropna()
+    if len(close) < 2 or not close.iloc[-1]:
+        return {"last_close": None, "change_pct": None}
+    last, prev = float(close.iloc[-1]), float(close.iloc[-2])
+    change = round((last / prev - 1) * 100, 2) if prev else None
+    return {"last_close": last, "change_pct": change}
+
+
+def _watchlist_payload(settings: Settings) -> dict[str, Any]:
+    data = watchlist_store.load(settings.data.directory)
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    except HTTPException:
+        panel = None  # no data yet: the list still works, quotes just stay blank
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+
+    stocks = []
+    for symbol, entry in sorted(data["stocks"].items()):
+        stocks.append(
+            {
+                "symbol": symbol,
+                "name": entry.get("name") or name_of.get(symbol, ""),
+                "categories": entry.get("categories", []),
+                "note": entry.get("note", ""),
+                "added_at": entry.get("added_at"),
+                **_quote(panel, symbol),
+            }
+        )
+    return {"categories": data["categories"], "stocks": stocks}
+
+
+@router.get("/watchlist")
+def get_watchlist() -> dict[str, Any]:
+    """The user's own list: groups first, quotes read live from the panel."""
+    return _watchlist_payload(load_settings())
+
+
+@router.post("/watchlist")
+def add_to_watchlist(request: WatchlistIn) -> dict[str, Any]:
+    settings = load_settings()
+    watchlist_store.add_stock(
+        settings.data.directory,
+        request.symbol,
+        name=request.name,
+        categories=request.categories,
+        note=request.note,
+    )
+    return _watchlist_payload(settings)
+
+
+@router.delete("/watchlist/{symbol}")
+def drop_from_watchlist(symbol: str) -> dict[str, Any]:
+    settings = load_settings()
+    watchlist_store.remove_stock(settings.data.directory, symbol)
+    return _watchlist_payload(settings)
+
+
+@router.post("/watchlist/categories")
+def new_category(request: CategoryIn) -> dict[str, Any]:
+    settings = load_settings()
+    return _watchlist_payload_set(
+        settings, watchlist_store.upsert_category(settings.data.directory, request.name)
+    )
+
+
+@router.delete("/watchlist/categories/{name}")
+def drop_category(name: str) -> dict[str, Any]:
+    """Removing a group keeps the stocks — they just lose the tag."""
+    settings = load_settings()
+    return _watchlist_payload_set(
+        settings, watchlist_store.remove_category(settings.data.directory, name)
+    )
+
+
+def _watchlist_payload_set(settings: Settings, data: dict[str, Any]) -> dict[str, Any]:
+    """Same shape as ``_watchlist_payload`` but from data already in hand."""
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    except HTTPException:
+        panel = None
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    stocks = [
+        {
+            "symbol": symbol,
+            "name": entry.get("name") or name_of.get(symbol, ""),
+            "categories": entry.get("categories", []),
+            "note": entry.get("note", ""),
+            "added_at": entry.get("added_at"),
+            **_quote(panel, symbol),
+        }
+        for symbol, entry in sorted(data["stocks"].items())
+    ]
+    return {"categories": data["categories"], "stocks": stocks}

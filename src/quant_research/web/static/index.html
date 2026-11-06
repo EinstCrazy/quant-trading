@@ -83,6 +83,12 @@
   .sym-link { color: #2563eb; cursor: pointer; text-decoration: none;
               border-bottom: 1px dashed rgba(37, 99, 235, .5); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .sym-link:hover { text-decoration: underline; border-bottom-style: solid; }
+  /* 自选：分类过滤 chip 与列表星标；涨跌沿用 K 线的红涨绿跌 */
+  .chip { border: 1px solid var(--line); background: none; padding: 2px 10px;
+          cursor: pointer; font-size: 12px; color: var(--ink, inherit); }
+  .chip.on { border-color: #2563eb; color: #2563eb; font-weight: 600; }
+  .wl-star { color: #e6a23c; margin-right: 3px; }
+  .up { color: #d64541; } .down { color: #2e9e5b; }
   /* the reason a job failed is the one line worth reading in that card */
   .job-error { color: #b42318; margin-top: 4px; line-height: 1.4; word-break: break-word; }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 5px; }
@@ -104,6 +110,7 @@
       <button data-view="collect">采集</button>
       <button data-view="screen">建议</button>
       <button data-view="indicators">指标</button>
+      <button data-view="watchlist">自选</button>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -225,7 +232,35 @@
       <div class="card"><h3>历史采集报告</h3><div id="col-reports"></div></div>
     </section>
 
-    <!-- ⑤ 今日建议 -->
+    <!-- ⑤ 自选股 -->
+    <section id="view-watchlist" class="view">
+      <h2>自选股</h2>
+      <div class="card">
+        <h3>添加标的</h3>
+        <div class="row">
+          <label>代码</label>
+          <input id="wl-symbol" data-symbol-input placeholder="600519 或 茅台（后缀可省）">
+          <label>分类</label>
+          <input id="wl-categories" placeholder="逗号分隔，如 白酒,观察">
+          <label>备注</label>
+          <input id="wl-note" style="flex:1" placeholder="可选">
+          <button class="btn" id="wl-add">加入</button>
+        </div>
+        <span class="muted" id="wl-status"></span>
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <div class="row" id="wl-filter" style="margin-bottom:0"></div>
+          <div class="row" style="margin-bottom:0">
+            <input id="wl-new-category" placeholder="新分类名" style="width:120px">
+            <button class="btn" id="wl-category-add">新建分类</button>
+          </div>
+        </div>
+        <div id="wl-table" style="margin-top:10px"></div>
+      </div>
+    </section>
+
+    <!-- ⑥ 今日建议 -->
     <section id="view-screen" class="view">
       <h2>今日建议</h2>
       <div class="card">
@@ -470,6 +505,7 @@ function showView(name) {
   if (name === "collect") loadCollection();
   if (name === "compare") loadExperiments();
   if (name === "indicators") loadIndicators();
+  if (name === "watchlist") loadWatchlist();
 }
 
 /* ---------- charts: hand-rolled SVG, no CDN ---------- */
@@ -1335,9 +1371,13 @@ async function loadIndicatorDetail() {
       )
       .join("");
     $("ind-detail").innerHTML = `
-      <p class="muted">${data.symbol} · ${data.as_of} · ${data.provider}</p>
+      <div class="row" style="align-items:center;gap:10px;margin-bottom:8px">
+        <button class="btn" data-watch="${data.symbol}">☆ 加入自选</button>
+        <p class="muted" style="margin:0">${data.symbol} · ${data.as_of} · ${data.provider}</p>
+      </div>
       <table><thead><tr><th>指标</th><th>值</th><th>量纲</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
+    refreshWatchButtons();
 
     const series = await api(
       `/indicators/${encodeURIComponent(symbol)}/series?provider=${provider}&days=${days}`,
@@ -1388,7 +1428,8 @@ function renderIndicatorSeries(data) {
 /* 各列表里的代码都可点：跳到指标视图、填入查询框、直接出图。
    用事件委托而不是逐行绑事件——表格行是 innerHTML 整块生成的，逐行绑会随重绘消失。 */
 function symbolCell(symbol) {
-  return `<a class="sym-link" data-jump="${symbol}" title="查看这只票的K线与指标">${symbol}</a>`;
+  const star = inWatchlist(symbol) ? '<span class="wl-star" title="自选股">★</span>' : "";
+  return `${star}<a class="sym-link" data-jump="${symbol}" title="查看这只票的K线与指标">${symbol}</a>`;
 }
 
 function jumpToSymbol(symbol) {
@@ -1402,6 +1443,146 @@ document.addEventListener("click", (event) => {
   if (!link) return;
   event.preventDefault();
   jumpToSymbol(link.dataset.jump);
+});
+
+/* ---------- 自选股 ---------- */
+/* 自选是用户标注的集合：标签归标签，价格每次从面板现读，前端只管展示。
+   WATCHLIST 缓存一份全量，供各列表的 ★ 标记与详情页按钮判断，不必每次查询
+   都打一遍后端。 */
+let WATCHLIST = { categories: [], stocks: [] };
+
+function inWatchlist(symbol) {
+  return WATCHLIST.stocks.some((s) => s.symbol === symbol);
+}
+
+async function loadWatchlist() {
+  WATCHLIST = await api("/watchlist").catch(() => ({ categories: [], stocks: [] }));
+  renderWatchlist();
+  refreshWatchButtons();
+}
+
+function renderWatchlist() {
+  const filter = $("wl-filter");
+  const active = filter.dataset.active || "";
+  const chips = ["", ...WATCHLIST.categories].map((category) => {
+    const label = category || "全部";
+    const count = category
+      ? WATCHLIST.stocks.filter((s) => s.categories.includes(category)).length
+      : WATCHLIST.stocks.length;
+    const on = category === active;
+    return `<button class="chip${on ? " on" : ""}" data-wl-filter="${category}">${label} ${count}</button>`;
+  });
+  const catAdmin = WATCHLIST.categories
+    .map((c) => `<span class="muted">${c}<a data-wl-cat-del="${c}" title="删除分类（股票保留）"> ×</a></span>`)
+    .join("");
+  filter.innerHTML = chips.join(" ") + (catAdmin ? `<span style="margin-left:12px">${catAdmin}</span>` : "");
+
+  const rows = WATCHLIST.stocks
+    .filter((s) => !active || s.categories.includes(active))
+    .map((s) => {
+      const change = s.change_pct == null ? "—" : `${s.change_pct > 0 ? "+" : ""}${s.change_pct.toFixed(2)}%`;
+      const tone = s.change_pct > 0 ? "up" : s.change_pct < 0 ? "down" : "muted";
+      return `<tr>
+        <td>${symbolCell(s.symbol)}</td>
+        <td>${s.name || "—"}</td>
+        <td>${s.categories.length ? s.categories.map((c) => `<span class="badge">${c}</span>`).join(" ") : '<span class="muted">未分类</span>'}</td>
+        <td>${s.last_close == null ? "—" : fmt(s.last_close, 2)}</td>
+        <td class="${tone}">${change}</td>
+        <td class="muted">${s.note || ""}</td>
+        <td><a data-wl-del="${s.symbol}" class="muted" style="cursor:pointer">移除</a></td>
+      </tr>`;
+    });
+  $("wl-table").innerHTML = rows.length
+    ? `<table><thead><tr><th>代码</th><th>名称</th><th>分类</th><th>最新收盘</th><th>日涨跌</th><th>备注</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+    : `<div class="empty">自选还是空的：在上面加一只，或在指标页点「加入自选」</div>`;
+
+  filter.querySelectorAll("[data-wl-filter]").forEach((el) => {
+    el.addEventListener("click", () => {
+      filter.dataset.active = el.dataset.wlFilter;
+      renderWatchlist();
+    });
+  });
+  filter.querySelectorAll("[data-wl-cat-del]").forEach((el) => {
+    el.addEventListener("click", async () => {
+      WATCHLIST = await api(`/watchlist/categories/${encodeURIComponent(el.dataset.wlCatDel)}`, null, "DELETE");
+      renderWatchlist();
+    });
+  });
+  $("wl-table").querySelectorAll("[data-wl-del]").forEach((el) => {
+    el.addEventListener("click", async () => {
+      WATCHLIST = await api(`/watchlist/${encodeURIComponent(el.dataset.wlDel)}`, null, "DELETE");
+      renderWatchlist();
+      refreshWatchButtons();
+    });
+  });
+}
+
+/* 指标详情页的按钮是后渲染的，状态随 WATCHLIST 变化统一刷新 */
+function refreshWatchButtons() {
+  document.querySelectorAll("[data-watch]").forEach((button) => {
+    const symbol = button.dataset.watch;
+    button.textContent = inWatchlist(symbol) ? "★ 已在自选（点此移除）" : "☆ 加入自选";
+    button.classList.toggle("active", inWatchlist(symbol));
+  });
+}
+
+async function toggleWatch(symbol) {
+  try {
+    if (inWatchlist(symbol)) {
+      WATCHLIST = await api(`/watchlist/${encodeURIComponent(symbol)}`, null, "DELETE");
+      toast(`已从自选移除 ${symbol}`);
+    } else {
+      // 加入时不带分类：标签在自选页整理，一步只做一件事
+      WATCHLIST = await api("/watchlist", { symbol, categories: [] });
+      toast(`已加入自选 ${symbol}`);
+    }
+    refreshWatchButtons();
+    if ($("view-watchlist").classList.contains("active")) renderWatchlist();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-watch]");
+  if (!button) return;
+  toggleWatch(button.dataset.watch);
+});
+
+$("wl-add").addEventListener("click", async () => {
+  const symbol = $("wl-symbol").value.trim();
+  if (!symbol) {
+    $("wl-status").textContent = "先填代码或名称";
+    return;
+  }
+  $("wl-status").textContent = "保存中…";
+  try {
+    WATCHLIST = await api("/watchlist", {
+      symbol,
+      categories: $("wl-categories").value.split(",").map((s) => s.trim()).filter(Boolean),
+      note: $("wl-note").value.trim() || null,
+    });
+    $("wl-symbol").value = "";
+    $("wl-note").value = "";
+    $("wl-status").textContent = "";
+    renderWatchlist();
+    refreshWatchButtons();
+    toast("已加入自选");
+  } catch (error) {
+    $("wl-status").textContent = error.message;
+  }
+});
+
+$("wl-category-add").addEventListener("click", async () => {
+  const name = $("wl-new-category").value.trim();
+  if (!name) return;
+  try {
+    WATCHLIST = await api("/watchlist/categories", { name });
+    $("wl-new-category").value = "";
+    renderWatchlist();
+  } catch (error) {
+    toast(error.message);
+  }
 });
 
 /* ---------- wiring ---------- */
@@ -1584,6 +1765,7 @@ enhanceSymbolInputs();
   await loadOverview();
   await loadScreenLatest();
   await loadScreenReview();
+  await loadWatchlist();
 })();
 </script>
 </body>

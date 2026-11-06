@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, field_validator
 
 from quant_research.data.providers.base import normalize_symbol
 
@@ -29,6 +29,17 @@ def _canonical_symbols(value: list[str] | None) -> list[str] | None:
 
 
 CanonicalSymbols = Annotated[list[str], BeforeValidator(_canonical_symbols)]
+
+
+def _canonical_symbol(value: str) -> str:
+    """Single-code twin of ``_canonical_symbols``: same tolerance, same 422."""
+    try:
+        return normalize_symbol(value)
+    except ValueError as exc:
+        raise ValueError(f"无法识别的代码 {value!r}：{exc}") from exc
+
+
+CanonicalSymbol = Annotated[str, BeforeValidator(_canonical_symbol)]
 
 WeightMethod = Literal["fixed", "equal_weight", "inverse_volatility"]
 ExecPrice = Literal["close", "open"]
@@ -386,4 +397,45 @@ __all__ = [
     "SymbolOut",
     "SymbolSearchOut",
     "VariantIn",
+]
+
+
+class WatchlistIn(BaseModel):
+    """Upsert one stock: categories replace the old set, note only if given."""
+
+    symbol: CanonicalSymbol
+    name: str = ""
+    categories: list[str] = Field(default_factory=list)
+    note: str | None = None
+
+
+class CategoryIn(BaseModel):
+    """A group name; whitespace-only is rejected, not silently kept."""
+
+    name: str = Field(min_length=1, max_length=30)
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("分类名不能为空白")
+        return value
+
+
+__all__ = [
+    "BacktestOut",
+    "BacktestRequest",
+    "CategoryIn",
+    "CollectRequest",
+    "CompareRequest",
+    "CompareRowOut",
+    "CostsIn",
+    "DatasetOut",
+    "PolicyIn",
+    "RebalanceIn",
+    "SymbolOut",
+    "SymbolSearchOut",
+    "VariantIn",
+    "WatchlistIn",
 ]

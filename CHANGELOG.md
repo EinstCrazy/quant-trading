@@ -6,6 +6,15 @@
 
 ### Added
 
+- 自选股与分类（`data/watchlist.json`，JSON 便于人读与 diff）：
+  - 新模块 `watchlist.py`：add/upsert/remove，代码经 `normalize_symbol` 归一化后入库，
+    裸代码与错后缀照旧被原谅；删分类连引用一起摘，不留悬空标签；坏文件按空表处理
+  - 新 API：`GET/POST/DELETE /api/watchlist`、`POST/DELETE /api/watchlist/categories`；
+    最新收盘与日涨跌每次从面板现读——存下来的报价迟早是旧的，而旧报价读起来就是行情
+  - 前端新增「自选」视图：分类过滤 chip（带计数）、添加行（裸代码/中文名/备注）、
+    清单表（红涨绿跌）；指标详情页「☆ 加入自选」一键切换；各列表里自选股的代码前带 ★
+
+
 - futu 数据源接入采集链路（`collection.provider_options`）：把网关参数（`host`、
   `port`、`markets`）从 YAML 原样传给 provider 构造函数。采集 CLI 与 Web 采集都从
   settings 构造 provider、从不走命令行旗标——一个进不了配置的键，就是网关永远
