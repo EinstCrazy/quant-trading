@@ -253,6 +253,8 @@ _REVIEW_FIELDS = (
     "extreme_rsi",
     "near_high_pct",
     "atr_stop_multiple",
+    "max_single_pct",
+    "max_risk_ratio_pct",
 )
 
 
@@ -266,6 +268,8 @@ class ReviewSettings:
     extreme_rsi: float = 80.0
     near_high_pct: float = 3.0
     atr_stop_multiple: float = 2.0
+    max_single_pct: float = 35.0
+    max_risk_ratio_pct: float = 30.0
 
     def __post_init__(self) -> None:
         if self.stop_loss_pct >= 0:
@@ -276,6 +280,10 @@ class ReviewSettings:
             raise ValueError("review 的 RSI 阈值必须满足 0 < overbought < extreme <= 100")
         if self.near_high_pct < 0 or self.atr_stop_multiple <= 0:
             raise ValueError("review.near_high_pct 不能为负，atr_stop_multiple 必须为正")
+        if not 0 < self.max_single_pct <= 100:
+            raise ValueError("review.max_single_pct 必须在 (0, 100] 内")
+        if not 0 < self.max_risk_ratio_pct <= 100:
+            raise ValueError("review.max_risk_ratio_pct 必须在 (0, 100] 内")
 
 
 _REGULATORY_FIELDS = (
@@ -489,6 +497,8 @@ def _build_review_settings(section: Mapping[str, Any]) -> ReviewSettings:
         extreme_rsi=float(section.get("extreme_rsi", defaults.extreme_rsi)),
         near_high_pct=float(section.get("near_high_pct", defaults.near_high_pct)),
         atr_stop_multiple=float(section.get("atr_stop_multiple", defaults.atr_stop_multiple)),
+        max_single_pct=float(section.get("max_single_pct", defaults.max_single_pct)),
+        max_risk_ratio_pct=float(section.get("max_risk_ratio_pct", defaults.max_risk_ratio_pct)),
     )
 
 

@@ -1,15 +1,19 @@
-"""持仓复盘：把「现在是什么状态」翻译成「明天该盯什么」。
+"""持仓复盘：把「现在是什么状态」翻译成「明天该盯什么、遇到什么怎么办」。
 
-这不是预测器，也不是买卖指令。规则只做两件事：
+这不是预测器，也不是买卖指令。规则只做三件事：
 
 1. 把每只持仓的客观状态（盈亏、均线位置、超买超卖、距前高）归到互斥
    的一档——先看风险再看机会，顺序即优先级；
 2. 给出明天值得盯的价位（成本线、MA20/MA60、ATR 止损参考、20 日高低），
-   让「明天怎么办」落成几个具体数字，而不是一句感觉。
+   让「明天怎么办」落成几个具体数字，而不是一句感觉；
+3. 给出**情景预案**：跌破哪里、站回哪里、放量突破哪里，各对应什么动作。
+   预案是 if-then 的，不是预言——它把「盘中临时拍脑袋」提前到收盘后
+   冷静的时候做。
 
 档位是描述性的：「止损区」意味着「亏损已超阈值且趋势坏了」，不是
 「必须卖」。卖不卖还取决于仓位大小、你的资金性质与判断——这些不在
-这里，也不该假装在。
+这里，也不该假装在。预案同理：它说的是「如果发生 X，通常怎么做更稳」，
+不是「必须这样做」。
 """
 
 from __future__ import annotations
@@ -20,9 +24,11 @@ from typing import Any
 __all__ = [
     "STANCE_LABELS",
     "STANCE_ORDER",
+    "Plan",
     "ReviewRules",
     "Verdict",
     "advise",
+    "discipline",
     "summarize",
 ]
 
@@ -38,6 +44,8 @@ STANCE_LABELS = {
 # 前端按这个顺序排列：先风险，后机会
 STANCE_ORDER = {"stop": 0, "reduce": 1, "take": 2, "watch": 3, "hold": 4, "nodata": 5}
 
+_STATUS_ORDER = {"fail": 0, "warn": 1, "pass": 2}
+
 
 @dataclass(frozen=True)
 class ReviewRules:
@@ -49,6 +57,19 @@ class ReviewRules:
     extreme_rsi: float = 80.0
     near_high_pct: float = 3.0
     atr_stop_multiple: float = 2.0
+    max_single_pct: float = 35.0
+    max_risk_ratio_pct: float = 30.0
+
+
+@dataclass(frozen=True)
+class Plan:
+    """One if-then: a specific trigger and what is usually done about it."""
+
+    when: str
+    then: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"when": self.when, "then": self.then}
 
 
 @dataclass(frozen=True)
@@ -57,6 +78,7 @@ class Verdict:
     headline: str
     reasons: tuple[str, ...] = ()
     levels: dict[str, float] = field(default_factory=dict)
+    plans: tuple[Plan, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,11 +87,194 @@ class Verdict:
             "headline": self.headline,
             "reasons": list(self.reasons),
             "levels": self.levels,
+            "plans": [plan.to_dict() for plan in self.plans],
         }
 
 
 def _pct(value: float) -> str:
     return f"{value:+.1f}%"
+
+
+def _f(value: float | None) -> str:
+    return "—" if value is None else f"{value:.2f}"
+
+
+def _plans(
+    stance: str,
+    *,
+    kind: str | None = None,
+    cost: float,
+    ma20: float | None,
+    atr_stop: float | None,
+    high20: float | None,
+    low20: float | None,
+) -> tuple[Plan, ...]:
+    """If-then plans for tomorrow: where to look, what it usually means.
+
+    每条预案只在需要的价位存在时才生成——「跌破 MA20 —」不是预案，
+    是一句废话。
+    """
+    plans: list[Plan] = []
+    if stance == "nodata":
+        return ()
+
+    if stance == "stop":
+        if ma20 is not None:
+            plans.append(
+                Plan(
+                    f"放量继续跌、收在 MA20 {_f(ma20)} 下方",
+                    "亏损继续扩大：先想清楚这笔钱能承受多少，减到能承受的部分"
+                    "——摊薄换的是心理安慰，不是成本",
+                )
+            )
+            plans.append(
+                Plan(
+                    f"缩量收回 MA20（{_f(ma20)}）上方",
+                    "假摔的可能：允许再观察一天，但不加仓、不摊薄",
+                )
+            )
+        plans.append(
+            Plan(
+                f"反弹到成本 {_f(cost)} 附近却站不上",
+                "反弹当反抽：这是减仓离场的机会，不是解套的起点",
+            )
+        )
+
+    elif stance == "reduce" and kind == "loss":
+        if atr_stop is not None:
+            plans.append(
+                Plan(
+                    f"跌破 ATR 止损参考 {_f(atr_stop)}",
+                    "警戒升级为实质止损决策：对照你的承受能力，决定减多少",
+                )
+            )
+        if ma20 is not None:
+            plans.append(
+                Plan(
+                    f"放量站回 MA20 {_f(ma20)}",
+                    "减仓压力解除：恢复持有观察，但别在亏损里加仓摊薄",
+                )
+            )
+        plans.append(
+            Plan(
+                "继续阴跌且量能萎缩",
+                "阴跌不言底：等放量止跌再说，别用时间换亏损",
+            )
+        )
+
+    elif stance == "reduce" and kind == "overbought":
+        if high20 is not None:
+            plans.append(
+                Plan(
+                    f"高开冲高、放量却不过 20 日高 {_f(high20)}",
+                    "分批兑现：先落袋一部分，别等回落才后悔",
+                )
+            )
+            plans.append(
+                Plan(
+                    f"放量突破 {_f(high20)} 并收在上方",
+                    "趋势加速：剩余仓位持有，"
+                    + (f"止损上移到 MA20 {_f(ma20)}" if ma20 is not None else "止损上移"),
+                )
+            )
+        if ma20 is not None:
+            plans.append(
+                Plan(
+                    f"跌破 MA20 {_f(ma20)}",
+                    "超买后第一道支撑丢了：减仓优先于补仓",
+                )
+            )
+
+    elif stance == "reduce" and kind == "downtrend":
+        if ma20 is not None:
+            plans.append(
+                Plan(
+                    f"反弹到 MA20 {_f(ma20)} 附近放量不过",
+                    "反抽确认：这是减仓位置，不是趋势反转",
+                )
+            )
+            plans.append(
+                Plan(
+                    "放量收复 MA20 且次日不回落",
+                    "趋势修复的早期信号：恢复观察，等第二个确认",
+                )
+            )
+        if low20 is not None:
+            plans.append(
+                Plan(
+                    f"跌破 20 日低 {_f(low20)}",
+                    "下跌延续：别在下跌趋势里接刀，等结构走坏后再评估",
+                )
+            )
+
+    elif stance == "take":
+        if high20 is not None:
+            plans.append(
+                Plan(
+                    f"高开冲高不过 20 日高 {_f(high20)}",
+                    "分批止盈：先落袋一半是常见做法，剩下的用移动止损跟",
+                )
+            )
+            plans.append(
+                Plan(
+                    f"放量突破 {_f(high20)}",
+                    "剩余仓位持有，"
+                    + (f"止损上移到 MA20 {_f(ma20)}" if ma20 is not None else "止损上移"),
+                )
+            )
+        if ma20 is not None:
+            plans.append(
+                Plan(
+                    f"跌破 MA20 {_f(ma20)}",
+                    "超买行情结束的信号：剩余仓位止盈，别把利润还回去",
+                )
+            )
+
+    elif stance == "watch":
+        if ma20 is not None:
+            plans.append(
+                Plan(
+                    f"收回 MA20 {_f(ma20)} 上方",
+                    "观察解除：回到持有节奏，趋势没坏",
+                )
+            )
+        if atr_stop is not None:
+            plans.append(
+                Plan(
+                    f"继续跌破 ATR 止损参考 {_f(atr_stop)}",
+                    "升级为减仓观察：短期走弱变成趋势走弱",
+                )
+            )
+        plans.append(
+            Plan(
+                "缩量横盘在 MA20 下方",
+                "不动，等方向：没有信号时最好的动作是不动作",
+            )
+        )
+
+    elif stance == "hold":
+        if ma20 is not None:
+            plans.append(
+                Plan(
+                    f"缩量回踩 MA20 {_f(ma20)} 不破",
+                    "正常波动：不动，趋势里的回踩是常态",
+                )
+            )
+            plans.append(
+                Plan(
+                    f"放量跌破 MA20 {_f(ma20)}",
+                    "转观察：看次日能否收回，别急着卖也别急着补",
+                )
+            )
+        if high20 is not None:
+            plans.append(
+                Plan(
+                    f"放量突破 20 日高 {_f(high20)}",
+                    "趋势加速：止损上移，但不追高加仓",
+                )
+            )
+
+    return tuple(plans)
 
 
 def advise(
@@ -101,6 +306,18 @@ def advise(
         levels["high20"] = round(high20, 3)
     if low20 is not None:
         levels["low20"] = round(low20, 3)
+    atr_stop = levels.get("atr_stop")
+
+    def plans(stance: str, kind: str | None = None) -> tuple[Plan, ...]:
+        return _plans(
+            stance,
+            kind=kind,
+            cost=cost,
+            ma20=ma20,
+            atr_stop=atr_stop,
+            high20=high20,
+            low20=low20,
+        )
 
     below_ma20 = ma20 is not None and close < ma20
     below_ma60 = ma60 is not None and close < ma60
@@ -117,6 +334,7 @@ def advise(
                 "先决定这笔亏损是否在接受范围内：止损区的意义是逼自己面对，不是替你下单",
             ),
             levels,
+            plans("stop"),
         )
 
     # 2) 亏损超阈值但仍在 MA20 上方：趋势未坏，风险在盈亏本身
@@ -130,6 +348,7 @@ def advise(
                 "把它当「要不要摊薄」来想，而不是「要不要割」：摊薄前想清楚理由是什么",
             ),
             levels,
+            plans("reduce", "loss"),
         )
 
     # 3) 浮盈厚 + 极端超买：落袋的窗口
@@ -143,6 +362,7 @@ def advise(
                 "分批比清仓更常见：把利润先装进口袋一部分，剩下的用移动止损跟",
             ),
             levels,
+            plans("take"),
         )
 
     # 4) 超买且贴着 20 日高点：放量滞涨要警惕
@@ -162,6 +382,7 @@ def advise(
                 "放量不过前高是减仓信号；缩量回踩不破 MA20 反而健康",
             ),
             levels,
+            plans("reduce", "overbought"),
         )
 
     # 5) 双均线下方：中期趋势已坏
@@ -175,6 +396,7 @@ def advise(
                 f"若反弹能站回 MA20（{(ma20 or 0):.2f}）再谈持有，比现在猜底更稳",
             ),
             levels,
+            plans("reduce", "downtrend"),
         )
 
     # 6) 跌破 MA20 但 MA60 仍在上方：短期走弱，中期未定
@@ -188,6 +410,7 @@ def advise(
                 f"明天关注 MA20（{(ma20 or 0):.2f}）：收回且缩量是假摔，放量继续跌要减",
             ),
             levels,
+            plans("watch"),
         )
 
     # 7) 其余：趋势健康
@@ -200,7 +423,7 @@ def advise(
         reasons.append(
             f"{rsi_text}——" + ("偏热，留意冲高回落" if rsi >= 60 else "中性偏冷，等方向")
         )
-    return Verdict("hold", "持有：趋势健康，无需动作", tuple(reasons), levels)
+    return Verdict("hold", "持有：趋势健康，无需动作", tuple(reasons), levels, plans("hold"))
 
 
 def summarize(
@@ -256,3 +479,104 @@ def summarize(
         "concentration_pct": None if concentration is None else round(concentration, 1),
         "note": note,
     }
+
+
+def discipline(
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    rules: ReviewRules | None = None,
+) -> list[dict[str, str]]:
+    """组合层的纪律检查：与个股状态无关的几条结构性硬规矩。
+
+    检查的是「仓位结构」而不是「观点」：集中度、风险档占比、重亏仓位、
+    数据完整性。全过时不编一条「良好」——给一条明确的通过项，
+    让人知道检查确实跑过。
+    """
+    rules = rules or ReviewRules()
+    valued = [r for r in rows if r.get("close") is not None]
+    items: list[dict[str, str]] = []
+
+    unmatched = len(rows) - len(valued)
+    if unmatched:
+        items.append(
+            {
+                "item": "数据完整性",
+                "status": "warn",
+                "detail": f"{unmatched} 只取不到行情：这份复盘不完整，先补数据再谈结论",
+            }
+        )
+
+    concentration = summary.get("concentration_pct")
+    if concentration is not None:
+        if concentration > rules.max_single_pct * 1.5:
+            items.append(
+                {
+                    "item": "单一持仓集中度",
+                    "status": "fail",
+                    "detail": f"最大一只占 {concentration:.1f}%，超过 "
+                    f"{rules.max_single_pct * 1.5:.1f}%——一次判断失误就能伤到组合",
+                }
+            )
+        elif concentration > rules.max_single_pct:
+            items.append(
+                {
+                    "item": "单一持仓集中度",
+                    "status": "warn",
+                    "detail": f"最大一只占 {concentration:.1f}%，超过 "
+                    f"{rules.max_single_pct:.0f}% 的参考线",
+                }
+            )
+
+    if valued:
+        risky = sum(1 for r in valued if r["stance"] in ("stop", "reduce"))
+        ratio = risky / len(valued) * 100
+        if ratio > rules.max_risk_ratio_pct * 1.5:
+            items.append(
+                {
+                    "item": "风险档占比",
+                    "status": "fail",
+                    "detail": f"{risky}/{len(valued)} 只处于止损或减仓观察档"
+                    f"（{ratio:.0f}%）：组合整体在承压，先处理风险再找机会",
+                }
+            )
+        elif ratio > rules.max_risk_ratio_pct:
+            items.append(
+                {
+                    "item": "风险档占比",
+                    "status": "warn",
+                    "detail": f"{risky}/{len(valued)} 只处于风险档（{ratio:.0f}%），"
+                    f"超过 {rules.max_risk_ratio_pct:.0f}% 的参考线",
+                }
+            )
+
+    stops = [r for r in valued if r["stance"] == "stop"]
+    if stops:
+        items.append(
+            {
+                "item": "止损区仍有仓位",
+                "status": "warn",
+                "detail": f"{'、'.join(r['symbol'] for r in stops)}："
+                "已经跌破 MA20 且亏损超阈值，明天需要给出明确决定",
+            }
+        )
+
+    heavy = [r for r in valued if r["cost"] and (r["close"] / r["cost"] - 1) * 100 <= -20]
+    if heavy:
+        items.append(
+            {
+                "item": "重亏仓位",
+                "status": "warn",
+                "detail": f"{'、'.join(r['symbol'] for r in heavy)} 浮亏超过 20%："
+                "这类亏损通常不是一天的错，回头看看买入理由还成立吗",
+            }
+        )
+
+    if not items:
+        items.append(
+            {
+                "item": "纪律检查",
+                "status": "pass",
+                "detail": "集中度、风险档占比、重亏仓位都没有触发参考线",
+            }
+        )
+    return sorted(items, key=lambda item: _STATUS_ORDER.get(item["status"], 9))

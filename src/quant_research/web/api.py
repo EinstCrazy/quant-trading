@@ -18,6 +18,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from quant_research import holdings as holdings_store
+from quant_research import review_archive as review_store
 from quant_research import watchlist as watchlist_store
 from quant_research.backtest import (
     BacktestConfig,
@@ -49,7 +50,14 @@ from quant_research.indicators import (
 from quant_research.logging_setup import get_logger
 from quant_research.market_events import detect_events
 from quant_research.metrics import benchmark_buy_hold, drawdown_series
-from quant_research.review import STANCE_ORDER, ReviewRules, advise, summarize
+from quant_research.review import (
+    STANCE_LABELS,
+    STANCE_ORDER,
+    ReviewRules,
+    advise,
+    discipline,
+    summarize,
+)
 from quant_research.scoring import screen, to_target_weights
 from quant_research.scoring.ledger import ScreenLedger, review
 from quant_research.strategies import STRATEGY_REGISTRY, get_signal
@@ -1498,12 +1506,44 @@ def drop_position(symbol: str) -> dict[str, Any]:
 
 @router.get("/portfolio/review")
 def portfolio_review(provider: str | None = None, adjust: str | None = None) -> dict[str, Any]:
-    """持仓复盘：每只票一档结论 + 明日关注的价位，外加组合层的一句话。
+    """持仓复盘：每只票一档结论 + 情景预案 + 明日关注价位，外加纪律检查。
 
     结论是描述性的（「亏损超阈值且跌破 MA20」），不是买卖指令：
     仓位大小、资金性质、你的判断不在这里，也不该假装在。
+    响应里的 ``previous``/``changes`` 来自上一次存档——复盘的本质是对比。
     """
     settings = load_settings()
+    source = provider or settings.collection.provider
+    basis = adjust or settings.collection.adjust
+    payload = _review_payload(settings, source, basis)
+    payload["previous"] = _previous_review(settings, payload["as_of"])
+    payload["changes"] = _changes(payload["positions"], payload["previous"])
+    return payload
+
+
+@router.post("/portfolio/review/save")
+def save_portfolio_review() -> dict[str, Any]:
+    """把当前复盘存为今日存档——显式动作，GET 不写盘。
+
+    存档是「那天我看到的档位」，下次打开时回答「和上次比，什么变了」。
+    """
+    settings = load_settings()
+    payload = _review_payload(settings, settings.collection.provider, settings.collection.adjust)
+    if not payload["as_of"]:
+        raise HTTPException(
+            status_code=400,
+            detail=payload["unavailable"] or "还没有持仓可以复盘",
+        )
+    previous = review_store.latest(settings.data.directory, exclude=payload["as_of"])
+    path = review_store.save(settings.data.directory, payload)
+    return {
+        "saved": path.name,
+        "date": payload["as_of"],
+        "changes": _changes(payload["positions"], previous),
+    }
+
+
+def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, Any]:
     rules = ReviewRules(
         stop_loss_pct=settings.review.stop_loss_pct,
         take_profit_pct=settings.review.take_profit_pct,
@@ -1511,9 +1551,9 @@ def portfolio_review(provider: str | None = None, adjust: str | None = None) -> 
         extreme_rsi=settings.review.extreme_rsi,
         near_high_pct=settings.review.near_high_pct,
         atr_stop_multiple=settings.review.atr_stop_multiple,
+        max_single_pct=settings.review.max_single_pct,
+        max_risk_ratio_pct=settings.review.max_risk_ratio_pct,
     )
-    source = provider or settings.collection.provider
-    basis = adjust or settings.collection.adjust
     data = holdings_store.load(settings.data.directory)
     if not data["positions"]:
         return {
@@ -1521,6 +1561,7 @@ def portfolio_review(provider: str | None = None, adjust: str | None = None) -> 
             "provider": source,
             "summary": None,
             "positions": [],
+            "discipline": [],
             "unavailable": None,
         }
 
@@ -1532,6 +1573,7 @@ def portfolio_review(provider: str | None = None, adjust: str | None = None) -> 
             "provider": source,
             "summary": None,
             "positions": [],
+            "discipline": [],
             "unavailable": str(exc.detail),
         }
 
@@ -1577,26 +1619,56 @@ def portfolio_review(provider: str | None = None, adjust: str | None = None) -> 
         )
 
     rows.sort(key=lambda row: (STANCE_ORDER.get(row["stance"], 9), row["symbol"]))
-    summary = summarize(
-        [
-            {
-                "symbol": row["symbol"],
-                "stance": row["stance"],
-                "shares": row["shares"],
-                "cost": row["cost"],
-                "close": row["close"],
-            }
-            for row in rows
-        ],
-        rules,
-    )
+    scoped = [
+        {
+            "symbol": row["symbol"],
+            "stance": row["stance"],
+            "shares": row["shares"],
+            "cost": row["cost"],
+            "close": row["close"],
+        }
+        for row in rows
+    ]
+    summary = summarize(scoped, rules)
     return {
         "as_of": as_of,
         "provider": source,
         "summary": summary,
+        "discipline": discipline(scoped, summary, rules),
         "positions": rows,
         "unavailable": None,
     }
+
+
+def _previous_review(settings: Settings, as_of: str | None) -> dict[str, Any] | None:
+    """上一次存档：优先跳过当天；只剩当天一份时，它就是「最近一次存档」。
+
+    刚存完档就刷新页面的情形：「还没有历史存档」会让人以为保存失败了。
+    """
+    previous = review_store.latest(settings.data.directory, exclude=as_of)
+    if previous is None and as_of:
+        previous = review_store.latest(settings.data.directory)
+    return previous
+
+
+def _changes(rows: list[dict[str, Any]], previous: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """档位与上次不同才有条目：复盘的价值在「什么变了」。"""
+    archived = (previous or {}).get("positions") or {}
+    changes = []
+    for row in rows:
+        old = archived.get(row["symbol"])
+        if not old or old.get("stance") == row["stance"]:
+            continue
+        changes.append(
+            {
+                "symbol": row["symbol"],
+                "from": old.get("stance"),
+                "from_label": STANCE_LABELS.get(old.get("stance"), old.get("stance")),
+                "to": row["stance"],
+                "to_label": STANCE_LABELS.get(row["stance"], row["stance"]),
+            }
+        )
+    return changes
 
 
 def _position_state(panel: Any, symbol: str) -> dict[str, Any]:

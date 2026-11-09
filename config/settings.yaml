@@ -82,3 +82,5 @@ review:
   extreme_rsi: 80.0        # 极端超买线
   near_high_pct: 3.0       # 距 20 日高点在此百分比内算「贴着前高」
   atr_stop_multiple: 2.0   # ATR 止损参考 = 收盘 − 该倍数 × ATR
+  max_single_pct: 35.0     # 纪律检查：单一持仓占比参考线（超过 1.5 倍记为 fail）
+  max_risk_ratio_pct: 30.0 # 纪律检查：止损/减仓观察档占比参考线

@@ -111,6 +111,18 @@
   .pf-item li { margin: 1px 0; }
   .pf-levels { font-size: 12px; color: var(--muted); }
   .pf-levels b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  /* 情景预案：if-then 两段，触发条件加粗 */
+  .pf-plans { margin-top: 4px; font-size: 12.5px; }
+  .pf-plans-title { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .pf-plan { color: var(--muted); margin: 1px 0; line-height: 1.45; }
+  .pf-plan b { color: var(--ink); font-weight: 600; }
+  .pf-changed { font-size: 12px; color: var(--warn); }
+  /* 纪律检查：每项一行，状态用左侧色块 */
+  .disc { padding: 3px 0 3px 8px; border-left: 3px solid var(--line); margin: 4px 0; font-size: 13px; }
+  .disc.fail { border-left-color: var(--bad); }
+  .disc.warn { border-left-color: var(--warn); }
+  .disc.pass { border-left-color: var(--good); }
+  .disc div { font-size: 12.5px; line-height: 1.45; }
   /* the reason a job failed is the one line worth reading in that card */
   .job-error { color: #b42318; margin-top: 4px; line-height: 1.4; word-break: break-word; }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 5px; }
@@ -404,7 +416,12 @@
       <div class="card"><h3>持仓清单</h3><div id="pf-table"></div></div>
       <div class="card">
         <h3>复盘与明日关注 <span class="muted" id="pf-review-note"></span></h3>
+        <div class="row" style="margin-bottom:8px">
+          <button class="btn ghost" id="pf-save">存为今日复盘</button>
+          <span class="muted" id="pf-compare"></span>
+        </div>
         <div id="pf-summary"></div>
+        <div id="pf-discipline"></div>
         <div id="pf-advice"></div>
       </div>
     </section>
@@ -1680,12 +1697,16 @@ function renderReview() {
   if (REVIEW.unavailable) {
     note.textContent = "";
     sum.innerHTML = `<div class="empty">${REVIEW.unavailable}</div>`;
+    $("pf-discipline").innerHTML = "";
+    $("pf-compare").textContent = "";
     target.innerHTML = "";
     return;
   }
   if (!REVIEW.positions.length) {
     note.textContent = "";
     sum.innerHTML = '<div class="empty">还没有持仓：先在上面录入，复盘才有对象</div>';
+    $("pf-discipline").innerHTML = "";
+    $("pf-compare").textContent = "";
     target.innerHTML = "";
     return;
   }
@@ -1704,6 +1725,31 @@ function renderReview() {
     </div>
     <p class="muted" style="margin:0">${s.note}</p>`;
 
+  const changed = new Map((REVIEW.changes || []).map((c) => [c.symbol, c]));
+  const compare = $("pf-compare");
+  if (REVIEW.previous) {
+    const n = (REVIEW.changes || []).length;
+    compare.textContent = n
+      ? `与上次复盘（${REVIEW.previous.date}）相比：${n} 只档位变了`
+      : `与上次复盘（${REVIEW.previous.date}）相比：档位没有变化`;
+  } else {
+    compare.textContent = "还没有历史存档：存档之后，下次打开就能看到「和上次比什么变了」";
+  }
+
+  const disciplineItems = REVIEW.discipline || [];
+  $("pf-discipline").innerHTML = disciplineItems.length
+    ? `<div class="pf-group"><h4>组合纪律检查</h4>${disciplineItems
+        .map((item) => {
+          const [label, kind] =
+            { fail: ["未通过", "bad"], warn: ["注意", "warn"], pass: ["通过", "good"] }[
+              item.status
+            ] || [item.status, ""];
+          return `<div class="disc ${item.status}">${badge(kind, label)} <b>${item.item}</b>
+            <div class="muted">${item.detail}</div></div>`;
+        })
+        .join("")}</div>`
+    : "";
+
   const groups = new Map();
   REVIEW.positions.forEach((row) => {
     if (!groups.has(row.stance)) groups.set(row.stance, []);
@@ -1718,14 +1764,20 @@ function renderReview() {
             .filter(([key]) => LEVEL_LABELS[key])
             .map(([key, value]) => `<b>${LEVEL_LABELS[key]}</b> ${fmt(value, 2)}`)
             .join(" · ");
+          const shift = changed.get(row.symbol);
+          const plans = (row.plans || [])
+            .map((plan) => `<div class="pf-plan"><b>若</b> ${plan.when}<b> → </b>${plan.then}</div>`)
+            .join("");
           return `
           <div class="pf-item ${stance}">
             <div class="pf-head">${symbolCell(row.symbol)} ${row.name || ""}
               <span class="${row.pnl_pct > 0 ? "up" : row.pnl_pct < 0 ? "down" : "muted"}">${pct(row.pnl_pct)}</span>
-              <span class="muted">· ${row.shares} 股 · 成本 ${fmt(row.cost, 2)}</span></div>
+              <span class="muted">· ${row.shares} 股 · 成本 ${fmt(row.cost, 2)}</span>
+              ${shift ? `<span class="pf-changed">上次${shift.from_label} → 现在${shift.to_label}</span>` : ""}</div>
             <div>${row.headline}</div>
             <ul>${(row.reasons || []).map((r) => `<li>${r}</li>`).join("")}</ul>
             ${levels ? `<div class="pf-levels">明日关注：${levels}</div>` : ""}
+            ${plans ? `<div class="pf-plans"><div class="pf-plans-title">情景预案（如果发生 → 通常怎么做）</div>${plans}</div>` : ""}
           </div>`;
         })
         .join("");
@@ -1759,6 +1811,16 @@ $("pf-add").addEventListener("click", async () => {
 
 $("pf-refresh").addEventListener("click", async () => {
   await loadPortfolio();
+});
+
+$("pf-save").addEventListener("click", async () => {
+  try {
+    const saved = await api("/portfolio/review/save", null, "POST");
+    toast(`已存档 ${saved.date}${saved.changes.length ? `（${saved.changes.length} 只档位变化已记录）` : ""}`);
+    await loadReview();
+  } catch (error) {
+    toast(error.message);
+  }
 });
 
 /* ---------- 自选股 ---------- */

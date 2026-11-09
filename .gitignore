@@ -20,6 +20,8 @@ data/indicators/**
 data/fundamentals/**
 data/regulatory/**
 data/universe/**
+# 每日复盘归档：派生结论，每天增长，留本地对比即可
+data/reviews/**
 reports/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
