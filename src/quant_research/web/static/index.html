@@ -97,6 +97,20 @@
   .ev-row { padding: 3px 4px; border-bottom: 1px dashed var(--line, #e5e7eb); font-size: 13px; }
   .ev-row:last-child { border-bottom: none; }
   .ev-hit { background: var(--hit, #fff7d6); }
+  /* 持仓复盘：一档一组，先风险后机会；每组内一只一段 */
+  .pf-group { margin-top: 12px; }
+  .pf-group h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+  .pf-item { border-left: 3px solid var(--line); padding: 4px 10px; margin: 6px 0; }
+  .pf-item.stop { border-left-color: var(--bad); }
+  .pf-item.reduce { border-left-color: var(--warn); }
+  .pf-item.take { border-left-color: var(--good); }
+  .pf-item.watch { border-left-color: #9ca3af; }
+  .pf-item.hold { border-left-color: var(--accent); }
+  .pf-item .pf-head { font-size: 13px; margin-bottom: 3px; }
+  .pf-item ul { margin: 2px 0 3px 16px; padding: 0; color: var(--muted); font-size: 12.5px; }
+  .pf-item li { margin: 1px 0; }
+  .pf-levels { font-size: 12px; color: var(--muted); }
+  .pf-levels b { color: var(--ink); font-variant-numeric: tabular-nums; }
   /* the reason a job failed is the one line worth reading in that card */
   .job-error { color: #b42318; margin-top: 4px; line-height: 1.4; word-break: break-word; }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 5px; }
@@ -119,6 +133,7 @@
       <button data-view="screen">建议</button>
       <button data-view="indicators">指标</button>
       <button data-view="watchlist">自选</button>
+      <button data-view="portfolio">持仓</button>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -365,6 +380,35 @@
       <div id="ind-series"></div>
     </section>
 
+    <!-- ⑧ 持仓复盘 -->
+    <section id="view-portfolio" class="view">
+      <h2>持仓</h2>
+      <div class="card">
+        <h3>录入持仓 <span class="muted" id="pf-note"></span></h3>
+        <div class="row">
+          <input id="pf-symbol" data-ac="symbol" placeholder="600519 或 茅台（后缀可省）" style="width:200px">
+          <label>成本价</label>
+          <input id="pf-cost" type="number" step="0.01" min="0" style="width:100px" placeholder="1500.00">
+          <label>股数</label>
+          <input id="pf-shares" type="number" step="100" min="0" style="width:100px" placeholder="100">
+          <input id="pf-memo" placeholder="备注（可选）" style="width:140px">
+          <button class="btn" id="pf-add">加入 / 更新</button>
+          <button class="btn ghost" id="pf-refresh">重新复盘</button>
+          <span class="muted" id="pf-status"></span>
+        </div>
+        <p class="muted" style="margin-top:6px">
+          同一只票只留一条：分次买入请合并成加权成本。这里只存成本与股数——
+          现价、盈亏、技术状态每次从面板现读，存下来的价格永远是过期的价格。
+        </p>
+      </div>
+      <div class="card"><h3>持仓清单</h3><div id="pf-table"></div></div>
+      <div class="card">
+        <h3>复盘与明日关注 <span class="muted" id="pf-review-note"></span></h3>
+        <div id="pf-summary"></div>
+        <div id="pf-advice"></div>
+      </div>
+    </section>
+
     <div id="toast"></div>
   </main>
 </div>
@@ -551,6 +595,7 @@ function showView(name, push = true) {
   if (name === "compare") loadExperiments();
   if (name === "indicators") loadIndicators();
   if (name === "watchlist") loadWatchlist();
+  if (name === "portfolio") loadPortfolio();
 }
 
 /* hash 路由：#/watchlist、#/indicators/600519.SH——刷新与浏览器前进后退都能
@@ -1539,6 +1584,181 @@ document.addEventListener("click", (event) => {
   if (!link) return;
   event.preventDefault();
   jumpToSymbol(link.dataset.jump);
+});
+
+/* ---------- 持仓复盘 ---------- */
+/* 持仓是账本，不是缓存：成本与股数存在后端（holdings.json），现价、盈亏、
+   技术状态每次从面板现读。复盘档位是描述性的——「止损区」的意思是
+   「亏损超阈值且趋势坏了」，不是「必须卖」。 */
+
+let HOLDINGS = { positions: [] };
+let REVIEW = null;
+
+const STANCE_META = {
+  stop: ["止损区", "bad"],
+  reduce: ["减仓观察", "warn"],
+  take: ["止盈区", "good"],
+  watch: ["观察", ""],
+  hold: ["持有", "good"],
+  nodata: ["数据不足", ""],
+};
+const LEVEL_LABELS = {
+  cost: "成本线",
+  close: "现价",
+  ma20: "MA20",
+  ma60: "MA60",
+  atr_stop: "ATR 止损参考",
+  high20: "20 日高",
+  low20: "20 日低",
+};
+
+async function loadPortfolio() {
+  try {
+    HOLDINGS = await api("/portfolio");
+    renderHoldings();
+  } catch (error) {
+    $("pf-table").innerHTML = `<div class="empty">${error.message}</div>`;
+  }
+  await loadReview();
+}
+
+async function loadReview() {
+  $("pf-status").textContent = "复盘计算中…";
+  try {
+    REVIEW = await api("/portfolio/review");
+    renderReview();
+    $("pf-status").textContent = "";
+  } catch (error) {
+    REVIEW = null;
+    $("pf-summary").innerHTML = `<div class="empty">${error.message}</div>`;
+    $("pf-advice").innerHTML = "";
+    $("pf-status").textContent = "失败";
+  }
+}
+
+function renderHoldings() {
+  const rows = HOLDINGS.positions.map((p) => {
+    const change = p.change_pct == null ? "—" : `${p.change_pct > 0 ? "+" : ""}${p.change_pct.toFixed(2)}%`;
+    const tone = p.change_pct > 0 ? "up" : p.change_pct < 0 ? "down" : "muted";
+    const pnl = p.pnl == null ? "—" : `${p.pnl > 0 ? "+" : ""}${fmt(p.pnl, 2)}`;
+    const pnlPct = p.pnl_pct == null ? "—" : `${p.pnl_pct > 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`;
+    const pnlTone = p.pnl_pct > 0 ? "up" : p.pnl_pct < 0 ? "down" : "muted";
+    return [
+      symbolCell(p.symbol),
+      p.name || "—",
+      fmt(p.shares, 0),
+      fmt(p.cost, 2),
+      p.last_close == null ? "—" : fmt(p.last_close, 2),
+      p.market_value == null ? "—" : fmt(p.market_value, 2),
+      `<span class="${pnlTone}">${pnl}</span>`,
+      `<span class="${pnlTone}">${pnlPct}</span>`,
+      `<span class="${tone}">${change}</span>`,
+      p.note || "",
+      `<a data-pf-del="${p.symbol}" class="muted" style="cursor:pointer">移除</a>`,
+    ];
+  });
+  $("pf-table").innerHTML = rows.length
+    ? table(
+        ["代码", "名称", "股数", "成本", "现价", "市值", "浮动盈亏", "盈亏率", "日涨跌", "备注", ""],
+        rows,
+      )
+    : '<div class="empty">还没有持仓：填代码、成本价、股数，加入即可开始复盘</div>';
+  $("pf-table").querySelectorAll("[data-pf-del]").forEach((el) => {
+    el.addEventListener("click", async () => {
+      HOLDINGS = await api(`/portfolio/${encodeURIComponent(el.dataset.pfDel)}`, null, "DELETE");
+      renderHoldings();
+      loadReview();
+    });
+  });
+}
+
+function renderReview() {
+  const note = $("pf-review-note");
+  const sum = $("pf-summary");
+  const target = $("pf-advice");
+  if (!REVIEW) return;
+  if (REVIEW.unavailable) {
+    note.textContent = "";
+    sum.innerHTML = `<div class="empty">${REVIEW.unavailable}</div>`;
+    target.innerHTML = "";
+    return;
+  }
+  if (!REVIEW.positions.length) {
+    note.textContent = "";
+    sum.innerHTML = '<div class="empty">还没有持仓：先在上面录入，复盘才有对象</div>';
+    target.innerHTML = "";
+    return;
+  }
+  const s = REVIEW.summary;
+  note.textContent = `数据截至 ${REVIEW.as_of} · ${REVIEW.provider} · ${s.n_valued}/${s.n_positions} 只有行情`;
+  const pct = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
+  const money = (v) => (v == null ? "—" : fmt(v, 2));
+  const tone = s.total_pnl > 0 ? "up" : s.total_pnl < 0 ? "down" : "muted";
+  sum.innerHTML = `
+    <div class="row" style="gap:18px;flex-wrap:wrap;margin-bottom:6px">
+      <span class="muted">总市值 <b>${money(s.total_value)}</b></span>
+      <span class="muted">总成本 <b>${money(s.total_cost)}</b></span>
+      <span class="muted">总浮盈 <b class="${tone}">${money(s.total_pnl)}（${pct(s.total_pnl_pct)}）</b></span>
+      ${s.concentration_pct == null ? "" : `<span class="muted">最大单一持仓占比 <b>${s.concentration_pct.toFixed(1)}%</b></span>`}
+      ${s.worst ? `<span class="muted">最差 <b>${s.worst.symbol} ${pct(s.worst.pnl_pct)}</b></span>` : ""}
+    </div>
+    <p class="muted" style="margin:0">${s.note}</p>`;
+
+  const groups = new Map();
+  REVIEW.positions.forEach((row) => {
+    if (!groups.has(row.stance)) groups.set(row.stance, []);
+    groups.get(row.stance).push(row);
+  });
+  target.innerHTML = [...groups]
+    .map(([stance, rows]) => {
+      const [label, kind] = STANCE_META[stance] || [stance, ""];
+      const items = rows
+        .map((row) => {
+          const levels = Object.entries(row.levels || {})
+            .filter(([key]) => LEVEL_LABELS[key])
+            .map(([key, value]) => `<b>${LEVEL_LABELS[key]}</b> ${fmt(value, 2)}`)
+            .join(" · ");
+          return `
+          <div class="pf-item ${stance}">
+            <div class="pf-head">${symbolCell(row.symbol)} ${row.name || ""}
+              <span class="${row.pnl_pct > 0 ? "up" : row.pnl_pct < 0 ? "down" : "muted"}">${pct(row.pnl_pct)}</span>
+              <span class="muted">· ${row.shares} 股 · 成本 ${fmt(row.cost, 2)}</span></div>
+            <div>${row.headline}</div>
+            <ul>${(row.reasons || []).map((r) => `<li>${r}</li>`).join("")}</ul>
+            ${levels ? `<div class="pf-levels">明日关注：${levels}</div>` : ""}
+          </div>`;
+        })
+        .join("");
+      return `<div class="pf-group"><h4>${badge(kind, label)} ${rows.length} 只</h4>${items}</div>`;
+    })
+    .join("");
+}
+
+$("pf-add").addEventListener("click", async () => {
+  const symbol = $("pf-symbol").value.trim();
+  const cost = Number($("pf-cost").value);
+  const shares = Number($("pf-shares").value);
+  if (!symbol || !(cost > 0) || !(shares > 0)) {
+    toast("代码、成本价、股数都要填，且成本与股数必须为正");
+    return;
+  }
+  try {
+    HOLDINGS = await api(
+      "/portfolio",
+      { symbol, shares, cost, note: $("pf-memo").value.trim() || null },
+      "POST",
+    );
+    renderHoldings();
+    toast(`已记录 ${symbol}`);
+    $("pf-memo").value = "";
+    await loadReview();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+$("pf-refresh").addEventListener("click", async () => {
+  await loadPortfolio();
 });
 
 /* ---------- 自选股 ---------- */

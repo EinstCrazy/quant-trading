@@ -73,3 +73,12 @@ regulatory:
   pause_seconds: 0.2       # 每页之间停一下，别把对方站点打疼
   page_size: 50
   max_pages: 40            # 翻页上限；取不全时报错而不是假装齐了
+
+# 持仓复盘阈值：改这里等于改「什么情况算风险」的口径
+review:
+  stop_loss_pct: -8.0      # 浮亏超过该值进入警戒（负数）
+  take_profit_pct: 15.0    # 浮盈超过该值 + 极端超买进入止盈区
+  overbought_rsi: 70.0     # 超买线
+  extreme_rsi: 80.0        # 极端超买线
+  near_high_pct: 3.0       # 距 20 日高点在此百分比内算「贴着前高」
+  atr_stop_multiple: 2.0   # ATR 止损参考 = 收盘 − 该倍数 × ATR

@@ -246,6 +246,38 @@ class FundamentalsSettings:
             )
 
 
+_REVIEW_FIELDS = (
+    "stop_loss_pct",
+    "take_profit_pct",
+    "overbought_rsi",
+    "extreme_rsi",
+    "near_high_pct",
+    "atr_stop_multiple",
+)
+
+
+@dataclass(frozen=True)
+class ReviewSettings:
+    """持仓复盘的阈值。改这里等于改「什么情况算风险」的口径。"""
+
+    stop_loss_pct: float = -8.0
+    take_profit_pct: float = 15.0
+    overbought_rsi: float = 70.0
+    extreme_rsi: float = 80.0
+    near_high_pct: float = 3.0
+    atr_stop_multiple: float = 2.0
+
+    def __post_init__(self) -> None:
+        if self.stop_loss_pct >= 0:
+            raise ValueError("review.stop_loss_pct 必须是负数（它是阈值，不是绝对值）")
+        if self.take_profit_pct <= 0:
+            raise ValueError("review.take_profit_pct 必须为正")
+        if not 0 < self.overbought_rsi < self.extreme_rsi <= 100:
+            raise ValueError("review 的 RSI 阈值必须满足 0 < overbought < extreme <= 100")
+        if self.near_high_pct < 0 or self.atr_stop_multiple <= 0:
+            raise ValueError("review.near_high_pct 不能为负，atr_stop_multiple 必须为正")
+
+
 _REGULATORY_FIELDS = (
     "output_directory",
     "lookback_days",
@@ -306,6 +338,7 @@ class Settings:
     indicators: IndicatorSettings = field(default_factory=IndicatorSettings)
     fundamentals: FundamentalsSettings = field(default_factory=FundamentalsSettings)
     regulatory: RegulatorySettings = field(default_factory=RegulatorySettings)
+    review: ReviewSettings = field(default_factory=ReviewSettings)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain nested dict (paths serialised as strings)."""
@@ -447,6 +480,18 @@ def _build_regulatory_settings(section: Mapping[str, Any]) -> RegulatorySettings
     )
 
 
+def _build_review_settings(section: Mapping[str, Any]) -> ReviewSettings:
+    defaults = ReviewSettings()
+    return ReviewSettings(
+        stop_loss_pct=float(section.get("stop_loss_pct", defaults.stop_loss_pct)),
+        take_profit_pct=float(section.get("take_profit_pct", defaults.take_profit_pct)),
+        overbought_rsi=float(section.get("overbought_rsi", defaults.overbought_rsi)),
+        extreme_rsi=float(section.get("extreme_rsi", defaults.extreme_rsi)),
+        near_high_pct=float(section.get("near_high_pct", defaults.near_high_pct)),
+        atr_stop_multiple=float(section.get("atr_stop_multiple", defaults.atr_stop_multiple)),
+    )
+
+
 def load_settings(path: str | Path | None = None) -> Settings:
     """Load research settings from a YAML file into frozen dataclasses.
 
@@ -482,6 +527,9 @@ def load_settings(path: str | Path | None = None) -> Settings:
     regulatory_section = config.get("regulatory") or {}
     if not isinstance(regulatory_section, Mapping):
         raise TypeError(f"Settings section 'regulatory' must be a mapping: {settings_path}")
+    review_section = config.get("review") or {}
+    if not isinstance(review_section, Mapping):
+        raise TypeError(f"Settings section 'review' must be a mapping: {settings_path}")
 
     _reject_unknown(data_section, _DATA_FIELDS, "data")
     _reject_unknown(backtest_section, _BACKTEST_FIELDS, "backtest")
@@ -489,6 +537,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
     _reject_unknown(indicator_section, _INDICATOR_FIELDS, "indicators")
     _reject_unknown(fundamental_section, _FUNDAMENTALS_FIELDS, "fundamentals")
     _reject_unknown(regulatory_section, _REGULATORY_FIELDS, "regulatory")
+    _reject_unknown(review_section, _REVIEW_FIELDS, "review")
 
     return Settings(
         data=_build_data_settings(data_section),
@@ -497,6 +546,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         indicators=_build_indicator_settings(indicator_section),
         fundamentals=_build_fundamentals_settings(fundamental_section),
         regulatory=_build_regulatory_settings(regulatory_section),
+        review=_build_review_settings(review_section),
     )
 
 
@@ -509,6 +559,7 @@ __all__ = [
     "FundamentalsSettings",
     "IndicatorSettings",
     "RegulatorySettings",
+    "ReviewSettings",
     "Settings",
     "load_settings",
 ]

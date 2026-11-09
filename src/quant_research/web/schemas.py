@@ -410,6 +410,18 @@ class WatchlistIn(BaseModel):
     note: str | None = None
 
 
+class PositionIn(BaseModel):
+    """Upsert one holding: shares and cost must both be positive.
+
+    融券与「零成本」这里都表达不了，与其猜，不如让请求失败得明明白白。
+    """
+
+    symbol: CanonicalSymbol
+    shares: float = Field(gt=0, description="持股数（股）")
+    cost: float = Field(gt=0, description="成本价（元）")
+    note: str | None = None
+
+
 class CategoryIn(BaseModel):
     """A group name; whitespace-only is rejected, not silently kept."""
 

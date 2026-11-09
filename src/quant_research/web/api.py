@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from quant_research import holdings as holdings_store
 from quant_research import watchlist as watchlist_store
 from quant_research.backtest import (
     BacktestConfig,
@@ -35,16 +36,20 @@ from quant_research.data.providers import get_provider
 from quant_research.data.providers.base import ProviderError, normalize_symbol
 from quant_research.data.store import LocalMarketStore
 from quant_research.indicators import (
+    atr,
     compute_all,
     doc_for,
     family_of,
     load_bundle,
     params_from_settings,
+    rsi,
+    sma,
     store_bundle,
 )
 from quant_research.logging_setup import get_logger
 from quant_research.market_events import detect_events
 from quant_research.metrics import benchmark_buy_hold, drawdown_series
+from quant_research.review import STANCE_ORDER, ReviewRules, advise, summarize
 from quant_research.scoring import screen, to_target_weights
 from quant_research.scoring.ledger import ScreenLedger, review
 from quant_research.strategies import STRATEGY_REGISTRY, get_signal
@@ -72,6 +77,7 @@ from .schemas import (
     JobOut,
     JobRef,
     PolicyIn,
+    PositionIn,
     RebalanceIn,
     ScreenOut,
     ScreenPickOut,
@@ -1458,6 +1464,229 @@ def _watchlist_payload_set(settings: Settings, data: dict[str, Any]) -> dict[str
         for symbol, entry in sorted(data["stocks"].items())
     ]
     return {"categories": data["categories"], "stocks": stocks}
+
+
+# --- portfolio: positions the user actually holds --------------------------
+
+
+@router.get("/portfolio")
+def get_portfolio() -> dict[str, Any]:
+    """持仓清单：成本与股数是用户录的，现价与盈亏从面板现读。"""
+    settings = load_settings()
+    return _portfolio_payload(settings)
+
+
+@router.post("/portfolio")
+def upsert_position(request: PositionIn) -> dict[str, Any]:
+    settings = load_settings()
+    holdings_store.upsert(
+        settings.data.directory,
+        request.symbol,
+        shares=request.shares,
+        cost=request.cost,
+        note=request.note,
+    )
+    return _portfolio_payload(settings)
+
+
+@router.delete("/portfolio/{symbol}")
+def drop_position(symbol: str) -> dict[str, Any]:
+    settings = load_settings()
+    holdings_store.remove(settings.data.directory, symbol)
+    return _portfolio_payload(settings)
+
+
+@router.get("/portfolio/review")
+def portfolio_review(provider: str | None = None, adjust: str | None = None) -> dict[str, Any]:
+    """持仓复盘：每只票一档结论 + 明日关注的价位，外加组合层的一句话。
+
+    结论是描述性的（「亏损超阈值且跌破 MA20」），不是买卖指令：
+    仓位大小、资金性质、你的判断不在这里，也不该假装在。
+    """
+    settings = load_settings()
+    rules = ReviewRules(
+        stop_loss_pct=settings.review.stop_loss_pct,
+        take_profit_pct=settings.review.take_profit_pct,
+        overbought_rsi=settings.review.overbought_rsi,
+        extreme_rsi=settings.review.extreme_rsi,
+        near_high_pct=settings.review.near_high_pct,
+        atr_stop_multiple=settings.review.atr_stop_multiple,
+    )
+    source = provider or settings.collection.provider
+    basis = adjust or settings.collection.adjust
+    data = holdings_store.load(settings.data.directory)
+    if not data["positions"]:
+        return {
+            "as_of": None,
+            "provider": source,
+            "summary": None,
+            "positions": [],
+            "unavailable": None,
+        }
+
+    try:
+        panel = _load_panel(source, basis)
+    except HTTPException as exc:
+        return {
+            "as_of": None,
+            "provider": source,
+            "summary": None,
+            "positions": [],
+            "unavailable": str(exc.detail),
+        }
+
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    sector_map, _ = _sector_map(settings)
+    as_of = pd.Timestamp(panel.prices.index.max()).date().isoformat()
+
+    rows: list[dict[str, Any]] = []
+    for symbol, entry in sorted(data["positions"].items()):
+        shares = float(entry.get("shares") or 0)
+        cost = float(entry.get("cost") or 0)
+        state = _position_state(panel, symbol)
+        verdict = advise(
+            close=state["close"],
+            cost=cost,
+            rsi=state["rsi_14"],
+            ma20=state["ma20"],
+            ma60=state["ma60"],
+            atr=state["atr_14"],
+            high20=state["high20"],
+            low20=state["low20"],
+            rules=rules,
+        )
+        value = None if state["close"] is None else round(shares * state["close"], 2)
+        pnl = None if value is None else round(value - shares * cost, 2)
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": name_of.get(symbol, ""),
+                "sector": sector_map.get(symbol),
+                "shares": shares,
+                "cost": cost,
+                "note": entry.get("note", ""),
+                **state,
+                "market_value": value,
+                "pnl": pnl,
+                "pnl_pct": None
+                if pnl is None or not shares * cost
+                else round(pnl / (shares * cost) * 100, 2),
+                **verdict.to_dict(),
+            }
+        )
+
+    rows.sort(key=lambda row: (STANCE_ORDER.get(row["stance"], 9), row["symbol"]))
+    summary = summarize(
+        [
+            {
+                "symbol": row["symbol"],
+                "stance": row["stance"],
+                "shares": row["shares"],
+                "cost": row["cost"],
+                "close": row["close"],
+            }
+            for row in rows
+        ],
+        rules,
+    )
+    return {
+        "as_of": as_of,
+        "provider": source,
+        "summary": summary,
+        "positions": rows,
+        "unavailable": None,
+    }
+
+
+def _position_state(panel: Any, symbol: str) -> dict[str, Any]:
+    """One symbol's decision-relevant state, read live from the panel.
+
+    缺字段就缺对应的数值（ATR 要 high/low，量比要 volume）——分析照常，
+    只是少一条依据，而不是整段失败。
+    """
+    empty: dict[str, Any] = {
+        "close": None,
+        "change_pct": None,
+        "rsi_14": None,
+        "ma20": None,
+        "ma60": None,
+        "atr_14": None,
+        "high20": None,
+        "low20": None,
+        "volume_ratio": None,
+    }
+    if symbol not in panel.prices.columns:
+        return empty
+    close = panel.prices[symbol].dropna()
+    if len(close) < 2 or not close.iloc[-1]:
+        return empty
+    frame = close.to_frame(name=symbol)
+    state = dict(empty)
+    state["close"] = round(float(close.iloc[-1]), 3)
+    prev = float(close.iloc[-2])
+    state["change_pct"] = round((state["close"] / prev - 1) * 100, 2) if prev else None
+    state["rsi_14"] = _clean(_last(rsi(frame)))
+    state["ma20"] = _clean(_last(sma(frame, 20)))
+    state["ma60"] = _clean(_last(sma(frame, 60)))
+    window = close.tail(20)
+    state["high20"] = round(float(window.max()), 3)
+    state["low20"] = round(float(window.min()), 3)
+    if panel.has_field("high") and panel.has_field("low"):
+        highs = panel.field("high")[symbol]
+        lows = panel.field("low")[symbol]
+        state["atr_14"] = _clean(_last(atr(highs.to_frame(), lows.to_frame(), frame)))
+    if panel.has_field("volume"):
+        volume = panel.field("volume")[symbol].dropna()
+        if len(volume) > 5:
+            base = float(volume.iloc[-6:-1].mean())
+            state["volume_ratio"] = None if not base else round(float(volume.iloc[-1]) / base, 2)
+    return state
+
+
+def _last(frame: pd.DataFrame) -> float:
+    """Last value of an indicator frame, NaN when the column is still warming up."""
+    if frame.empty:
+        return float("nan")
+    return float(frame.iloc[-1, 0])
+
+
+def _portfolio_payload(settings: Settings) -> dict[str, Any]:
+    """The book: stored cost/shares plus live quotes. No verdicts — that is
+    /portfolio/review, which costs more to compute."""
+    data = holdings_store.load(settings.data.directory)
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    except HTTPException:
+        panel = None
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    sector_map, _ = _sector_map(settings)
+    rows = []
+    for symbol, entry in sorted(data["positions"].items()):
+        shares = float(entry.get("shares") or 0)
+        cost = float(entry.get("cost") or 0)
+        quote = _quote(panel, symbol)
+        value = None if quote["last_close"] is None else round(shares * quote["last_close"], 2)
+        pnl = None if value is None else round(value - shares * cost, 2)
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": name_of.get(symbol, ""),
+                "sector": sector_map.get(symbol),
+                "shares": shares,
+                "cost": cost,
+                "note": entry.get("note", ""),
+                "added_at": entry.get("added_at"),
+                **quote,
+                "market_value": value,
+                "pnl": pnl,
+                "pnl_pct": None
+                if pnl is None or not shares * cost
+                else round(pnl / (shares * cost) * 100, 2),
+            }
+        )
+    return {"positions": rows}
 
 
 @router.get("/watchlist/analysis")
