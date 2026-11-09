@@ -43,6 +43,10 @@
   .kv span:first-child { color: var(--muted); }
   .kv span:last-child { font-variant-numeric: tabular-nums; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th[data-sortable] { cursor: pointer; user-select: none; }
+  th[data-sortable]:hover { color: var(--accent, #2563eb); }
+  th[data-dir="1"]::after { content: " ▲"; color: var(--muted, #999); }
+  th[data-dir="-1"]::after { content: " ▼"; color: var(--muted, #999); }
   th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--line);
            font-variant-numeric: tabular-nums; white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; }
@@ -89,9 +93,10 @@
   .chip.on { border-color: #2563eb; color: #2563eb; font-weight: 600; }
   .wl-star { color: #e6a23c; margin-right: 3px; }
   .up { color: #d64541; } .down { color: #2e9e5b; }
-  /* 事件时间线：一行一条，日期靠左对齐扫读 */
-  .ev-row { padding: 3px 0; border-bottom: 1px dashed var(--line, #e5e7eb); font-size: 13px; }
+  /* 事件时间线：一行一条，日期靠左对齐扫读；涉及自选的行垫色突出 */
+  .ev-row { padding: 3px 4px; border-bottom: 1px dashed var(--line, #e5e7eb); font-size: 13px; }
   .ev-row:last-child { border-bottom: none; }
+  .ev-hit { background: var(--hit, #fff7d6); }
   /* the reason a job failed is the one line worth reading in that card */
   .job-error { color: #b42318; margin-top: 4px; line-height: 1.4; word-break: break-word; }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 5px; }
@@ -266,6 +271,7 @@
             <option value="20">20 日</option>
             <option value="30">30 日</option>
           </select>
+          <label style="margin-left:12px"><input type="checkbox" id="wl-events-only"> 只看涉及自选</label>
         </div>
         <div id="wl-events"></div>
       </div>
@@ -533,18 +539,39 @@ async function openJob(id) {
   }
 }
 
-function showView(name) {
+function showView(name, push = true) {
   document.querySelectorAll("nav button").forEach((b) => {
     b.classList.toggle("active", b.dataset.view === name);
   });
   document.querySelectorAll(".view").forEach((v) => {
     v.classList.toggle("active", v.id === `view-${name}`);
   });
+  if (push && location.hash !== `#/${name}`) location.hash = `#/${name}`;
   if (name === "collect") loadCollection();
   if (name === "compare") loadExperiments();
   if (name === "indicators") loadIndicators();
   if (name === "watchlist") loadWatchlist();
 }
+
+/* hash 路由：#/watchlist、#/indicators/600519.SH——刷新与浏览器前进后退都能
+   还原位置，详情页的代码链接变成可复制的真链接。视图已激活时不重复加载。 */
+function applyHash() {
+  const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
+  const name = view || "data";
+  if (!document.getElementById(`view-${name}`)) {
+    location.hash = "#/data";
+    return;
+  }
+  if (name === "indicators" && arg) {
+    $("ind-symbol").value = decodeURIComponent(arg);
+    if (!$("view-indicators").classList.contains("active")) showView("indicators", false);
+    loadIndicatorDetail();
+    return;
+  }
+  if ($("view-" + name).classList.contains("active")) return;
+  showView(name, false);
+}
+window.addEventListener("hashchange", applyHash);
 
 /* ---------- charts: hand-rolled SVG, no CDN ---------- */
 function chart(target, series, options = {}) {
@@ -687,9 +714,34 @@ function chart(target, series, options = {}) {
 
 function table(columns, rows) {
   if (!rows.length) return '<div class="empty">无数据</div>';
-  return `<table><thead><tr>${columns.map((c) => `<th>${c}</th>`).join("")}</tr></thead>
+  return `<table><thead><tr>${columns.map((c) => `<th data-sortable title="点击排序">${c}</th>`).join("")}</tr></thead>
     <tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
+
+/* 点击表头排序：直接重排已渲染的行——不回服务端、不重新渲染、不改数据源。
+   纯数字列（含 %、千分位）按数值，其余按文本；方向在 th 上轮换，箭头由 CSS 画。 */
+document.addEventListener("click", (event) => {
+  const th = event.target.closest("th[data-sortable]");
+  if (!th) return;
+  const tableEl = th.closest("table");
+  const tbody = tableEl && tableEl.querySelector("tbody");
+  if (!tbody) return;
+  const col = [...th.parentElement.children].indexOf(th);
+  const dir = th.dataset.dir === "1" ? -1 : 1;
+  tableEl.querySelectorAll("th[data-sortable]").forEach((h) => delete h.dataset.dir);
+  th.dataset.dir = String(dir);
+  const value = (tr) => {
+    const text = (tr.children[col] ? tr.children[col].textContent : "").trim();
+    return /^[-+]?[\d.,%\s]+$/.test(text) ? parseFloat(text.replace(/[,%\s]/g, "")) : text;
+  };
+  const rows = [...tbody.children].sort((a, b) => {
+    const va = value(a);
+    const vb = value(b);
+    if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+    return String(va).localeCompare(String(vb), "zh") * dir;
+  });
+  tbody.append(...rows);
+});
 
 /* ---------- ① data ---------- */
 async function loadOverview() {
@@ -1365,7 +1417,7 @@ function renderIndicatorBoard(data) {
     <h3>当前状态</h3>
     <p class="muted">${summary}${data.stale ? "｜指标文件比面板旧，点「重算」" : ""}</p>
     <table>
-      <thead><tr><th>指标</th><th>中位数</th><th>区间</th><th>量纲</th><th>建议读法</th></tr></thead>
+      <thead><tr><th data-sortable title="点击排序">指标</th><th data-sortable title="点击排序">中位数</th><th data-sortable title="点击排序">区间</th><th data-sortable title="点击排序">量纲</th><th data-sortable title="点击排序">建议读法</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <p class="muted">
@@ -1413,7 +1465,7 @@ async function loadIndicatorDetail() {
         <button class="btn" data-watch="${data.symbol}">☆ 加入自选</button>
         <p class="muted" style="margin:0">${data.symbol}${data.sector ? " · " + data.sector : ""} · ${data.as_of} · ${data.provider}</p>
       </div>
-      <table><thead><tr><th>指标</th><th>值</th><th>量纲</th></tr></thead>
+      <table><thead><tr><th data-sortable title="点击排序">指标</th><th data-sortable title="点击排序">值</th><th data-sortable title="点击排序">量纲</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
     refreshWatchButtons();
 
@@ -1472,8 +1524,14 @@ function symbolCell(symbol) {
 
 function jumpToSymbol(symbol) {
   $("ind-symbol").value = symbol;
-  showView("indicators");
-  loadIndicatorDetail();
+  const target = `#/indicators/${encodeURIComponent(symbol)}`;
+  if (location.hash === target) {
+    // hash 不变就不会触发 hashchange：自己完成路由
+    if (!$("view-indicators").classList.contains("active")) showView("indicators", false);
+    loadIndicatorDetail();
+  } else {
+    location.hash = target;
+  }
 }
 
 document.addEventListener("click", (event) => {
@@ -1546,24 +1604,38 @@ function renderEvents() {
     target.innerHTML = `<div class="empty">${EVENTS.unavailable}</div>`;
     return;
   }
-  target.innerHTML = EVENTS.events.length
-    ? EVENTS.events
+  /* 事件与自选的交集是最值得先看的信息：涉及自选的行高亮，可只看这部分。 */
+  const onlyWatch = $("wl-events-only").checked;
+  const marked = EVENTS.events.map((ev) => ({
+    ...ev,
+    watch: (ev.symbols || []).some(inWatchlist),
+  }));
+  const events = onlyWatch ? marked.filter((ev) => ev.watch) : marked;
+  const hits = marked.filter((ev) => ev.watch).length;
+  if (onlyWatch) note.textContent += ` · 涉及自选 ${hits} 条`;
+  target.innerHTML = events.length
+    ? events
         .map((ev) => {
           const [label, kind] = EVENT_KINDS[ev.kind] || [ev.kind, ""];
           const badgeHtml = `<span class="badge ${kind}">${label}</span>`;
           const title = ev.symbols && ev.symbols.length && ev.kind !== "market"
             ? ev.title.replace(ev.symbols[0], symbolCell(ev.symbols[0]))
             : ev.title;
-          return `<div class="ev-row">${badgeHtml} <span class="muted">${ev.date}</span> ${title}${ev.detail ? ` <span class="muted">— ${ev.detail}</span>` : ""}</div>`;
+          const hit = ev.watch ? " ev-hit" : "";
+          const star = ev.watch && !onlyWatch ? "★ " : "";
+          return `<div class="ev-row${hit}">${badgeHtml} <span class="muted">${ev.date}</span> ${star}${title}${ev.detail ? ` <span class="muted">— ${ev.detail}</span>` : ""}</div>`;
         })
         .join("")
-    : '<div class="empty">窗口内没有触发阈值的事件：平静的日子，本身也是一种信息</div>';
+    : onlyWatch
+      ? '<div class="empty">窗口内没有涉及自选股的事件——你的票最近都很平静</div>'
+      : '<div class="empty">窗口内没有触发阈值的事件：平静的日子，本身也是一种信息</div>';
 }
 
 $("wl-events-days").addEventListener("change", async () => {
   EVENTS = await loadEvents();
   renderEvents();
 });
+$("wl-events-only").addEventListener("change", renderEvents);
 
 /* 板块异动：领涨/领跌是相对排名——普涨日的 1% 领涨毫无信息，
    排在分布两端才值得看。板块表没建时给出建立命令而不是空表。 */
@@ -1731,7 +1803,7 @@ function renderWatchlist() {
       </tr>`;
     });
   $("wl-table").innerHTML = rows.length
-    ? `<table><thead><tr><th>代码</th><th>名称</th><th>板块</th><th>分类</th><th>最新收盘</th><th>日涨跌</th><th>RSI</th><th>MA20</th><th>备注</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+    ? `<table><thead><tr>${["代码", "名称", "板块", "分类", "最新收盘", "日涨跌", "RSI", "MA20", "备注", ""].map((c) => `<th data-sortable title="点击排序">${c}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`
     : `<div class="empty">自选还是空的：在上面加一只，或在指标页点「加入自选」</div>`;
 
   filter.querySelectorAll("[data-wl-filter]").forEach((el) => {
@@ -2004,6 +2076,7 @@ enhanceSymbolInputs();
   await loadScreenLatest();
   await loadScreenReview();
   await loadWatchlist();
+  applyHash(); // 启动时按 hash 还原位置（无 hash 则停在默认视图）
 })();
 </script>
 </body>
