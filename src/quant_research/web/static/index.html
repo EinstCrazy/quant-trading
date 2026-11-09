@@ -45,6 +45,10 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th[data-sortable] { cursor: pointer; user-select: none; }
   th:first-child, td:first-child { text-align: left; }
+  .volbars { display: flex; align-items: flex-end; gap: 4px; height: 64px; margin-top: 10px; }
+  .volbars span { flex: 1; background: var(--line); border-radius: 2px 2px 0 0; min-height: 2px; }
+  .volbars span.hot { background: var(--accent, #2563eb); }
+  .volbars span.cold { background: var(--muted, #999); opacity: 0.45; }
   tr[data-sector] { cursor: pointer; }
   tr[data-sector]:hover { background: var(--hit, #fff7d6); }
   th[data-sortable]:hover { color: var(--accent, #2563eb); }
@@ -150,6 +154,7 @@
       <button data-view="watchlist">自选</button>
       <button data-view="portfolio">持仓</button>
       <button data-view="sectors">板块</button>
+      <button data-view="volume">量能</button>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -459,6 +464,32 @@
       </div>
     </section>
 
+    <!-- ⑩ 量能分析 -->
+    <section id="view-volume" class="view">
+      <h2>量能</h2>
+      <div class="card">
+        <h3>大盘量能 <span class="muted" id="vol-note"></span></h3>
+        <div class="row" style="margin-bottom:10px">
+          <label>数据源</label>
+          <select id="vol-provider">
+            <option value="baostock" selected>baostock</option>
+            <option value="akshare">akshare</option>
+          </select>
+          <button class="btn ghost" id="vol-refresh">刷新</button>
+          <span class="muted">三层都和自己 20 日均量比，不和绝对成交额比</span>
+        </div>
+        <div id="vol-market"></div>
+      </div>
+      <div class="card">
+        <h3>板块量能 <span class="muted">按量比排序：钱先流向哪里</span></h3>
+        <div id="vol-sectors"></div>
+      </div>
+      <div class="card">
+        <h3>个股量能 <span class="muted" id="vol-stock-note"></span></h3>
+        <div id="vol-stocks"></div>
+      </div>
+    </section>
+
     <div id="toast"></div>
   </main>
 </div>
@@ -647,6 +678,7 @@ function showView(name, push = true) {
   if (name === "watchlist") loadWatchlist();
   if (name === "portfolio") loadPortfolio();
   if (name === "sectors") loadSectors();
+  if (name === "volume") loadVolume();
 }
 
 /* hash 路由：#/watchlist、#/indicators/600519.SH——刷新与浏览器前进后退都能
@@ -1636,6 +1668,134 @@ document.addEventListener("click", (event) => {
   event.preventDefault();
   jumpToSymbol(link.dataset.jump);
 });
+
+/* ---------- 量能分析 ---------- */
+/* 成交量本身没有方向：放量上涨是资金流入，放量下跌是有人离场，缩量上涨
+   是没人跟。所以这里给的是量价组合的四象限 + 每个象限该盯什么，不是
+   「放量=看涨」。三层各和自己的 20 日均量比——普涨日的绝对成交额没有信息。 */
+
+let VOLUME = null;
+
+const QUAD_TONE = (quadrant) =>
+  quadrant === "放量上涨" || quadrant === "平量上涨"
+    ? "good"
+    : quadrant === "放量下跌" || quadrant === "缩量下跌" || quadrant === "放量滞涨"
+      ? "bad"
+      : quadrant === "缩量上涨"
+        ? "warn"
+        : "muted";
+
+async function loadVolume() {
+  const provider = $("vol-provider").value;
+  $("vol-note").textContent = "加载中…";
+  VOLUME = await api(`/volume/analysis?provider=${provider}`).catch((error) => ({ error: error.message }));
+  renderVolume();
+}
+
+function renderVolume() {
+  const note = $("vol-note");
+  const target = $("vol-market");
+  if (!VOLUME) return;
+  if (VOLUME.error || VOLUME.unavailable) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${VOLUME.error || VOLUME.unavailable}</div>`;
+    $("vol-sectors").innerHTML = "";
+    $("vol-stocks").innerHTML = "";
+    return;
+  }
+  const m = VOLUME.market;
+  note.textContent = `${m.as_of} · ${VOLUME.provider} · 样本 ${m.n_symbols} 只`;
+  const bars = m.series
+    .map((point) => {
+      const height = Math.max(4, Math.round((point.amount / Math.max(...m.series.map((p) => p.amount))) * 100));
+      const tone = point.ratio >= 1.2 ? "hot" : point.ratio <= 0.8 ? "cold" : "";
+      return `<span class="${tone}" style="height:${height}%" title="${point.date} · ${point.amount} 亿 · ${point.ratio ?? "—"} 倍"></span>`;
+    })
+    .join("");
+  target.innerHTML = `
+    <div class="row" style="gap:18px;align-items:baseline">
+      <div><span class="muted">总量</span> <b>${m.amount}</b> ${m.unit === "amount" ? "亿" : "万手"}</div>
+      <div><span class="muted">20 日均量</span> ${m.base_long} ${m.unit === "amount" ? "亿" : "万手"}</div>
+      <div><span class="muted">量比</span> <b>${m.ratio ?? "—"}</b> 倍</div>
+      <div>${pctCell(m.change_pct)}</div>
+      <span class="badge ${QUAD_TONE(m.quadrant)}">${m.level} · ${m.quadrant}</span>
+      ${m.streak >= 2 ? `<span class="badge warn">连续 ${m.streak} 天放量</span>` : ""}
+    </div>
+    <p style="margin:10px 0 0;line-height:1.7">${m.advice}</p>
+    <div class="volbars">${bars}</div>
+    <p class="muted" style="margin:4px 0 0;font-size:12px">近 ${m.series.length} 日成交额（蓝色 = 量比 ≥1.2，灰色 = ≤0.8）</p>`;
+  renderSectorVolume();
+  renderStockVolume();
+}
+
+function renderSectorVolume() {
+  const target = $("vol-sectors");
+  if (!VOLUME.sector_table) {
+    target.innerHTML = '<div class="empty">板块表尚未建立：先运行 quant-symbols --sectors</div>';
+    return;
+  }
+  const rows = VOLUME.sectors.map((row) => `<tr>
+    <td>${row.sector}</td>
+    <td>${row.n}</td>
+    <td>${row.amount}</td>
+    <td><b>${row.ratio ?? "—"}</b></td>
+    <td>${row.share_pct ?? "—"}%</td>
+    <td>${pctCell(row.change_pct)}</td>
+    <td>${row.up_count}/${row.n}</td>
+    <td><span class="badge ${QUAD_TONE(row.quadrant)}">${row.level} · ${row.quadrant}</span></td>
+    <td style="text-align:left;font-size:12px;line-height:1.6">${row.advice}</td>
+  </tr>`);
+  target.innerHTML = rows.length
+    ? `<table><thead><tr>${[
+        "板块",
+        "成分",
+        "成交额(亿)",
+        "量比",
+        "占比",
+        "当日",
+        "上涨",
+        "量价状态",
+        "建议",
+      ]
+        .map((c) => `<th data-sortable title="点击排序">${c}</th>`)
+        .join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`
+    : '<div class="empty">没有可分析的板块</div>';
+}
+
+function renderStockVolume() {
+  const target = $("vol-stocks");
+  const note = $("vol-stock-note");
+  note.textContent = `来源：${VOLUME.stock_source}`;
+  const rows = VOLUME.stocks.map((row) => `<tr>
+    <td>${symbolCell(row.symbol)}</td>
+    <td>${row.name || "—"}</td>
+    <td>${row.sector ? `<span class="badge">${row.sector}</span>` : '<span class="muted">—</span>'}</td>
+    <td>${row.close == null ? "—" : fmt(row.close, 2)}</td>
+    <td>${pctCell(row.change_pct)}</td>
+    <td>${row.amount}</td>
+    <td><b>${row.ratio ?? "—"}</b></td>
+    <td><span class="badge ${QUAD_TONE(row.quadrant)}">${row.level} · ${row.quadrant}</span></td>
+    <td style="text-align:left;font-size:12px;line-height:1.6">${row.advice}</td>
+  </tr>`);
+  target.innerHTML = rows.length
+    ? `<table><thead><tr>${[
+        "代码",
+        "名称",
+        "板块",
+        "收盘",
+        "当日",
+        "成交额(亿)",
+        "量比",
+        "量价状态",
+        "建议",
+      ]
+        .map((c) => `<th data-sortable title="点击排序">${c}</th>`)
+        .join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`
+    : '<div class="empty">没有可分析的个股</div>';
+}
+
+$("vol-refresh").addEventListener("click", loadVolume);
+$("vol-provider").addEventListener("change", loadVolume);
 
 /* ---------- 板块分析 ---------- */
 /* 板块回答两个问题：哪些板块在动（等权涨幅 + 上涨占比），动的里面是谁

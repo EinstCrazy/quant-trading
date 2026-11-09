@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from quant_research import holdings as holdings_store
 from quant_research import review_archive as review_store
 from quant_research import sectors as sectors_mod
+from quant_research import volume as volume_mod
 from quant_research import watchlist as watchlist_store
 from quant_research.backtest import (
     BacktestConfig,
@@ -62,6 +63,7 @@ from quant_research.review import (
 from quant_research.scoring import screen, to_target_weights
 from quant_research.scoring.ledger import ScreenLedger, review
 from quant_research.strategies import STRATEGY_REGISTRY, get_signal
+from quant_research.volume import VolumeRules
 
 from .experiments import ExperimentStore
 from .experiments import get_store as get_experiments
@@ -2039,6 +2041,74 @@ def sector_members(
         "updated_at": stamp,
         "n": len(rows),
         "members": [member.to_dict() for member in rows],
+    }
+
+
+@router.get("/volume/analysis")
+def volume_analysis(provider: str | None = None, adjust: str | None = None) -> dict[str, Any]:
+    """量能分析：大盘 / 板块 / 个股三层，每层给量价状态与一句可执行的话。
+
+    三层都和自己（或自己所属层级）的 20 日均量比，不和绝对成交额比——普涨日
+    的成交额天然放大，绝对数字没有信息。
+
+    个股优先取「持仓 ∪ 自选」——量能提示只有落在自己关心的票上才有用；
+    两者都空时退回成交额前 8，并在 ``stock_source`` 里说明这是替代方案。
+    """
+    settings = load_settings()
+    source = provider or settings.collection.provider
+    basis = adjust or settings.collection.adjust
+    try:
+        panel = _load_panel(source, basis)
+    except HTTPException as exc:
+        return {
+            "as_of": None,
+            "provider": source,
+            "market": None,
+            "sectors": [],
+            "stocks": [],
+            "unavailable": str(exc.detail),
+        }
+    rules = VolumeRules()
+    sector_map, stamp = _sector_map(settings)
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    try:
+        market_row = volume_mod.market(panel, rules)
+    except ValueError as exc:
+        return {
+            "as_of": None,
+            "provider": source,
+            "market": None,
+            "sectors": [],
+            "stocks": [],
+            "unavailable": str(exc),
+        }
+
+    watch = watchlist_store.load(settings.data.directory).get("stocks", {})
+    book = holdings_store.load(settings.data.directory).get("positions", {})
+    symbols = sorted(set(watch) | set(book))
+    origin = "持仓 + 自选"
+    if not symbols:
+        if panel.has_field("amount"):
+            ranking = panel.field("amount").iloc[-1].sort_values(ascending=False)
+        else:
+            ranking = panel.field("volume").iloc[-1].sort_values(ascending=False)
+        symbols = [symbol for symbol in ranking.index[:8]]
+        origin = "成交额前 8（还没有持仓与自选）"
+
+    return {
+        "as_of": market_row.as_of,
+        "provider": source,
+        "updated_at": stamp,
+        "sector_table": bool(sector_map),
+        "market": market_row.to_dict(),
+        "sectors": [row.to_dict() for row in volume_mod.sector(panel, sector_map, name_of, rules)]
+        if sector_map
+        else [],
+        "stocks": [
+            row.to_dict() for row in volume_mod.stock(panel, symbols, sector_map, name_of, rules)
+        ],
+        "stock_source": origin,
     }
 
 
