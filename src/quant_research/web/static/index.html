@@ -155,6 +155,7 @@
       <button data-view="portfolio">持仓</button>
       <button data-view="sectors">板块</button>
       <button data-view="volume">量能</button>
+      <button data-view="overseas">外围</button>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -490,6 +491,27 @@
       </div>
     </section>
 
+    <!-- ⑪ 外围盘 -->
+    <section id="view-overseas" class="view">
+      <h2>外围</h2>
+      <div class="card">
+        <h3>隔夜外围 <span class="muted" id="os-note"></span></h3>
+        <div class="row" style="margin-bottom:10px">
+          <button class="btn" id="os-refresh">刷新（联网抓取）</button>
+          <span class="muted">外围只影响开盘情绪；趋势仍看 A 股自身量能</span>
+        </div>
+        <div id="os-summary"></div>
+      </div>
+      <div class="card">
+        <h3>品种明细 <span class="muted">按关注清单排序</span></h3>
+        <div id="os-groups"></div>
+      </div>
+      <div class="card">
+        <h3>传导路径 <span class="muted">每条都带「前提」——不满足前提时不必当真</span></h3>
+        <div id="os-signals"></div>
+      </div>
+    </section>
+
     <div id="toast"></div>
   </main>
 </div>
@@ -679,6 +701,7 @@ function showView(name, push = true) {
   if (name === "portfolio") loadPortfolio();
   if (name === "sectors") loadSectors();
   if (name === "volume") loadVolume();
+  if (name === "overseas") loadOverseas();
 }
 
 /* hash 路由：#/watchlist、#/indicators/600519.SH——刷新与浏览器前进后退都能
@@ -1796,6 +1819,95 @@ function renderStockVolume() {
 
 $("vol-refresh").addEventListener("click", loadVolume);
 $("vol-provider").addEventListener("change", loadVolume);
+
+/* ---------- 外围盘 ---------- */
+/* 外围给的是开盘环境，不是全天走势。所以每条传导都写清「前提」：前提不成立，
+   这条提示就不成立——比给一句「美股涨所以买科技」有用。 */
+
+let OVERSEAS = null;
+
+const TONE_CLASS = (label) =>
+  label === "风险偏好回升" ? "good" : label === "风险偏好回落" ? "bad" : "muted";
+
+async function loadOverseas() {
+  OVERSEAS = await api("/overseas/analysis").catch((error) => ({ available: false, reason: error.message }));
+  renderOverseas();
+}
+
+async function refreshOverseas() {
+  const button = $("os-refresh");
+  button.disabled = true;
+  button.textContent = "抓取中…";
+  try {
+    OVERSEAS = await api("/overseas/refresh", { method: "POST" });
+    toast("外围快照已更新");
+  } catch (error) {
+    toast(`抓取失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "刷新（联网抓取）";
+    renderOverseas();
+  }
+}
+
+function renderOverseas() {
+  const note = $("os-note");
+  const summary = $("os-summary");
+  const groupsBox = $("os-groups");
+  const signalsBox = $("os-signals");
+  if (!OVERSEAS) return;
+  if (!OVERSEAS.available) {
+    note.textContent = "";
+    summary.innerHTML = `<div class="empty">${OVERSEAS.reason || OVERSEAS.error || "没有外围数据"}</div>`;
+    groupsBox.innerHTML = "";
+    signalsBox.innerHTML = "";
+    return;
+  }
+  const stamp = OVERSEAS.fetched_at ? new Date(OVERSEAS.fetched_at).toLocaleString("zh-CN", { hour12: false }) : "—";
+  note.textContent = `${stamp} 抓取 · ${OVERSEAS.n_quotes} 个品种 · ${OVERSEAS.rates?.date ? "美债截至 " + OVERSEAS.rates.date : ""}`;
+  const tone = OVERSEAS.tone || {};
+  summary.innerHTML = `
+    <div class="row" style="gap:16px;align-items:baseline">
+      <span class="badge ${TONE_CLASS(tone.label)}">${tone.label || "—"}</span>
+      <div><span class="muted">情绪分</span> <b>${tone.score == null ? "—" : tone.score}</b></div>
+      <div><span class="muted">美元指数</span> ${OVERSEAS.groups.find((g) => g.name === "汇率与商品")?.rows.find((r) => r.code === "UDI")?.price ?? "—"}</div>
+      ${OVERSEAS.rates?.us10y != null ? `<div><span class="muted">美债 10Y</span> ${OVERSEAS.rates.us10y}% <span class="muted">(${OVERSEAS.rates.us10y_change_bp > 0 ? "+" : ""}${OVERSEAS.rates.us10y_change_bp}bp)</span></div>` : ""}
+      ${OVERSEAS.stale ? '<span class="badge warn">快照已过时，建议刷新</span>' : ""}
+    </div>
+    <p style="margin:10px 0 0;line-height:1.7">${OVERSEAS.advice || ""}</p>
+    ${OVERSEAS.missing.length ? `<p class="muted" style="margin:6px 0 0;font-size:12px">缺失：${OVERSEAS.missing.join("；")}</p>` : ""}`;
+
+  groupsBox.innerHTML = (OVERSEAS.groups || [])
+    .map(
+      (group) => `
+      <div style="margin-bottom:14px">
+        <div class="row" style="gap:10px;align-items:baseline;margin-bottom:4px">
+          <b>${group.name}</b>
+          <span class="muted">均值</span>${pctCell(group.avg_change)}
+        </div>
+        <table><thead><tr><th>品种</th><th>最新价</th><th>涨跌幅</th><th>行情时间</th></tr></thead>
+        <tbody>${group.rows
+          .map(
+            (row) => `<tr><td>${row.name}</td><td>${row.price ?? "—"}</td><td>${pctCell(row.change_pct)}</td><td class="muted" style="font-size:12px">${row.as_of}</td></tr>`,
+          )
+          .join("")}</tbody></table>
+      </div>`,
+    )
+    .join("");
+
+  signalsBox.innerHTML = (OVERSEAS.signals || []).length
+    ? OVERSEAS.signals
+        .map(
+          (item) => `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+        <div><b>${item.market}</b> ${pctCell(item.change)}<span class="muted"> → </span>${item.impact}</div>
+        <div class="muted" style="font-size:12px;margin-top:4px">前提：${item.condition}</div>
+      </div>`,
+        )
+        .join("")
+    : '<div class="empty">外围没有触发任何传导信号（涨跌幅都在阈值内）</div>';
+}
+
+$("os-refresh").addEventListener("click", refreshOverseas);
 
 /* ---------- 板块分析 ---------- */
 /* 板块回答两个问题：哪些板块在动（等权涨幅 + 上涨占比），动的里面是谁

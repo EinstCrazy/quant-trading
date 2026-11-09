@@ -18,6 +18,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from quant_research import holdings as holdings_store
+from quant_research import overseas as overseas_mod
 from quant_research import review_archive as review_store
 from quant_research import sectors as sectors_mod
 from quant_research import volume as volume_mod
@@ -2110,6 +2111,47 @@ def volume_analysis(provider: str | None = None, adjust: str | None = None) -> d
         ],
         "stock_source": origin,
     }
+
+
+@router.get("/overseas/analysis")
+def overseas_analysis() -> dict[str, Any]:
+    """外围盘分析：只读本地快照，不联网、不写盘。
+
+    快照由 ``POST /overseas/refresh`` 抓取。GET 里做网络请求会让每次刷新
+    页面都变成一次不可控的抓取，也会让「数据是几点抓的」失去意义。
+    """
+    snapshot = overseas_mod.load(load_settings().data.directory)
+    if snapshot is None:
+        return {
+            "available": False,
+            "reason": "还没有外围快照——点「刷新」抓取一次（需要外网）",
+        }
+    payload = overseas_mod.analyze(snapshot)
+    payload["available"] = True
+    return payload
+
+
+@router.post("/overseas/refresh")
+def overseas_refresh() -> dict[str, Any]:
+    """抓一次外围快照并落盘。部分接口失败也保存——有几项分析几项。"""
+    settings = load_settings()
+    try:
+        snapshot = overseas_mod.fetch()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail=f"外围数据抓取失败：{type(exc).__name__} {exc}"
+        ) from exc
+    if not snapshot["quotes"] and not snapshot["rates"]:
+        raise HTTPException(
+            status_code=503,
+            detail="外围数据一项都没抓到（外网不可达？）："
+            + "；".join(snapshot.get("missing") or []),
+        )
+    overseas_mod.save(settings.data.directory, snapshot)
+    payload = overseas_mod.analyze(snapshot)
+    payload["available"] = True
+    payload["saved"] = True
+    return payload
 
 
 # --- 大事件 -------------------------------------------------------------------

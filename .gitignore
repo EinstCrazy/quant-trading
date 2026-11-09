@@ -22,6 +22,8 @@ data/regulatory/**
 data/universe/**
 # 每日复盘归档：派生结论，每天增长，留本地对比即可
 data/reviews/**
+# 外围快照：外盘实时行情，随时过期，本地的环境数据
+data/overseas/**
 reports/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
