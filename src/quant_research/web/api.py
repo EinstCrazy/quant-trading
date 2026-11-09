@@ -995,7 +995,8 @@ def submit_screen(request: ScreenRequest, jobs: Annotated[JobStore, Depends(get_
 
 
 def _cache_is_stale(bundle: Any, provider: str, adjust: str) -> bool:
-    """A stored bundle goes obsolete when names appear or a new session closes.
+    """A stored bundle goes obsolete when names appear, a session closes, or the
+    configured periods change.
 
     Recomputing here rather than answering 404 with "run quant-indicators" — the
     user just collected the stock they want to look at, and the next click should
@@ -1006,6 +1007,8 @@ def _cache_is_stale(bundle: Any, provider: str, adjust: str) -> bool:
         panel = _load_panel(provider, adjust)
     except HTTPException:
         return False  # nothing to compare against; serve what is stored
+    if bundle.params != params_from_settings(load_settings()):
+        return True  # someone edited the periods in settings.yaml
     cached = next(iter(bundle.frames.values()))
     if not set(panel.prices.columns) <= set(cached.columns):
         return True

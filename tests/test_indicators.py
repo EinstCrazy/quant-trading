@@ -493,3 +493,137 @@ def test_the_catalogue_lookup_ignores_the_period():
     assert doc_for("rsi_21") is INDICATOR_CATALOG["rsi"]
     assert doc_for("plus_di_14") is INDICATOR_CATALOG["plus_di"]
     assert doc_for("something_else") is None
+
+
+# --- 本轮新增的指标：BIAS / ROC / PSY / 量类 / 唐奇安 / SAR -------------------
+
+
+def _constant_panel(values: list[list[float]], names: tuple[str, ...] = ("A.SH",)) -> PricePanel:
+    """显式价格面板：不喂随机数，断言才不用和种子赌运气。"""
+    import numpy as np
+    import pandas as pd
+
+    index = pd.bdate_range("2024-01-01", periods=len(values), name="date")
+    close = pd.DataFrame(np.array(values, dtype=float), columns=names, index=index)
+    return PricePanel(
+        prices=close,
+        extra={
+            "open": close.copy(),
+            "high": close * 1.01,
+            "low": close * 0.99,
+            "volume": pd.DataFrame(1000.0, index=index, columns=names),
+            "amount": close * 1000.0 * 100,
+        },
+    )
+
+
+def test_bias_is_zero_when_price_sits_on_its_average():
+    from quant_research.indicators import bias
+
+    # 30 天纹丝不动：MA 就是价格本身，乖离必须是 0
+    frame = bias(_constant_panel([[100.0]] * 30).prices, 20)
+
+    assert frame["A.SH"].iloc[-1] == pytest.approx(0.0)
+
+
+def test_roc_compounds_not_adds():
+    from quant_research.indicators import roc
+
+    # 每日 +1% 复利 12 天 ≈ +12.68%，若有人误用加法会得 12.0
+    values = [[100.0 * (1.01**i)] for i in range(15)]
+    frame = roc(_constant_panel(values).prices, 12)
+
+    assert frame["A.SH"].iloc[-1] == pytest.approx((1.01**12 - 1) * 100, rel=1e-9)
+
+
+def test_psy_counts_days_not_magnitudes():
+    """连涨 12 天 → 100；11 涨 1 跌 → 11/12。涨多少无关紧要。"""
+    from quant_research.indicators import psy
+
+    up = [[100.0 + i] for i in range(15)]
+    assert psy(_constant_panel(up).prices, 12)["A.SH"].iloc[-1] == pytest.approx(100.0)
+
+    mixed = [[100.0 + i * (1 if i != 7 else -1)] for i in range(15)]
+    frame = psy(_constant_panel(mixed).prices, 12)
+    # 第 8 天回撤破坏了一段连涨：窗口里恰有 1 天下跌
+    assert 80 <= frame["A.SH"].iloc[-1] <= 92
+
+
+def test_volume_ratio_is_one_for_flat_volume():
+    from quant_research.indicators import volume_ratio
+
+    panel = _constant_panel([[100.0]] * 10)
+    frame = volume_ratio(panel.field("volume"), 5)
+
+    assert frame["A.SH"].iloc[-1] == pytest.approx(1.0)
+
+
+def test_mfi_saturates_when_typical_price_only_rises():
+    from quant_research.indicators import mfi
+
+    rising = [[100.0 + i] for i in range(20)]
+    panel = _constant_panel(rising)
+    frame = mfi(panel.field("high"), panel.field("low"), panel.prices, panel.field("volume"), 14)
+
+    assert frame["A.SH"].iloc[-1] == pytest.approx(100.0)
+
+
+def test_donchian_excludes_the_current_day():
+    """突破判定的参照系必须不含当日：创出 101 的那天仍以 100 为上轨。"""
+    from quant_research.indicators import donchian
+
+    prices = [[100.0]] * 25 + [[101.0]]  # 最后一天创新高
+    panel = _constant_panel(prices)
+    channels = donchian(panel.field("high"), panel.field("low"), 20)
+
+    # 高价字段是 close×1.01：前 20 日上轨 ≈ 100×1.01，当日 101×1.01 不进参照
+    assert channels.upper["A.SH"].iloc[-1] == pytest.approx(101.0, rel=1e-9)
+
+
+def test_sar_stays_below_price_in_an_uptrend_and_flips_on_a_break():
+    from quant_research.indicators import sar
+
+    up = [[100.0 + i * 0.5] for i in range(40)]
+    panel = _constant_panel(up)
+    frame = sar(panel.field("high"), panel.field("low"))
+
+    series = frame["A.SH"].dropna()
+    closes = panel.prices["A.SH"].reindex(series.index)
+    assert (series < closes).all()  # 单边上行：SAR 始终压在价格下方
+    assert series.is_monotonic_increasing  # 且逐日抬升——抛物线在追赶价格
+
+    # 尾部崩塌 20%：SAR 必须翻到价格上方
+    crash = up[:-5] + [[up[-1][0] * 0.8]] * 5
+    frame = sar(_constant_panel(crash).field("high"), _constant_panel(crash).field("low"))
+    last_sar, last_close = frame["A.SH"].iloc[-1], crash[-1][0]
+    assert last_sar > last_close
+
+
+def test_vr_mixes_up_and_down_volume():
+    from quant_research.indicators import vr
+
+    # 交替涨跌且成交量恒定：分子分母对半，VR ≈ 100（平盘量对半的约定在此不起作用）
+    values = [[100.0 + (1.0 if i % 2 else -1.0)] for i in range(30)]
+    panel = _constant_panel(values)
+    frame = vr(panel.prices, panel.field("volume"), 26)
+
+    assert frame["A.SH"].iloc[-1] == pytest.approx(100.0, rel=1e-9)
+
+
+def test_compute_all_exposes_every_new_field():
+    params = IndicatorParams()
+    new_fields = {
+        "bias_20",
+        "roc_12",
+        "psy_12",
+        "volume_ratio_5",
+        "vr_26",
+        "mfi_14",
+        "donchian_high_20",
+        "donchian_low_20",
+        "sar",
+    }
+    bundle = compute_all(_panel(days=80), params)
+
+    assert new_fields <= set(bundle.frames.keys())
+    assert all(doc_for(field) is not None for field in new_fields)

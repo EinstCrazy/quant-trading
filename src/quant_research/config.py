@@ -138,6 +138,13 @@ _INDICATOR_FIELDS = (
     "cci_period",
     "adx_period",
     "volatility_period",
+    "bias_period",
+    "roc_period",
+    "psy_period",
+    "mfi_period",
+    "volume_ratio_period",
+    "donchian_period",
+    "vr_period",
 )
 
 
@@ -166,6 +173,13 @@ class IndicatorSettings:
     cci_period: int = 14
     adx_period: int = 14
     volatility_period: int = 20
+    bias_period: int = 20
+    roc_period: int = 12
+    psy_period: int = 12
+    mfi_period: int = 14
+    volume_ratio_period: int = 5
+    donchian_period: int = 20
+    vr_period: int = 26
 
     def __post_init__(self) -> None:
         if self.format not in STORAGE_FORMATS:
@@ -185,6 +199,13 @@ class IndicatorSettings:
             "cci_period": self.cci_period,
             "adx_period": self.adx_period,
             "volatility_period": self.volatility_period,
+            "bias_period": self.bias_period,
+            "roc_period": self.roc_period,
+            "psy_period": self.psy_period,
+            "mfi_period": self.mfi_period,
+            "volume_ratio_period": self.volume_ratio_period,
+            "donchian_period": self.donchian_period,
+            "vr_period": self.vr_period,
         }
         for name, value in periods.items():
             if value < 1:

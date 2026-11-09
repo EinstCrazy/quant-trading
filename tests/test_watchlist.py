@@ -147,6 +147,13 @@ class _Indicators:
     cci_period = 14
     adx_period = 14
     volatility_period = 20
+    bias_period = 20
+    roc_period = 12
+    psy_period = 12
+    mfi_period = 14
+    volume_ratio_period = 5
+    donchian_period = 20
+    vr_period = 26
 
 
 class _S:

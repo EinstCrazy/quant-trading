@@ -41,24 +41,32 @@ __all__ = [
     "IndicatorParams",
     "adx",
     "atr",
+    "bias",
     "boll",
     "catalog",
     "cci",
     "compute_all",
     "doc_for",
+    "donchian",
     "ema",
     "family_of",
     "kdj",
     "load_bundle",
     "macd",
+    "mfi",
     "obv",
     "panel_from_frames",
     "params_from_settings",
+    "psy",
     "realized_volatility",
+    "roc",
     "rsi",
+    "sar",
     "sma",
     "store_bundle",
     "true_range",
+    "volume_ratio",
+    "vr",
     "vwap",
     "williams_r",
 ]
@@ -90,6 +98,13 @@ class IndicatorParams:
     cci_period: int = 14
     adx_period: int = 14
     volatility_period: int = 20
+    bias_period: int = 20
+    roc_period: int = 12
+    psy_period: int = 12
+    mfi_period: int = 14
+    volume_ratio_period: int = 5
+    donchian_period: int = 20
+    vr_period: int = 26
 
     def __post_init__(self) -> None:
         for name in (
@@ -105,6 +120,13 @@ class IndicatorParams:
             "cci_period",
             "adx_period",
             "volatility_period",
+            "bias_period",
+            "roc_period",
+            "psy_period",
+            "mfi_period",
+            "volume_ratio_period",
+            "donchian_period",
+            "vr_period",
         ):
             value = getattr(self, name)
             if value < 1:
@@ -329,6 +351,147 @@ def vwap(amount: pd.DataFrame, volume: pd.DataFrame) -> pd.DataFrame:
     return amount / shares.where(shares > 0)
 
 
+def volume_ratio(volume: pd.DataFrame, n: int = 5) -> pd.DataFrame:
+    """量比的日线近似：当日量 / 前 n 日均量。
+
+    行情软件的量比按分钟量计算，日线数据只能用日量近似——数值在盘中小会
+    偏高，收盘后两者一致。>1 放量，<1 缩量；倍数本身比阈值更有信息量。
+    """
+    return volume / volume.shift(1).rolling(n).mean()
+
+
+def vr(close: pd.DataFrame, volume: pd.DataFrame, n: int = 26) -> pd.DataFrame:
+    """成交量比率：上涨日量与下跌日量之比，平盘日的量对半分摊。
+
+    量在价先：价格没动而 VR 抬升，说明有人在低位接货；反过来，价升量不升
+    说明推动上涨的资金在退场。
+    """
+    diff = close.diff()
+    flat = volume.where(diff == 0, 0.0)
+    up = (volume.where(diff > 0, 0.0) + flat / 2).rolling(n).sum()
+    down = (volume.where(diff < 0, 0.0) + flat / 2).rolling(n).sum()
+    return (up / down.where(down > 0)) * 100
+
+
+def mfi(
+    high: pd.DataFrame,
+    low: pd.DataFrame,
+    close: pd.DataFrame,
+    volume: pd.DataFrame,
+    n: int = 14,
+) -> pd.DataFrame:
+    """资金流量指标：带价格的 OBV，0–100。
+
+    用典型价（H+L+C）/3 加权成交量，比纯收盘价更能反映资金进出。负流量
+    合计为零时（罕见的持续一字板）返回 100 而不是无穷。
+    """
+    typical = (high + low + close) / 3
+    flow = typical * volume
+    positive = flow.where(typical > typical.shift(1), 0.0).rolling(n).sum()
+    negative = flow.where(typical < typical.shift(1), 0.0).rolling(n).sum()
+    ratio = positive / negative.where(negative > 0)
+    result = 100 - 100 / (1 + ratio)
+    # 负流量消失而正流量存在（持续一字板之类的极端）：分母没了，指标顶格，
+    # 而不是变成 NaN 让下游把「封死涨停」当成「没有数据」
+    return result.where(~((negative == 0) & (positive > 0)), 100.0)
+
+
+# --- price relative --------------------------------------------------------
+
+
+def bias(close: pd.DataFrame, n: int = 20) -> pd.DataFrame:
+    """乖离率：(收盘价 − MA_n) / MA_n × 100。
+
+    回答「价格偏离均线多远」：正值说明高于均线，负值低于。与 MA 不同，
+    它是无量纲的百分比，跨价格水平的票可以放在一起比较。
+    """
+    average = sma(close, n)
+    return (close - average) / average * 100
+
+
+def roc(close: pd.DataFrame, n: int = 12) -> pd.DataFrame:
+    """变动率：n 日前到现在的百分比变化，最朴素的动量。
+
+    与 pct_change 相同的数，区别只在用途：作为指标列，它和 RSI、BIAS 一样
+    进截面排名，回答「谁最近动得猛」，而不是逐日画线。
+    """
+    return (close / close.shift(n) - 1) * 100
+
+
+def psy(close: pd.DataFrame, n: int = 12) -> pd.DataFrame:
+    """心理线：过去 n 天里上涨天数的占比，0–100。
+
+    只数天数不看幅度——这是它与 RSI 的全部区别：RSI 按涨跌幅度加权，
+    PSY 按天数。>75 说明连涨居多但未必健康，<25 连跌居多但未必见底。
+    """
+    up = (close.diff() > 0).astype(float)
+    return up.rolling(n, min_periods=n).mean() * 100
+
+
+# --- channels --------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DonchianBands:
+    upper: pd.DataFrame
+    lower: pd.DataFrame
+
+
+def donchian(high: pd.DataFrame, low: pd.DataFrame, n: int = 20) -> DonchianBands:
+    """唐奇安通道：前 n 日（不含当日）的最高与最低。
+
+    不含当日是刻意的：突破判定的参照系必须是「别人到过的位置」，把当日算进
+    参照系，创新高的日子自己和自己比较，永远不会突破。
+    """
+    return DonchianBands(
+        upper=high.shift(1).rolling(n, min_periods=n).max(),
+        lower=low.shift(1).rolling(n, min_periods=n).min(),
+    )
+
+
+def sar(
+    high: pd.DataFrame,
+    low: pd.DataFrame,
+    af_step: float = 0.02,
+    af_max: float = 0.2,
+) -> pd.DataFrame:
+    """抛物线 SAR（Wilder 递推，逐列）。
+
+    反转日 SAR 取前一段极值点（经典定义）；加速度因子随新高/新低累加到
+    ``af_max`` 封顶。递推无法向量化，逐列循环——几十毫秒，不值得为它
+    牺牲正确性。
+    """
+    out = pd.DataFrame(np.nan, index=high.index, columns=high.columns)
+    for column in high.columns:
+        highs, lows = high[column], low[column]
+        count = len(highs)
+        if count < 2:
+            continue
+        values = np.full(count, np.nan)
+        trend_up = bool(highs.iloc[0] >= lows.iloc[0])
+        sar_value = float(lows.iloc[0] if trend_up else highs.iloc[0])
+        extreme = float(highs.iloc[0] if trend_up else lows.iloc[0])
+        af = af_step
+        for i in range(1, count):
+            sar_value = sar_value + af * (extreme - sar_value)
+            if trend_up:
+                if lows.iloc[i] < sar_value:  # 跌破停损点：反转向下
+                    trend_up = False
+                    sar_value = extreme
+                    extreme, af = float(lows.iloc[i]), af_step
+                elif highs.iloc[i] > extreme:
+                    extreme, af = float(highs.iloc[i]), min(af + af_step, af_max)
+            elif highs.iloc[i] > sar_value:  # 升破停损点：反转向上
+                trend_up = True
+                sar_value = extreme
+                extreme, af = float(highs.iloc[i]), af_step
+            elif lows.iloc[i] < extreme:
+                extreme, af = float(lows.iloc[i]), min(af + af_step, af_max)
+            values[i] = sar_value
+        out[column] = values
+    return out
+
+
 # --- trend strength --------------------------------------------------------
 
 
@@ -431,11 +594,31 @@ def compute_all(panel: Any, params: IndicatorParams | None = None) -> IndicatorB
         frames[f"minus_di_{params.adx_period}"] = directional.minus_di
         frames[f"adx_{params.adx_period}"] = directional.adx
 
+    # 收盘价就能算的派生指标，不依赖额外字段
+    frames[f"bias_{params.bias_period}"] = bias(close, params.bias_period)
+    frames[f"roc_{params.roc_period}"] = roc(close, params.roc_period)
+    frames[f"psy_{params.psy_period}"] = psy(close, params.psy_period)
+
     if panel.has_field("volume"):
         volume = panel.field("volume")
         if panel.has_field("amount"):
             frames["vwap"] = vwap(panel.field("amount"), volume)
         frames["obv"] = obv(close, volume)
+        frames[f"volume_ratio_{params.volume_ratio_period}"] = volume_ratio(
+            volume, params.volume_ratio_period
+        )
+        frames[f"vr_{params.vr_period}"] = vr(close, volume, params.vr_period)
+        if panel.has_field("high") and panel.has_field("low"):
+            frames[f"mfi_{params.mfi_period}"] = mfi(
+                panel.field("high"), panel.field("low"), close, volume, params.mfi_period
+            )
+
+    if panel.has_field("high") and panel.has_field("low"):
+        high, low = panel.field("high"), panel.field("low")
+        channels = donchian(high, low, params.donchian_period)
+        frames[f"donchian_high_{params.donchian_period}"] = channels.upper
+        frames[f"donchian_low_{params.donchian_period}"] = channels.lower
+        frames["sar"] = sar(high, low)
 
     return IndicatorBundle(frames=frames, params=params)
 
@@ -498,6 +681,13 @@ def params_from_settings(settings: Any) -> IndicatorParams:
         cci_period=section.cci_period,
         adx_period=section.adx_period,
         volatility_period=section.volatility_period,
+        bias_period=section.bias_period,
+        roc_period=section.roc_period,
+        psy_period=section.psy_period,
+        mfi_period=section.mfi_period,
+        volume_ratio_period=section.volume_ratio_period,
+        donchian_period=section.donchian_period,
+        vr_period=section.vr_period,
     )
 
 
@@ -558,7 +748,13 @@ def store_bundle(
 
 
 def load_bundle(directory: str | Path, provider: str, adjust: str) -> IndicatorBundle | None:
-    """Read back what :func:`store_bundle` wrote, or ``None`` if it is not there."""
+    """Read back what :func:`store_bundle` wrote, or ``None`` if it is not there.
+
+    A bundle whose stored parameters predate the current parameter schema is
+    treated as absent: the indicator set grew, the old files know nothing of
+    the new fields, and serving them would look like a working indicator page
+    that is silently half-empty. Recomputing is what a stale cache is for.
+    """
     target = _bundle_directory(Path(directory), provider, adjust)
     meta_path = target / "meta.json"
     if not meta_path.is_file():
@@ -579,6 +775,10 @@ def load_bundle(directory: str | Path, provider: str, adjust: str) -> IndicatorB
 
     stored = meta.get("params") or {}
     known = {key: value for key, value in stored.items() if key in _PARAM_KEYS}
+    if set(known) != _PARAM_KEYS:
+        # the parameter schema has grown since this bundle was computed;
+        # report a miss so the caller recomputes with the current set
+        return None
     if "ma_periods" in known:
         known["ma_periods"] = tuple(known["ma_periods"])
     if "ema_periods" in known:
@@ -767,6 +967,78 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
         how_to_use="ADX 上行说明趋势在增强，此时顺势比逆势更安全；下行则相反。",
         caution="ADX 本身滞后，且不说方向，不要单独解读。",
     ),
+    "bias": IndicatorDoc(
+        label="BIAS（乖离率）",
+        unit="百分比",
+        typical_range="−15%–+15%",
+        description="（收盘价 − n 日均线）/ n 日均线 × 100，衡量价格偏离均线的程度。",
+        how_to_use="正值高于均线、负值低于；与自身历史比较比绝对阈值可靠——每只票的常态乖离不同。",
+        caution="强趋势里乖离可以长期停在高位，用「超买就回来」的思路逆势抄底是最常见的误用。",
+    ),
+    "roc": IndicatorDoc(
+        label="ROC（变动率）",
+        unit="百分比",
+        typical_range="与个股波动相关",
+        description="现价相对 n 日前的百分比变化，最朴素的动量指标。",
+        how_to_use="主要用于截面排名：谁最近动得猛。时序上过零点确认动能转向。",
+        caution="n 日前的价格是基准，基准日恰好暴涨/暴跌时数值会跳变，属正常。",
+    ),
+    "psy": IndicatorDoc(
+        label="PSY（心理线）",
+        unit="0–100",
+        typical_range="25–75 常见",
+        description="过去 n 天里上涨天数的占比，只数天数不看幅度。",
+        how_to_use="与 RSI 互补：RSI 按幅度加权、PSY 按天数；两者背离时以幅度为准。",
+        caution="阴跌或阴涨的缓慢趋势里，PSY 可能停在极端区很久，不代表转折将至。",
+    ),
+    "volume_ratio": IndicatorDoc(
+        label="量比（5 日基准）",
+        unit="倍数",
+        typical_range="0.5–3",
+        description="当日成交量 / 前 5 日平均成交量，衡量今日相对近期的活跃度。",
+        how_to_use=">2 明显放量、配合价格方向解读；<0.5 缩量，突破的可靠性下降。",
+        caution="日线近似，盘中的量比偏低（行情软件按分钟折算）；停牌复牌日数值会异常。",
+    ),
+    "vr": IndicatorDoc(
+        label="VR（成交量比率）",
+        unit="百分比",
+        typical_range="40–250",
+        description="n 日内上涨日成交合计与下跌日成交合计之比（平盘量对半分摊）。",
+        how_to_use="低价区 VR 抬升而价格未动，常是资金试探性建仓；高价区 VR 下滑说明追价资金退场。",
+        caution="持续单边市的 VR 会钝化在一端，与 RSI 的钝化同源。",
+    ),
+    "mfi": IndicatorDoc(
+        label="MFI（资金流量）",
+        unit="0–100",
+        typical_range="20–80 常见",
+        description="用典型价（H+L+C）/3 加权成交量的振荡指标，带量的 RSI。",
+        how_to_use="价格新高而 MFI 不创新高（顶背离）是资金撤出的早期线索。",
+        caution="成交量造假与大宗交易会扭曲它；小盘股的 MFI 噪声大于大盘股。",
+    ),
+    "donchian_high": IndicatorDoc(
+        label="唐奇安通道·上轨",
+        unit="价格",
+        typical_range="近期高点区域",
+        description="前 n 日（不含当日）的最高价，海龟交易法则的突破参照。",
+        how_to_use="收盘价上穿上轨是突破信号；n 越大信号越少越可靠。",
+        caution="不含当日是刻意设计；突破信号在震荡市里假信号多，先看交易次数。",
+    ),
+    "donchian_low": IndicatorDoc(
+        label="唐奇安通道·下轨",
+        unit="价格",
+        typical_range="近期低点区域",
+        description="前 n 日（不含当日）的最低价，与上轨构成通道。",
+        how_to_use="跌破下轨是趋势走坏的参照；也常用于海龟法则的离场判定。",
+        caution="与布林带不同，唐奇安只用极值不用波动率，通道宽度即真实波动范围。",
+    ),
+    "sar": IndicatorDoc(
+        label="SAR（抛物线转向）",
+        unit="价格",
+        typical_range="价格下方（升势）或上方（跌势）",
+        description="Wilder 递推的停损转向点，加速度因子随新极值累加（0.02 → 0.2）。",
+        how_to_use="价格在 SAR 之上看多、之下看空；SAR 紧贴趋势行走，适合做移动止损参照。",
+        caution="横盘时 SAR 会频繁翻转；递推不可向量化，数值与个别软件的初值约定可能有差异。",
+    ),
     "obv": IndicatorDoc(
         label="OBV（能量潮）",
         unit="累计成交量",
@@ -832,5 +1104,12 @@ _PARAM_KEYS = frozenset(
         "cci_period",
         "adx_period",
         "volatility_period",
+        "bias_period",
+        "roc_period",
+        "psy_period",
+        "mfi_period",
+        "volume_ratio_period",
+        "donchian_period",
+        "vr_period",
     }
 )

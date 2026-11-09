@@ -49,6 +49,13 @@ indicators:
   cci_period: 14
   adx_period: 14
   volatility_period: 20
+  bias_period: 20          # 乖离率，相对 MA(bias_period) 的偏离百分比
+  roc_period: 12           # n 日动量
+  psy_period: 12           # 上涨天数占比
+  mfi_period: 14           # 资金流量（需要 high/low/volume）
+  volume_ratio_period: 5   # 量比的均量基准
+  donchian_period: 20      # 唐奇安通道（不含当日）
+  vr_period: 26            # 成交量比率
 
 # Financial reports. Run `quant-fundamentals --help` for CLI overrides.
 fundamentals:

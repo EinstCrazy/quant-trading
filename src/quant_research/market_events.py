@@ -92,7 +92,9 @@ def detect_events(
 
         # 板块日：等权涨幅显著且成分高度同向——单票拉动不叫板块异动
         if sector_map:
-            grouped = pd.DataFrame({"sector": valid.index.map(sector_map), "change": valid}).dropna()
+            grouped = pd.DataFrame(
+                {"sector": valid.index.map(sector_map), "change": valid}
+            ).dropna()
             for sector, chunk in grouped.groupby("sector"):
                 if len(chunk) < 2:
                     continue
@@ -141,7 +143,11 @@ def detect_events(
             if (symbol, kind) not in reported:
                 reported.add((symbol, kind))
                 events.append(
-                    Event(date=date.strftime("%m-%d"), kind=kind, title=f"{symbol} 创 {LOOKBACK_HIGH_LOW} 日{word}")
+                    Event(
+                        date=date.strftime("%m-%d"),
+                        kind=kind,
+                        title=f"{symbol} 创 {LOOKBACK_HIGH_LOW} 日{word}",
+                    )
                 )
 
     events.sort(key=lambda event: (event.date, _KIND_ORDER.get(event.kind, 9)))
