@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from quant_research import holdings as holdings_store
 from quant_research import review_archive as review_store
+from quant_research import sectors as sectors_mod
 from quant_research import watchlist as watchlist_store
 from quant_research.backtest import (
     BacktestConfig,
@@ -1954,6 +1955,90 @@ def sector_movers(
         "leading": leading,
         "lagging": lagging,
         "all": rows,
+    }
+
+
+@router.get("/sectors/analysis")
+def sector_analysis(
+    days: int = Query(default=5, ge=2, le=60),
+    provider: str | None = None,
+    adjust: str | None = None,
+) -> dict[str, Any]:
+    """板块分析：每个板块的汇总 + 板块内的领涨/领跌个股。
+
+    与 ``/sectors/movers`` 的区别：movers 只回答「哪些板块在动」，这里回答
+    「动的是谁」——多了分化度（板块内标准差：高则选股比选板块重要）、
+    中位涨幅（不被一两只权重带偏）、成交额与板块内个股。
+    """
+    settings = load_settings()
+    sector_map, stamp = _sector_map(settings)
+    if not sector_map:
+        raise HTTPException(
+            status_code=400,
+            detail="板块表尚未建立：先运行 quant-symbols --sectors 建立行业归属",
+        )
+    source = provider or settings.collection.provider
+    basis = adjust or settings.collection.adjust
+    panel = _load_panel(source, basis)
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    try:
+        rows = sectors_mod.analyze(panel, sector_map, name_of, days=days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "days": days,
+        "provider": source,
+        "as_of": str(panel.prices.index[-1].date()),
+        "updated_at": stamp,
+        "n_sectors": len(rows),
+        "n_symbols": int(panel.prices.shape[1]),
+        # 有板块归属且在面板里的票：覆盖率和「板块涨幅」的可信度直接相关
+        "n_covered": sum(row.n for row in rows),
+        "sectors": [row.to_dict() for row in rows],
+    }
+
+
+@router.get("/sectors/members")
+def sector_members(
+    sector: str,
+    days: int = Query(default=5, ge=2, le=60),
+    provider: str | None = None,
+    adjust: str | None = None,
+) -> dict[str, Any]:
+    """单个板块的成分股明细：涨跌、相对板块超额、RSI、MA20、量比、成交额。
+
+    「超额」是相对本板块等权涨幅——板块普涨时，跑输板块的票本身就是信号。
+    """
+    settings = load_settings()
+    sector_map, stamp = _sector_map(settings)
+    if not sector_map:
+        raise HTTPException(
+            status_code=400,
+            detail="板块表尚未建立：先运行 quant-symbols --sectors 建立行业归属",
+        )
+    source = provider or settings.collection.provider
+    basis = adjust or settings.collection.adjust
+    panel = _load_panel(source, basis)
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    try:
+        rows = sectors_mod.members(panel, sector_map, sector, name_of, days=days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail=f"板块「{sector}」没有可分析的成分股：名字对不上，或这些票还没有行情",
+        )
+    return {
+        "sector": sector,
+        "days": days,
+        "provider": source,
+        "as_of": str(panel.prices.index[-1].date()),
+        "updated_at": stamp,
+        "n": len(rows),
+        "members": [member.to_dict() for member in rows],
     }
 
 

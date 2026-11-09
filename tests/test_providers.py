@@ -48,6 +48,7 @@ def _install_fake_baostock(
     *,
     history_rows: list[list[str]] | None = None,
     all_stock: object | None = None,
+    industry_rows: list[list[str]] | None = None,
 ) -> dict[str, int]:
     """Put a fake ``baostock`` module in place; returns its call counters."""
     calls = {"logout": 0}
@@ -68,6 +69,10 @@ def _install_fake_baostock(
         @staticmethod
         def query_all_stock(day: str | None = None) -> object:
             return all_stock if all_stock is not None else _Result([])
+
+        @staticmethod
+        def query_stock_industry() -> _Result:
+            return _Result(list(industry_rows or []))
 
     monkeypatch.setitem(sys.modules, "baostock", FakeBaostock)
     return calls
@@ -251,3 +256,27 @@ def test_akshare_maps_turnover_column(monkeypatch):
     bars = frames["600519.SH"]
     assert "turnover" in bars.columns
     assert bars["turnover"].tolist() == pytest.approx([1.23, 1.35])
+
+
+# 行业表行的顺序是 [updateDate, code, code_name, industry, classification]：
+# 代码在第 2 列、行业在第 4 列。这里用真实形状的行守住列序——取错列时
+# found 会静默为空，再往上就变成「板块表尚未建立」的假故障。
+_INDUSTRY = [
+    ["2026-11-09", "sh.600519", "贵州茅台", "C15酒、饮料和精制茶制造业", "证监会行业分类"],
+    ["2026-11-09", "sz.000001", "平安银行", "J66货币金融服务", "证监会行业分类"],
+    ["2026-11-09", "sz.000002", "万科A", "", "证监会行业分类"],
+    ["2026-11-09", "sh.600000", "浦发银行", "J66货币金融服务", "申万行业分类"],
+    ["2026-11-09", "not a code", "脏行", "X9脏数据", "证监会行业分类"],
+]
+
+
+def test_list_industries_reads_the_code_and_industry_columns(monkeypatch):
+    _install_fake_baostock(monkeypatch, industry_rows=_INDUSTRY)
+
+    found = BaostockProvider().list_industries()
+
+    assert found["600519.SH"] == "酒、饮料和精制茶制造业"  # 分类前缀不是名字
+    assert found["000001.SZ"] == "货币金融服务"
+    assert found["600000.SH"] == "货币金融服务"
+    assert "000002.SZ" not in found  # 行业列为空 → 跳过，而不是存一个空板块
+    assert len(found) == 3

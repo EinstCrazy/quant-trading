@@ -44,6 +44,9 @@
   .kv span:last-child { font-variant-numeric: tabular-nums; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th[data-sortable] { cursor: pointer; user-select: none; }
+  th:first-child, td:first-child { text-align: left; }
+  tr[data-sector] { cursor: pointer; }
+  tr[data-sector]:hover { background: var(--hit, #fff7d6); }
   th[data-sortable]:hover { color: var(--accent, #2563eb); }
   th[data-dir="1"]::after { content: " ▲"; color: var(--muted, #999); }
   th[data-dir="-1"]::after { content: " ▼"; color: var(--muted, #999); }
@@ -146,6 +149,7 @@
       <button data-view="indicators">指标</button>
       <button data-view="watchlist">自选</button>
       <button data-view="portfolio">持仓</button>
+      <button data-view="sectors">板块</button>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -426,6 +430,35 @@
       </div>
     </section>
 
+    <!-- ⑨ 板块分析 -->
+    <section id="view-sectors" class="view">
+      <h2>板块</h2>
+      <div class="card">
+        <h3>板块一览 <span class="muted" id="sec-note"></span></h3>
+        <div class="row" style="margin-bottom:8px">
+          <label>数据源</label>
+          <select id="sec-provider">
+            <option value="baostock" selected>baostock</option>
+            <option value="akshare">akshare</option>
+          </select>
+          <label>区间</label>
+          <select id="sec-days">
+            <option value="2">2 日</option>
+            <option value="5" selected>5 日</option>
+            <option value="10">10 日</option>
+            <option value="20">20 日</option>
+          </select>
+          <button class="btn ghost" id="sec-refresh">刷新</button>
+          <span class="muted">点板块行看成分股</span>
+        </div>
+        <div id="sec-table"></div>
+      </div>
+      <div class="card" id="sec-members-card" style="display:none">
+        <h3>成分股 <span id="sec-members-title"></span> <span class="muted" id="sec-members-note"></span></h3>
+        <div id="sec-members"></div>
+      </div>
+    </section>
+
     <div id="toast"></div>
   </main>
 </div>
@@ -613,6 +646,7 @@ function showView(name, push = true) {
   if (name === "indicators") loadIndicators();
   if (name === "watchlist") loadWatchlist();
   if (name === "portfolio") loadPortfolio();
+  if (name === "sectors") loadSectors();
 }
 
 /* hash 路由：#/watchlist、#/indicators/600519.SH——刷新与浏览器前进后退都能
@@ -1602,6 +1636,145 @@ document.addEventListener("click", (event) => {
   event.preventDefault();
   jumpToSymbol(link.dataset.jump);
 });
+
+/* ---------- 板块分析 ---------- */
+/* 板块回答两个问题：哪些板块在动（等权涨幅 + 上涨占比），动的里面是谁
+   （领涨/领跌 + 点开后的成分股明细）。分化度是板块内涨幅的标准差：
+   高 = 内部差异大，选股比选板块重要；低 = 齐涨齐跌，板块本身更有意义。
+   样本是已落盘的票，不是全市场——note 里如实标注覆盖数。 */
+
+let SECTORS = null;
+let SECTOR_MEMBERS = null;
+let SECTOR_PICKED = null;
+
+async function loadSectors() {
+  const days = $("sec-days").value;
+  const provider = $("sec-provider").value;
+  $("sec-note").textContent = "加载中…";
+  SECTORS = await api(`/sectors/analysis?days=${days}&provider=${provider}`).catch((error) => ({
+    error: error.message,
+  }));
+  renderSectors();
+  if (SECTOR_PICKED) loadMembers(SECTOR_PICKED);
+}
+
+function pctCell(value, digits = 2) {
+  if (value == null) return '<span class="muted">—</span>';
+  const tone = value > 0 ? "up" : value < 0 ? "down" : "muted";
+  return `<span class="${tone}">${value > 0 ? "+" : ""}${value.toFixed(digits)}%</span>`;
+}
+
+function namesCell(items) {
+  if (!items || !items.length) return '<span class="muted">—</span>';
+  return items
+    .map(
+      (item) =>
+        `${item.name || item.symbol} <span class="${item.change_nd > 0 ? "up" : item.change_nd < 0 ? "down" : "muted"}">${
+          item.change_nd > 0 ? "+" : ""
+        }${item.change_nd?.toFixed(1)}%</span>`,
+    )
+    .join("、");
+}
+
+function renderSectors() {
+  const note = $("sec-note");
+  const target = $("sec-table");
+  if (!SECTORS) {
+    note.textContent = "";
+    target.innerHTML = '<div class="empty">暂无数据</div>';
+    return;
+  }
+  if (SECTORS.error) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${SECTORS.error}</div>`;
+    return;
+  }
+  note.textContent = `近 ${SECTORS.days} 日 · ${SECTORS.as_of} · ${SECTORS.provider} · ${SECTORS.n_sectors} 个板块 · 覆盖 ${SECTORS.n_covered}/${SECTORS.n_symbols} 只`;
+  const rows = SECTORS.sectors.map((row) => {
+    const thin = row.n <= 1; // 单票板块没有「领涨/领跌」可言
+    return `<tr data-sector="${row.sector.replace(/"/g, "&quot;")}">
+      <td>${row.sector}</td>
+      <td>${row.n}</td>
+      <td>${pctCell(row.change_1d)}</td>
+      <td>${pctCell(row.change_nd)}</td>
+      <td>${row.up_ratio == null ? "—" : row.up_ratio.toFixed(0) + "%"}</td>
+      <td>${pctCell(row.median_change_nd)}</td>
+      <td>${thin ? '<span class="muted">—</span>' : row.dispersion == null ? "—" : row.dispersion.toFixed(2)}</td>
+      <td>${row.amount == null ? "—" : row.amount.toFixed(1)}</td>
+      <td style="text-align:left">${thin ? '<span class="muted">—</span>' : namesCell(row.leaders)}</td>
+      <td style="text-align:left">${thin ? '<span class="muted">—</span>' : namesCell(row.laggards)}</td>
+    </tr>`;
+  });
+  target.innerHTML = rows.length
+    ? `<table><thead><tr>${[
+        "板块",
+        "成分数",
+        "当日",
+        `近${SECTORS.days}日`,
+        "上涨占比",
+        "中位涨幅",
+        "分化度",
+        "成交额(亿)",
+        "领涨",
+        "领跌",
+      ]
+        .map((c) => `<th data-sortable title="点击排序">${c}</th>`)
+        .join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`
+    : '<div class="empty">没有可分析的板块：先 quant-symbols --sectors，再采集行情</div>';
+}
+
+async function loadMembers(sector) {
+  SECTOR_PICKED = sector;
+  const days = $("sec-days").value;
+  $("sec-members-card").style.display = "";
+  $("sec-members-title").textContent = sector;
+  $("sec-members-note").textContent = "加载中…";
+  SECTOR_MEMBERS = await api(
+    `/sectors/members?sector=${encodeURIComponent(sector)}&days=${days}&provider=${$("sec-provider").value}`,
+  ).catch((error) => ({ error: error.message }));
+  renderMembers();
+}
+
+function renderMembers() {
+  const note = $("sec-members-note");
+  const target = $("sec-members");
+  if (!SECTOR_MEMBERS) return;
+  if (SECTOR_MEMBERS.error) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${SECTOR_MEMBERS.error}</div>`;
+    return;
+  }
+  note.textContent = `${SECTOR_MEMBERS.n} 只 · 近 ${SECTOR_MEMBERS.days} 日 · ${SECTOR_MEMBERS.as_of}；超额 = 相对本板块等权`;
+  const rows = SECTOR_MEMBERS.members.map((m) => [
+    symbolCell(m.symbol),
+    m.name || "—",
+    m.close == null ? "—" : fmt(m.close, 2),
+    pctCell(m.change_pct),
+    pctCell(m.change_nd),
+    pctCell(m.excess_nd),
+    m.rsi_14 == null ? "—" : m.rsi_14.toFixed(1),
+    m.above_ma20 == null
+      ? '<span class="muted">—</span>'
+      : m.above_ma20
+        ? '<span class="good">上方</span>'
+        : '<span class="bad">下方</span>',
+    m.volume_ratio == null ? "—" : m.volume_ratio.toFixed(2),
+    m.amount == null ? "—" : m.amount.toFixed(2),
+  ]);
+  target.innerHTML = table(
+    ["代码", "名称", "收盘", "当日", `近${SECTOR_MEMBERS.days}日`, "超额", "RSI", "MA20", "量比", "成交额(亿)"],
+    rows,
+  );
+}
+
+$("sec-table").addEventListener("click", (event) => {
+  const tr = event.target.closest("tr[data-sector]");
+  if (tr) loadMembers(tr.dataset.sector);
+});
+
+$("sec-refresh").addEventListener("click", loadSectors);
+$("sec-days").addEventListener("change", loadSectors);
+$("sec-provider").addEventListener("change", loadSectors);
 
 /* ---------- 持仓复盘 ---------- */
 /* 持仓是账本，不是缓存：成本与股数存在后端（holdings.json），现价、盈亏、

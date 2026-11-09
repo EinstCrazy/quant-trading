@@ -18,6 +18,7 @@ Two things a caller should not have to discover the hard way:
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from typing import Any, ClassVar
 
@@ -38,6 +39,9 @@ logger = get_logger("data.providers.baostock")
 _EXCHANGE_TAG: dict[str, str] = {"SH": "sh", "SZ": "sz", "BJ": "bj"}
 
 # Project vocabulary -> BaoStock's adjustflag (1 = backward, 2 = forward, 3 = none).
+# 「J66货币金融服务」的前缀是分类编码，不是名字
+_INDUSTRY_PREFIX = re.compile(r"^[A-Za-z]?\d+")
+
 _ADJUST_MAP: dict[str, str] = {
     "qfq": "2",
     "forward": "2",
@@ -131,10 +135,13 @@ class BaostockProvider(MarketDataProvider):
         }
 
     def list_industries(self) -> dict[str, str]:
-        """申万行业（``query_stock_industry``）：``{symbol: 行业名}``。
+        """行业归属（``query_stock_industry``）：``{symbol: 行业名}``。
 
-        行业接口不带日期参数，一次给全市场。个别代码归一化失败就跳过那一行——
-        一条脏行不该抬走整张板块表。
+        行结构是 ``[updateDate, code, code_name, industry, classification]``——
+        代码在第 2 列、行业在第 4 列，不是最先想到的那两列。行业名带着分类
+        前缀（``J66货币金融服务``），前缀是编码不是名字，去掉。
+        同一只票可能同时出现证监会与申万两行，后者覆盖前者（申万更细）。
+        个别代码归一化失败就跳过那一行——一条脏行不该抬走整张板块表。
         """
         baostock = self._connect()
         found: dict[str, str] = {}
@@ -144,12 +151,15 @@ class BaostockProvider(MarketDataProvider):
                 raise ProviderError(f"query_stock_industry failed: {result.error_msg}")
             while result.next():
                 row = result.get_row_data()
-                if len(row) < 3 or not row[2].strip():
+                if len(row) < 4:
+                    continue
+                industry = _INDUSTRY_PREFIX.sub("", row[3].strip()).strip() or row[3].strip()
+                if not industry:
                     continue
                 try:
-                    found[normalize_symbol(row[0])] = row[2].strip()
+                    found[normalize_symbol(row[1])] = industry
                 except ValueError:
-                    logger.debug("skipping unnormalisable industry row %s", row[0])
+                    logger.debug("skipping unnormalisable industry row %s", row[1])
         finally:
             baostock.logout()
         return found
