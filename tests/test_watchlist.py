@@ -154,6 +154,7 @@ class _Indicators:
     volume_ratio_period = 5
     donchian_period = 20
     vr_period = 26
+    turnover_ma_period = 20
 
 
 class _S:

@@ -83,6 +83,7 @@ _HISTORY = [
         "1531.22",
         "3215644",
         "5440082548.08",
+        "0.4518",
         "-2.3749",
         "1",
     ],
@@ -95,6 +96,7 @@ _HISTORY = [
         "0",
         "0.0",
         "0.0",
+        "0",
         "0",
     ],
 ]
@@ -112,6 +114,7 @@ def test_baostock_converts_shares_to_lots_and_drops_halts(monkeypatch):
     assert bars.index[0] == pd.Timestamp("2024-01-02")
     assert bars["volume"].iloc[0] == pytest.approx(32156.44)  # shares ÷ 100 = lots
     assert "pct_change" in bars.columns
+    assert bars["turnover"].iloc[0] == pytest.approx(0.4518)  # baostock 的 turn 原样映射
     assert bars["amount"].iloc[0] == pytest.approx(5.440083e9)
     assert calls["logout"] == 1  # the session is closed even on the success path
 
@@ -220,3 +223,31 @@ def test_akshare_keeps_data_errors_out_of_the_throttling_bucket(monkeypatch):
 
     assert not isinstance(info.value, SourceUnreachable)
     assert "600519.SH" in str(info.value)
+
+
+def test_akshare_maps_turnover_column(monkeypatch):
+    """东方财富的「换手率」列要进来：没有它，换手率指标对 akshare 源永远缺位。"""
+
+    class FakeAkshare:
+        @staticmethod
+        def stock_zh_a_hist(**_: object) -> object:
+            return pd.DataFrame(
+                {
+                    "日期": ["2024-01-02", "2024-01-03"],
+                    "开盘": [100.0, 101.0],
+                    "收盘": [101.0, 102.0],
+                    "最高": [102.0, 103.0],
+                    "最低": [99.0, 100.0],
+                    "成交量": [100000, 110000],
+                    "成交额": [10100000.0, 11220000.0],
+                    "涨跌幅": [1.0, 0.99],
+                    "换手率": [1.23, 1.35],
+                }
+            )
+
+    monkeypatch.setitem(sys.modules, "akshare", FakeAkshare)
+    frames = AkshareProvider(adjust="qfq").fetch_daily(["600519.SH"])
+
+    bars = frames["600519.SH"]
+    assert "turnover" in bars.columns
+    assert bars["turnover"].tolist() == pytest.approx([1.23, 1.35])

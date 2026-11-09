@@ -23,7 +23,7 @@ from typing import ClassVar
 import pandas as pd
 
 REQUIRED_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close", "volume")
-OPTIONAL_COLUMNS: tuple[str, ...] = ("amount", "pct_change")
+OPTIONAL_COLUMNS: tuple[str, ...] = ("amount", "pct_change", "turnover")
 STANDARD_COLUMNS: tuple[str, ...] = REQUIRED_COLUMNS + OPTIONAL_COLUMNS
 
 

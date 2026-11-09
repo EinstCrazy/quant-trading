@@ -77,6 +77,7 @@ def _settings(tmp_path, **overrides):
         volume_ratio_period = 5
         donchian_period = 20
         vr_period = 26
+        turnover_ma_period = 20
 
     for key, value in overrides.items():
         setattr(_Indicators, key, value)

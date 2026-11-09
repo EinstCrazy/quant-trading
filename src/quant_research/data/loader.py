@@ -23,7 +23,7 @@ logger = get_logger("data")
 DATE_COLUMN = "date"
 SYMBOL_COLUMN = "symbol"
 PRICE_COLUMN = "close"
-OPTIONAL_FIELDS = ("open", "high", "low", "volume")
+OPTIONAL_FIELDS = ("open", "high", "low", "volume", "amount", "turnover")
 
 
 @dataclass(frozen=True)
@@ -217,7 +217,8 @@ def load_price_panel(
 
     Accepts either a directory of per-symbol CSVs (``<SYMBOL>.csv``) or a single
     CSV that optionally carries a ``symbol`` column. Extra columns such as
-    ``open``, ``high``, ``low`` and ``volume`` are preserved in ``PricePanel.extra``.
+    ``open``, ``high``, ``low``, ``volume``, ``amount`` and ``turnover`` are
+    preserved in ``PricePanel.extra``.
 
     ``missing_policy="raise"`` (default) rejects missing prices outright, matching
     the conservative behaviour of :func:`load_close_prices`.

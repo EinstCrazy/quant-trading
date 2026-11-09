@@ -145,6 +145,7 @@ _INDICATOR_FIELDS = (
     "volume_ratio_period",
     "donchian_period",
     "vr_period",
+    "turnover_ma_period",
 )
 
 
@@ -180,6 +181,7 @@ class IndicatorSettings:
     volume_ratio_period: int = 5
     donchian_period: int = 20
     vr_period: int = 26
+    turnover_ma_period: int = 20
 
     def __post_init__(self) -> None:
         if self.format not in STORAGE_FORMATS:
@@ -206,6 +208,7 @@ class IndicatorSettings:
             "volume_ratio_period": self.volume_ratio_period,
             "donchian_period": self.donchian_period,
             "vr_period": self.vr_period,
+            "turnover_ma_period": self.turnover_ma_period,
         }
         for name, value in periods.items():
             if value < 1:

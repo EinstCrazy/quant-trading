@@ -56,6 +56,7 @@ indicators:
   volume_ratio_period: 5   # 量比的均量基准
   donchian_period: 20      # 唐奇安通道（不含当日）
   vr_period: 26            # 成交量比率
+  turnover_ma_period: 20   # 换手率均值的窗口（流动性代理）
 
 # Financial reports. Run `quant-fundamentals --help` for CLI overrides.
 fundamentals:

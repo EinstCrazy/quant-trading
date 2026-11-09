@@ -47,9 +47,9 @@ _ADJUST_MAP: dict[str, str] = {
     "": "3",
 }
 
-_FIELDS = "date,open,high,low,close,volume,amount,pctChg,tradestatus"
-_NUMERIC = ("open", "high", "low", "close", "volume", "amount", "pctChg")
-_COLUMN_MAP = {"pctChg": "pct_change"}
+_FIELDS = "date,open,high,low,close,volume,amount,turn,pctChg,tradestatus"
+_NUMERIC = ("open", "high", "low", "close", "volume", "amount", "turn", "pctChg")
+_COLUMN_MAP = {"pctChg": "pct_change", "turn": "turnover"}
 _SHARES_PER_LOT = 100  # BaoStock reports shares; the store keeps lots
 _EARLIEST = "1990-01-01"
 

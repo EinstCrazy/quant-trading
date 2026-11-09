@@ -35,6 +35,7 @@ _COLUMN_MAP: dict[str, str] = {
     "成交量": "volume",
     "成交额": "amount",
     "涨跌幅": "pct_change",
+    "换手率": "turnover",
 }
 
 # Project vocabulary -> AKShare's ``adjust`` argument.

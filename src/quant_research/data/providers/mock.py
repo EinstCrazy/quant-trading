@@ -84,6 +84,7 @@ class MockProvider(MarketDataProvider):
             )
             frame["amount"] = frame["volume"] * frame["close"]
             frame["pct_change"] = frame["close"].pct_change() * 100
+            frame["turnover"] = 2.0 + (frame["pct_change"].abs() * 0.5)
             frames[normalised] = normalise_bars(frame, source=self.name)
         return frames
 

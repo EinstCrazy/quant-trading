@@ -105,6 +105,7 @@ class IndicatorParams:
     volume_ratio_period: int = 5
     donchian_period: int = 20
     vr_period: int = 26
+    turnover_ma_period: int = 20
 
     def __post_init__(self) -> None:
         for name in (
@@ -127,6 +128,7 @@ class IndicatorParams:
             "volume_ratio_period",
             "donchian_period",
             "vr_period",
+            "turnover_ma_period",
         ):
             value = getattr(self, name)
             if value < 1:
@@ -594,6 +596,15 @@ def compute_all(panel: Any, params: IndicatorParams | None = None) -> IndicatorB
         frames[f"minus_di_{params.adx_period}"] = directional.minus_di
         frames[f"adx_{params.adx_period}"] = directional.adx
 
+    # 换手率来自日线接口本身（baostock turn / akshare 换手率），不是算出来的；
+    # 这里转发并给出滚动均值作为流动性代理。旧采集数据没有这一列，安静降级。
+    if panel.has_field("turnover"):
+        turnover = panel.field("turnover")
+        frames["turnover"] = turnover
+        frames[f"turnover_ma_{params.turnover_ma_period}"] = turnover.rolling(
+            params.turnover_ma_period, min_periods=params.turnover_ma_period
+        ).mean()
+
     # 收盘价就能算的派生指标，不依赖额外字段
     frames[f"bias_{params.bias_period}"] = bias(close, params.bias_period)
     frames[f"roc_{params.roc_period}"] = roc(close, params.roc_period)
@@ -636,7 +647,13 @@ def panel_from_frames(
     ``compute_all`` degrades rather than demanding them.
     """
     panels: dict[str, pd.DataFrame] = {}
-    for name in PRICE_FIELDS:
+    # 接口自带的标准列之外（如 turnover），只要全票都有也一并拼入——
+    # 把它丢在这里，换手率指标就只对 web 缓存链路可见，CLI 链路永远缺位
+    wanted = list(PRICE_FIELDS)
+    if frames:
+        shared = set.intersection(*(set(frame.columns) for frame in frames.values()))
+        wanted += sorted(shared - set(PRICE_FIELDS))
+    for name in wanted:
         if frames and all(name in frame.columns for frame in frames.values()):
             panels[name] = pd.concat(
                 {symbol: frame[name] for symbol, frame in frames.items()}, axis=1
@@ -688,6 +705,7 @@ def params_from_settings(settings: Any) -> IndicatorParams:
         volume_ratio_period=section.volume_ratio_period,
         donchian_period=section.donchian_period,
         vr_period=section.vr_period,
+        turnover_ma_period=section.turnover_ma_period,
     )
 
 
@@ -1039,6 +1057,22 @@ INDICATOR_CATALOG: dict[str, IndicatorDoc] = {
         how_to_use="价格在 SAR 之上看多、之下看空；SAR 紧贴趋势行走，适合做移动止损参照。",
         caution="横盘时 SAR 会频繁翻转；递推不可向量化，数值与个别软件的初值约定可能有差异。",
     ),
+    "turnover": IndicatorDoc(
+        label="换手率",
+        unit="百分比",
+        typical_range="0.5%–15%",
+        description="当日成交量占流通股本的比例，来自日线接口本身（baostock turn / akshare 换手率）。",
+        how_to_use="衡量活跃度的最诚实口径——已经除掉了盘子大小，跨票可比；配合价格方向解读放量。",
+        caution="只对新采集的数据可用（旧落盘文件没有这一列）；限售解禁、送转股本变动会让换手率跳变。",
+    ),
+    "turnover_ma": IndicatorDoc(
+        label="换手率均值",
+        unit="百分比",
+        typical_range="0.3%–10%",
+        description="n 日平均换手率，作为流动性的稳定口径（比单日值噪声小）。",
+        how_to_use="流动性过滤用均值不用单日：单日放大可能是事件，均值才是常态盘子。",
+        caution="均值周期越长越平滑也越滞后；小盘股与大盘股的常态区间差一个数量级。",
+    ),
     "obv": IndicatorDoc(
         label="OBV（能量潮）",
         unit="累计成交量",
@@ -1111,5 +1145,6 @@ _PARAM_KEYS = frozenset(
         "volume_ratio_period",
         "donchian_period",
         "vr_period",
+        "turnover_ma_period",
     }
 )

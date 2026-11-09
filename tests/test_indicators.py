@@ -627,3 +627,62 @@ def test_compute_all_exposes_every_new_field():
 
     assert new_fields <= set(bundle.frames.keys())
     assert all(doc_for(field) is not None for field in new_fields)
+
+
+# --- 换手率：转发与均值 --------------------------------------------------------
+
+
+def _turnover_panel() -> PricePanel:
+    index = pd.bdate_range("2024-01-01", periods=30)
+    return PricePanel(
+        prices=pd.DataFrame({"A.SH": np.linspace(100, 110, 30)}, index=index),
+        extra={
+            "open": pd.DataFrame({"A.SH": np.linspace(99, 109, 30)}, index=index),
+            "high": pd.DataFrame({"A.SH": np.linspace(101, 111, 30)}, index=index),
+            "low": pd.DataFrame({"A.SH": np.linspace(98, 108, 30)}, index=index),
+            "volume": pd.DataFrame({"A.SH": 1000.0}, index=index),
+            "turnover": pd.DataFrame({"A.SH": np.linspace(1.0, 4.0, 30)}, index=index),
+        },
+    )
+
+
+def test_turnover_is_forwarded_and_averaged():
+    """换手率是接口给的，不是算出来的：转发 + 滚动均值，别把转发写成计算。"""
+    bundle = compute_all(_turnover_panel(), IndicatorParams(turnover_ma_period=5))
+
+    assert bundle.frames["turnover"]["A.SH"].iloc[-1] == pytest.approx(4.0)
+    expected = np.linspace(1.0, 4.0, 30)[-5:].mean()  # 均值就是末 5 个值的算术平均
+    assert bundle.frames["turnover_ma_5"]["A.SH"].iloc[-1] == pytest.approx(expected)
+
+
+def test_panel_without_turnover_still_computes_everything_else():
+    """旧落盘文件没有换手率列：安静降级，其余指标照常——CSV 只有收盘价同理。"""
+    bundle = compute_all(_panel(days=40), IndicatorParams())
+
+    assert "turnover" not in bundle.frames
+    assert "rsi_14" in bundle.frames and "sar" in bundle.frames
+
+
+def test_panel_from_frames_keeps_provider_supplied_columns():
+    """回归防线：接口自带的列（turnover）不能在拼接时被丢掉——丢一次，CLI 链路
+    的换手率指标就永远缺位，而 web 缓存链路却正常，两处行为不一致最难查。"""
+    from quant_research.indicators import panel_from_frames
+
+    index = pd.bdate_range("2024-01-01", periods=20)
+    frame = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000.0,
+            "amount": 100500.0,
+            "pct_change": 0.5,
+            "turnover": 1.5,
+        },
+        index=index,
+    )
+    panel = panel_from_frames({"600000.SH": frame})
+
+    assert "turnover" in panel.extra
+    assert panel.field("turnover")["600000.SH"].iloc[-1] == pytest.approx(1.5)
