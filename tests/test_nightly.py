@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quant_research import nightly
 from quant_research.nightly import run_nightly, write_report
 from quant_research.scoring.ledger import ScreenLedger
 
@@ -64,7 +65,28 @@ class _FakeProvider:
         return frames
 
 
-def _run(tmp_path, provider, day=_MONDAY, symbols=None, **kwargs) -> tuple:  # type: ignore[no-untyped-def]
+def _run(tmp_path, provider, day=_MONDAY, symbols=None, monkeypatch=None, **kwargs) -> tuple:  # type: ignore[no-untyped-def]
+    if monkeypatch is not None:
+        # 环境刷新会真联网；nightly 的环境逻辑单独有测试，这里一律 mock 掉
+        monkeypatch.setattr(
+            nightly.overseas_mod,
+            "fetch",
+            lambda: {"fetched_at": None, "quotes": [], "rates": {}, "missing": []},
+        )
+        monkeypatch.setattr(nightly.overseas_mod, "save", lambda root, snapshot: None)
+        monkeypatch.setattr(
+            nightly.index_mod,
+            "refresh",
+            lambda root, symbol: pd.DataFrame(
+                {"close": [1.0], "amount": [1.0]}, index=[pd.Timestamp(day)]
+            ),
+        )
+        monkeypatch.setattr(
+            nightly.sector_flow_mod,
+            "fetch",
+            lambda: {"fetched_at": None, "sectors": [], "top_in": [], "top_out": [], "missing": []},
+        )
+        monkeypatch.setattr(nightly.sector_flow_mod, "save", lambda root, snapshot: None)
     ledger = ScreenLedger(tmp_path / "ledger.jsonl")
     slept: list[float] = []
     report = run_nightly(
@@ -82,10 +104,10 @@ def _run(tmp_path, provider, day=_MONDAY, symbols=None, **kwargs) -> tuple:  # t
     return report, ledger, slept
 
 
-def test_a_day_that_has_not_landed_is_not_screened(tmp_path):
+def test_a_day_that_has_not_landed_is_not_screened(tmp_path, monkeypatch):
     """The source only has up to Friday; Monday's screen would be fiction."""
     provider = _FakeProvider(last_day=_MONDAY - timedelta(days=1))
-    report, ledger, _ = _run(tmp_path, provider)
+    report, ledger, _ = _run(tmp_path, provider, monkeypatch=monkeypatch)
 
     assert report.screened is False
     assert report.picks == 0
@@ -93,9 +115,9 @@ def test_a_day_that_has_not_landed_is_not_screened(tmp_path):
     assert ledger.get(str(_MONDAY)) is None  # and nothing was written down
 
 
-def test_a_day_that_has_landed_is_screened_and_recorded(tmp_path):
+def test_a_day_that_has_landed_is_screened_and_recorded(tmp_path, monkeypatch):
     provider = _FakeProvider(last_day=_MONDAY)
-    report, ledger, _ = _run(tmp_path, provider)
+    report, ledger, _ = _run(tmp_path, provider, monkeypatch=monkeypatch)
 
     assert report.screened is True
     assert report.picks > 0
@@ -104,32 +126,32 @@ def test_a_day_that_has_landed_is_screened_and_recorded(tmp_path):
     assert len(record.symbols) == report.picks
 
 
-def test_a_non_trading_day_does_nothing_at_all(tmp_path):
+def test_a_non_trading_day_does_nothing_at_all(tmp_path, monkeypatch):
     provider = _FakeProvider(last_day=_MONDAY)
     sunday = _MONDAY - timedelta(days=1)
-    report, _, _ = _run(tmp_path, provider, day=sunday)
+    report, _, _ = _run(tmp_path, provider, day=sunday, monkeypatch=monkeypatch)
 
     assert report.screened is False
     assert "not a trading day" in report.note
     assert provider.calls == 0  # no requests were made for a day that does not trade
 
 
-def test_the_run_waits_when_asked_to(tmp_path):
+def test_the_run_waits_when_asked_to(tmp_path, monkeypatch):
     provider = _FakeProvider(last_day=_MONDAY)
-    report, _, slept = _run(tmp_path, provider, wait_until=time(23, 59))
+    report, _, slept = _run(tmp_path, provider, wait_until=time(23, 59), monkeypatch=monkeypatch)
 
     assert slept, "waiting until 23:59 should have slept"
     assert report.as_of == str(_MONDAY)
 
 
-def test_the_run_does_not_wait_when_the_time_has_passed(tmp_path):
+def test_the_run_does_not_wait_when_the_time_has_passed(tmp_path, monkeypatch):
     provider = _FakeProvider(last_day=_MONDAY)
-    _, _, slept = _run(tmp_path, provider, wait_until=time(0, 1))
+    _, _, slept = _run(tmp_path, provider, wait_until=time(0, 1), monkeypatch=monkeypatch)
 
     assert slept == []
 
 
-def test_without_symbols_and_an_empty_store_it_says_so(tmp_path):
+def test_without_symbols_and_an_empty_store_it_says_so(tmp_path, monkeypatch):
     # called directly: the helper would otherwise fill in the provider's symbols
     report = run_nightly(
         provider_name="fake",
@@ -146,9 +168,9 @@ def test_without_symbols_and_an_empty_store_it_says_so(tmp_path):
     assert "no symbols" in report.note
 
 
-def test_the_report_archives_what_the_night_did(tmp_path):
+def test_the_report_archives_what_the_night_did(tmp_path, monkeypatch):
     provider = _FakeProvider(last_day=_MONDAY)
-    report, _, _ = _run(tmp_path, provider)
+    report, _, _ = _run(tmp_path, provider, monkeypatch=monkeypatch)
 
     path = write_report(report, tmp_path / "nightly")
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -158,10 +180,69 @@ def test_the_report_archives_what_the_night_did(tmp_path):
     assert path.parent.is_dir()
 
 
-def test_a_screening_failure_still_leaves_a_report(tmp_path):
+def test_a_screening_failure_still_leaves_a_report(tmp_path, monkeypatch):
     """A night that refused to screen is still worth knowing about."""
     provider = _FakeProvider(last_day=_MONDAY - timedelta(days=1))
-    report, _, _ = _run(tmp_path, provider)
+    report, _, _ = _run(tmp_path, provider, monkeypatch=monkeypatch)
 
     assert report.screened is False
     assert pytest.approx(0) == report.picks
+
+
+class TestEnvironmentRefresh:
+    """外围快照与指数日线跟着每晚更新——失败要被记录，不许悄悄跳过。"""
+
+    def _snapshot(self) -> dict:
+        return {"fetched_at": None, "quotes": [{"code": "NDX"}], "rates": {}, "missing": []}
+
+    def test_both_sources_landed(self, tmp_path, monkeypatch):
+        stored = {}
+        monkeypatch.setattr(nightly.overseas_mod, "fetch", self._snapshot)
+        monkeypatch.setattr(
+            nightly.overseas_mod, "save", lambda root, snap: stored.update(snap=snap) or root
+        )
+        monkeypatch.setattr(
+            nightly.index_mod,
+            "refresh",
+            lambda root, symbol: pd.DataFrame(
+                {"close": [1.0], "amount": [1.0]}, index=[pd.Timestamp(_MONDAY)]
+            ),
+        )
+        monkeypatch.setattr(
+            nightly.sector_flow_mod,
+            "fetch",
+            lambda: {"fetched_at": None, "sectors": [], "top_in": [], "top_out": [], "missing": []},
+        )
+        monkeypatch.setattr(nightly.sector_flow_mod, "save", lambda root, snapshot: None)
+
+        result = nightly._refresh_environment(tmp_path)
+
+        assert result["overseas"] == {"quotes": 1, "missing": []}
+        assert result["index"]["symbol"] == "sh000001"
+        assert result["sector_flow"] == {"sectors": 0, "missing": []}
+        assert stored["snap"]["quotes"][0]["code"] == "NDX"
+
+    def test_a_broken_overseas_source_does_not_block_the_index(self, tmp_path, monkeypatch):
+        def boom() -> dict:
+            raise ConnectionError("network down")
+
+        monkeypatch.setattr(nightly.overseas_mod, "fetch", boom)
+        monkeypatch.setattr(
+            nightly.index_mod,
+            "refresh",
+            lambda root, symbol: pd.DataFrame(
+                {"close": [1.0], "amount": [1.0]}, index=[pd.Timestamp(_MONDAY)]
+            ),
+        )
+        monkeypatch.setattr(
+            nightly.sector_flow_mod,
+            "fetch",
+            lambda: {"fetched_at": None, "sectors": [], "top_in": [], "top_out": [], "missing": []},
+        )
+        monkeypatch.setattr(nightly.sector_flow_mod, "save", lambda root, snapshot: None)
+
+        result = nightly._refresh_environment(tmp_path)
+
+        assert "ConnectionError" in result["overseas"]["error"]
+        assert result["index"]["as_of"] == str(_MONDAY)
+        assert result["sector_flow"] == {"sectors": 0, "missing": []}

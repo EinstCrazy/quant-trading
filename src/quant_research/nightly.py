@@ -22,7 +22,10 @@ from time import sleep as block
 
 import pandas as pd
 
+from quant_research import overseas as overseas_mod
+from quant_research import sector_flow as sector_flow_mod
 from quant_research.collector import DEFAULT_TIMEZONE, collect_once, now_in
+from quant_research.data import index as index_mod
 from quant_research.data.cache import (
     build_panel_cache,
     cache_path,
@@ -54,6 +57,7 @@ class NightlyReport:
     screened: bool
     picks: int = 0
     collected: dict[str, object] = field(default_factory=dict)
+    environment: dict[str, object] = field(default_factory=dict)
     note: str = ""
     started_at: str = ""
     finished_at: str = ""
@@ -66,10 +70,42 @@ class NightlyReport:
             "screened": self.screened,
             "picks": self.picks,
             "collected": dict(self.collected),
+            "environment": dict(self.environment),
             "note": self.note,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
+
+
+def _refresh_environment(data_root: Path) -> dict[str, object]:
+    """外围快照与指数日线：环境数据跟着每晚更新。
+
+    两个都各自容错——外围抓取失败只是战法页少一块标注，但「今晚没抓到、
+    为什么没抓到」会被如实记录，而不是悄悄跳过。
+    """
+    result: dict[str, object] = {}
+    try:
+        snapshot = overseas_mod.fetch()
+        overseas_mod.save(Path(data_root), snapshot)
+        result["overseas"] = {"quotes": len(snapshot["quotes"]), "missing": snapshot["missing"]}
+    except Exception as exc:  # noqa: BLE001 - 环境刷新失败不阻断夜间采集
+        result["overseas"] = {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        for symbol in index_mod.INDEXES:
+            frame = index_mod.refresh(Path(data_root), symbol)
+            result["index"] = {"symbol": symbol, "as_of": str(frame.index[-1].date())}
+    except Exception as exc:  # noqa: BLE001
+        result["index"] = {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        snapshot = sector_flow_mod.fetch()
+        sector_flow_mod.save(Path(data_root), snapshot)
+        result["sector_flow"] = {
+            "sectors": len(snapshot["sectors"]),
+            "missing": snapshot["missing"],
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["sector_flow"] = {"error": f"{type(exc).__name__}: {exc}"}
+    return result
 
 
 def run_nightly(
@@ -153,6 +189,8 @@ def run_nightly(
     else:
         refresh_symbols(data_root, provider_name, adjust, targets)
 
+    environment = _refresh_environment(data_root)
+
     panel = load_panel_cache(data_root, provider_name, adjust)
     if pd.Timestamp(day) not in panel.prices.index:
         latest = panel.prices.index.max().date()
@@ -164,6 +202,7 @@ def run_nightly(
             timezone,
             screened=False,
             collected=collection.to_dict(),
+            environment=environment,
             note=f"{day} has not landed yet (latest is {latest}); refusing to screen",
         )
 
@@ -196,6 +235,7 @@ def run_nightly(
         screened=True,
         picks=len(result.picks),
         collected=collection.to_dict(),
+        environment=environment,
         note=f"screened {day}: {len(result.picks)} picks",
     )
 
@@ -237,6 +277,7 @@ def _done(
     screened: bool,
     picks: int = 0,
     collected: dict[str, object] | None = None,
+    environment: dict[str, object] | None = None,
     note: str = "",
 ) -> NightlyReport:
     if note:
@@ -248,6 +289,7 @@ def _done(
         screened=screened,
         picks=picks,
         collected=collected or {},
+        environment=environment or {},
         note=note,
         started_at=started,
         finished_at=now_in(timezone).isoformat(timespec="seconds"),

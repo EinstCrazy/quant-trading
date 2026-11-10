@@ -33,6 +33,7 @@ __all__ = [
     "StockVolume",
     "VolumeRules",
     "market",
+    "market_from_index",
     "sector",
     "stock",
 ]
@@ -270,19 +271,37 @@ def _market_advice(quadrant: str, ratio: float | None, streak: int, rules: Volum
 
 
 def market(panel: Any, rules: VolumeRules | None = None) -> MarketVolume:
+    """样本合计路径：把面板聚合成单日成交额序列，再走与指数相同的分析。"""
     rules = rules or VolumeRules()
     series, unit = _series(panel)
-    stats = _window_stats(series, rules)
     close = panel.prices
     if len(close) < 2:
         raise ValueError("面板不足两天，算不了当日涨跌")
-    change = float((close.iloc[-1] / close.iloc[-2] - 1).mean() * 100)
+    return _market_from_series(
+        series, close.iloc[-1] / close.iloc[-2] - 1, rules, unit, int(close.shape[1])
+    )
+
+
+def _market_from_series(
+    series: pd.Series,
+    day_change: pd.Series,
+    rules: VolumeRules,
+    unit: str,
+    n_symbols: int,
+) -> MarketVolume:
+    """指数路径与样本路径共用的分析主体。
+
+    ``day_change`` 是当日涨跌幅比例（close/prev - 1）——指数路径传单元素
+    序列，样本路径传逐票序列取均值。
+    """
+    stats = _window_stats(series, rules)
+    change = float(day_change.mean() * 100)
     ratio = stats["ratio"]
     quadrant = _quadrant(change, ratio, rules)
     scale = _scale(unit)
     recent = _recent_series(series, scale, rules)
     return MarketVolume(
-        as_of=str(close.index[-1].date()),
+        as_of=str(series.index[-1].date()),
         unit=unit,
         amount=_num(stats["today"] / scale) or 0.0,
         base_long=_num(stats["base_long"] / scale) or 0.0,
@@ -295,7 +314,25 @@ def market(panel: Any, rules: VolumeRules | None = None) -> MarketVolume:
         streak=_streak(series, rules),
         advice=_market_advice(quadrant, ratio, _streak(series, rules), rules),
         series=recent,
-        n_symbols=int(close.shape[1]),
+        n_symbols=n_symbols,
+    )
+
+
+def market_from_index(frame: pd.DataFrame, rules: VolumeRules | None = None) -> MarketVolume:
+    """真实指数路径：指数日线的成交额与收盘，替代样本合计。
+
+    ``frame`` 需要 close 与 amount 两列（见 data.index）。指数没有「逐票
+    均值」，涨跌就是指数自身的涨跌，n_symbols 恒为 1——它不是样本，如实标注。
+    """
+    rules = rules or VolumeRules()
+    if len(frame) < 2:
+        raise ValueError("指数日线不足两天，算不了当日涨跌")
+    return _market_from_series(
+        frame["amount"].astype(float),
+        frame["close"].astype(float).iloc[-1] / frame["close"].astype(float).iloc[-2] - 1,
+        rules,
+        "amount",
+        1,
     )
 
 

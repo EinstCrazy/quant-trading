@@ -21,6 +21,7 @@ from quant_research import holdings as holdings_store
 from quant_research import overseas as overseas_mod
 from quant_research import playbook as playbook_mod
 from quant_research import review_archive as review_store
+from quant_research import sector_flow as sector_flow_mod
 from quant_research import sectors as sectors_mod
 from quant_research import volume as volume_mod
 from quant_research import watchlist as watchlist_store
@@ -35,11 +36,14 @@ from quant_research.backtest.engine import BacktestResult, run_signal_backtest
 from quant_research.collector import collect_once
 from quant_research.config import Settings, load_settings
 from quant_research.data import PricePanel, describe_panel, load_price_panel, universe
+from quant_research.data import index as index_mod
 from quant_research.data.cache import build_panel_cache, cache_path, load_panel_cache
 from quant_research.data.calendar import TradingCalendar
 from quant_research.data.providers import get_provider
 from quant_research.data.providers.base import ProviderError, normalize_symbol
 from quant_research.data.store import LocalMarketStore
+from quant_research.fundamentals import fetch as fundamentals_fetch
+from quant_research.fundamentals import risk as fundamentals_risk
 from quant_research.indicators import (
     atr,
     compute_all,
@@ -2083,16 +2087,15 @@ def volume_analysis(provider: str | None = None, adjust: str | None = None) -> d
     sector_map, stamp = _sector_map(settings)
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
-    try:
-        market_row = volume_mod.market(panel, rules)
-    except ValueError as exc:
+    market_dict, market_source = _market_volume(settings)
+    if market_dict is None:
         return {
             "as_of": None,
             "provider": source,
             "market": None,
             "sectors": [],
             "stocks": [],
-            "unavailable": str(exc),
+            "unavailable": "面板与指数缓存都不可用：先补数据",
         }
 
     watch = watchlist_store.load(settings.data.directory).get("stocks", {})
@@ -2108,11 +2111,12 @@ def volume_analysis(provider: str | None = None, adjust: str | None = None) -> d
         origin = "成交额前 8（还没有持仓与自选）"
 
     return {
-        "as_of": market_row.as_of,
+        "as_of": market_dict["as_of"],
         "provider": source,
+        "market_source": market_source,
         "updated_at": stamp,
         "sector_table": bool(sector_map),
-        "market": market_row.to_dict(),
+        "market": market_dict,
         "sectors": [row.to_dict() for row in volume_mod.sector(panel, sector_map, name_of, rules)]
         if sector_map
         else [],
@@ -2173,15 +2177,140 @@ def playbook() -> dict[str, Any]:
     都会如实标注，战法本体永远照给：缺环境不等于战法失效。
     """
     settings = load_settings()
-    volume_env: dict[str, Any] | None = None
-    try:
-        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
-        volume_env = volume_mod.market(panel).to_dict()
-    except (HTTPException, ValueError):
-        volume_env = None
+    volume_env, _source = _market_volume(settings)
     snapshot = overseas_mod.load(settings.data.directory)
     tone_env = overseas_mod.analyze(snapshot)["tone"] if snapshot else None
     return playbook_mod.analyze(volume_env, tone_env)
+
+
+def _market_volume(settings: Any) -> tuple[dict[str, Any] | None, str]:
+    """大盘量能：优先真实指数（只读缓存不联网），缺缓存退回样本合计。
+
+    两条路都走 volume._market_from_series 同一套分析——量比、四象限、
+    streak 的语义完全一致，变的只是成交额的来源。返回 (市场行, 来源)，
+    来源是 ``index:<symbol>`` 或 ``sample``，前端如实显示。
+    """
+    symbol = next(iter(index_mod.INDEXES))
+    frame = index_mod.load(settings.data.directory, symbol)
+    if frame is not None:
+        try:
+            return volume_mod.market_from_index(frame).to_dict(), f"index:{symbol}"
+        except ValueError:
+            pass  # 指数缓存太短，退回样本路径
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+        return volume_mod.market(panel).to_dict(), "sample"
+    except (HTTPException, ValueError):
+        return None, "sample"
+
+
+@router.get("/sector-flow")
+def sector_flow() -> dict[str, Any]:
+    """行业资金流快照（东财口径）：只读缓存，不联网、不写盘。
+
+    东财行业分类与面板的证监会分类不是一套——快照不与板块表做跨口径
+    匹配，宁可在页面上独立成卡注明口径，也不产出看似精确的错配。
+    """
+    snapshot = sector_flow_mod.load(load_settings().data.directory)
+    if snapshot is None:
+        return {
+            "available": False,
+            "reason": "还没有行业资金流快照：点「刷新（联网抓取）」，或等 nightly 自动更新",
+        }
+    return {**snapshot, "available": True}
+
+
+@router.post("/sector-flow/refresh")
+def sector_flow_refresh() -> dict[str, Any]:
+    """联网抓取行业资金流并落盘，返回同一份快照。"""
+    snapshot = sector_flow_mod.fetch()
+    sector_flow_mod.save(load_settings().data.directory, snapshot)
+    return {**snapshot, "available": True, "saved": True}
+
+
+def _watch_symbols(settings: Any) -> list[str]:
+    """持仓 ∪ 自选：基本面核对只落在自己关心的票上。"""
+    watch = watchlist_store.load(settings.data.directory).get("stocks", {})
+    book = holdings_store.load(settings.data.directory).get("positions", {})
+    return sorted(set(watch) | set(book))
+
+
+def _risk_to_dict(risk: Any, name_of: dict[str, str]) -> dict[str, Any]:
+    return {
+        "symbol": risk.symbol,
+        "name": name_of.get(risk.symbol, risk.symbol),
+        "level": risk.level,
+        "score": risk.score,
+        "likely_financial": risk.likely_financial,
+        "period": risk.snapshot.period if risk.snapshot else None,
+        "published": risk.snapshot.published if risk.snapshot else None,
+        "flags": [
+            {
+                "code": flag.code,
+                "label": flag.label,
+                "value": flag.value,
+                "threshold": flag.threshold,
+                "detail": flag.detail,
+            }
+            for flag in risk.flags
+        ],
+        "waived": [flag.label for flag in risk.waived],
+    }
+
+
+@router.get("/fundamentals/risk")
+def fundamentals_risk_view() -> dict[str, Any]:
+    """持仓 ∪ 自选的基本面红旗：季报有没有暴雷迹象。
+
+    「黄金坑、地量战法的前提是基本面没坏」在这里核对：红旗多、score 高的
+    票，任何「坑」都要先怀疑是雷。没有季报数据时 400 给采集命令——「没查」
+    和「没红旗」是两回事。未覆盖的票返回 level=未知，不编一个「低风险」。
+    """
+    settings = load_settings()
+    symbols = _watch_symbols(settings)
+    if not symbols:
+        return {"available": False, "reason": "持仓与自选都是空的：先加一只票再核对基本面"}
+    panel = fundamentals_fetch.load(settings.data.directory)
+    if panel.frame.empty:
+        raise HTTPException(
+            status_code=400,
+            detail="还没有季报数据。点「采集季报」或运行 quant-fundamentals，再回来核对。",
+        )
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    risks = fundamentals_risk.assess_many(panel, symbols)
+    covered = {row.symbol for row in risks if row.level != fundamentals_risk.LEVEL_UNKNOWN}
+    return {
+        "available": True,
+        "n_symbols": len(symbols),
+        "n_covered": len(covered),
+        "risks": [_risk_to_dict(row, name_of) for row in risks],
+    }
+
+
+@router.post("/fundamentals/refresh")
+def fundamentals_refresh() -> dict[str, Any]:
+    """联网采集持仓 ∪ 自选的季报并落盘（每票每表每季一次请求）。"""
+    settings = load_settings()
+    symbols = _watch_symbols(settings)
+    if not symbols:
+        raise HTTPException(status_code=400, detail="持仓与自选都是空的：先加一只票")
+    panel = fundamentals_fetch.collect(symbols)
+    try:
+        old = fundamentals_fetch.load(settings.data.directory)
+    except FileNotFoundError:
+        old = None
+    merged = fundamentals_fetch.merge(old, panel) if old is not None else panel
+    path = fundamentals_fetch.store(merged, settings.data.directory)
+    risks = fundamentals_risk.assess_many(merged, symbols)
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    return {
+        "available": True,
+        "saved": str(path),
+        "n_symbols": len(symbols),
+        "risks": [_risk_to_dict(row, name_of) for row in risks],
+    }
 
 
 # --- 大事件 -------------------------------------------------------------------

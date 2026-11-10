@@ -444,6 +444,14 @@
         <div id="pf-discipline"></div>
         <div id="pf-advice"></div>
       </div>
+      <div class="card">
+        <h3>基本面红旗 <span class="muted" id="fr-note"></span></h3>
+        <div class="row" style="margin-bottom:10px">
+          <button class="btn" id="fr-refresh">采集季报并核对</button>
+          <span class="muted">持仓 ∪ 自选的季报红旗——「黄金坑、地量」的前提是基本面没坏，在这里核对；「没查」和「没红旗」是两回事</span>
+        </div>
+        <div id="fr-body"></div>
+      </div>
     </section>
 
     <!-- ⑨ 板块分析 -->
@@ -468,6 +476,14 @@
           <span class="muted">点板块行看成分股</span>
         </div>
         <div id="sec-table"></div>
+      </div>
+      <div class="card">
+        <h3>行业资金流（东财口径） <span class="muted" id="flow-note"></span></h3>
+        <div class="row" style="margin-bottom:10px">
+          <button class="btn" id="flow-refresh">刷新（联网抓取）</button>
+          <span class="muted">东财行业分类与左侧板块表不是一套口径——独立成卡，不做跨口径匹配；量比看活跃，资金流看方向</span>
+        </div>
+        <div id="flow-body"></div>
       </div>
       <div class="card" id="sec-members-card" style="display:none">
         <h3>成分股 <span id="sec-members-title"></span> <span class="muted" id="sec-members-note"></span></h3>
@@ -719,8 +735,14 @@ function showView(name, push = true) {
   if (name === "compare") loadExperiments();
   if (name === "indicators") loadIndicators();
   if (name === "watchlist") loadWatchlist();
-  if (name === "portfolio") loadPortfolio();
-  if (name === "sectors") loadSectors();
+  if (name === "portfolio") {
+    loadPortfolio();
+    loadFundRisk();
+  }
+  if (name === "sectors") {
+    loadSectors();
+    loadSectorFlow();
+  }
   if (name === "volume") loadVolume();
   if (name === "overseas") loadOverseas();
   if (name === "playbook") loadPlaybook();
@@ -2000,6 +2022,66 @@ function renderPlaybook() {
   $("pb-disclaimer").textContent = PLAYBOOK.disclaimer;
 }
 
+/* ---------- 行业资金流 ---------- */
+/* 东财口径与板块表的证监会分类对不上，所以独立成卡：宁缺毋配。 */
+
+let SECTOR_FLOW = null;
+
+async function loadSectorFlow() {
+  SECTOR_FLOW = await api("/sector-flow").catch((error) => ({ available: false, reason: error.message }));
+  renderSectorFlow();
+}
+
+async function refreshSectorFlow() {
+  const button = $("flow-refresh");
+  button.disabled = true;
+  button.textContent = "抓取中…";
+  try {
+    SECTOR_FLOW = await api("/sector-flow/refresh", { method: "POST" });
+    toast("资金流快照已更新");
+  } catch (error) {
+    toast(`抓取失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "刷新（联网抓取）";
+    renderSectorFlow();
+  }
+}
+
+function flowTable(rows, positive) {
+  return `<table><thead><tr><th>行业</th><th>主力净流入</th><th>净占比</th><th>涨跌幅</th><th>领涨/主力买股</th></tr></thead><tbody>${
+    rows
+      .map(
+        (row) => `<tr>
+          <td>${row.name}</td>
+          <td class="${row.main_net > 0 ? "good" : "bad"}">${row.main_net > 0 ? "+" : ""}${row.main_net.toFixed(1)} 亿</td>
+          <td>${row.main_net_pct == null ? "—" : (row.main_net_pct > 0 ? "+" : "") + row.main_net_pct.toFixed(2) + "%"}</td>
+          <td>${pctCell(row.change_pct)}</td>
+          <td style="text-align:left">${row.leader || "—"}</td>
+        </tr>`,
+      )
+      .join("")
+  }</tbody></table>`;
+}
+
+function renderSectorFlow() {
+  const note = $("flow-note");
+  const target = $("flow-body");
+  if (!SECTOR_FLOW) return;
+  if (!SECTOR_FLOW.available) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${SECTOR_FLOW.reason || SECTOR_FLOW.error || "没有资金流数据"}</div>`;
+    return;
+  }
+  const stamp = SECTOR_FLOW.fetched_at ? new Date(SECTOR_FLOW.fetched_at).toLocaleString("zh-CN", { hour12: false }) : "—";
+  note.textContent = `${stamp} 抓取 · ${SECTOR_FLOW.sectors.length} 个行业${SECTOR_FLOW.missing.length ? " · 缺失：" + SECTOR_FLOW.missing.join("；") : ""}`;
+  target.innerHTML = `
+    <div style="margin-bottom:12px"><b>主力净流入前 ${SECTOR_FLOW.top_in.length}</b>${flowTable(SECTOR_FLOW.top_in)}</div>
+    <div><b>主力净流出前 ${SECTOR_FLOW.top_out.length}</b>${flowTable(SECTOR_FLOW.top_out)}</div>`;
+}
+
+$("flow-refresh").addEventListener("click", refreshSectorFlow);
+
 /* ---------- 板块分析 ---------- */
 /* 板块回答两个问题：哪些板块在动（等权涨幅 + 上涨占比），动的里面是谁
    （领涨/领跌 + 点开后的成分股明细）。分化度是板块内涨幅的标准差：
@@ -2159,6 +2241,80 @@ $("sec-table").addEventListener("click", (event) => {
 $("sec-refresh").addEventListener("click", loadSectors);
 $("sec-days").addEventListener("change", loadSectors);
 $("sec-provider").addEventListener("change", loadSectors);
+
+/* ---------- 基本面红旗 ---------- */
+/* 「黄金坑、地量战法的前提是基本面没坏」：红旗在这里核对。季报缺的票
+   返回「未知」而不是「低风险」——没查过的票不该得到干净的结论。 */
+
+let FUND_RISK = null;
+
+const LEVEL_CLASS = {
+  高: "bad",
+  中: "warn",
+  低: "good",
+  未知: "muted",
+};
+
+async function loadFundRisk() {
+  FUND_RISK = await api("/fundamentals/risk").catch((error) => ({ available: false, reason: error.message }));
+  renderFundRisk();
+}
+
+async function refreshFundRisk() {
+  const button = $("fr-refresh");
+  button.disabled = true;
+  button.textContent = "采集中…";
+  try {
+    FUND_RISK = await api("/fundamentals/refresh", { method: "POST" });
+    toast("季报已更新并核对");
+  } catch (error) {
+    toast(`采集失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "采集季报并核对";
+    renderFundRisk();
+  }
+}
+
+function renderFundRisk() {
+  const note = $("fr-note");
+  const target = $("fr-body");
+  if (!FUND_RISK) return;
+  if (!FUND_RISK.available) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${FUND_RISK.reason || FUND_RISK.error || "没有基本面数据"}</div>`;
+    return;
+  }
+  note.textContent = `${FUND_RISK.n_covered}/${FUND_RISK.n_symbols} 只已覆盖（未覆盖的显示「未知」）`;
+  target.innerHTML = FUND_RISK.risks
+    .map((row) => {
+      const cls = LEVEL_CLASS[row.level] || "muted";
+      const flags = row.flags.length
+        ? row.flags
+            .map(
+              (flag) =>
+                `<li><b>${flag.label}</b>：${flag.value == null ? "—" : flag.value.toFixed(2)}（阈值 ${flag.threshold}）——${flag.detail}</li>`,
+            )
+            .join("")
+        : "<li class='muted'>没有触发红旗</li>";
+      const waived = row.waived.length
+        ? `<div class="muted" style="font-size:12px;margin-top:6px">不计分但保留显示：${row.waived.join("；")}</div>`
+        : "";
+      return `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+        <div class="row" style="gap:10px;align-items:baseline">
+          <b>${row.name}</b><span class="muted">${row.symbol}</span>
+          <span class="badge ${cls}">${row.level}</span>
+          <span class="muted">得分 ${row.score.toFixed(1)}</span>
+          <span class="muted" style="font-size:12px">报告期 ${row.period || "—"}（${row.published || "—"} 公布）</span>
+        </div>
+        <ul style="margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.8">${flags}</ul>
+        ${waived}
+      </div>`;
+    })
+    .join("");
+}
+
+$("fr-refresh").addEventListener("click", refreshFundRisk);
 
 /* ---------- 持仓复盘 ---------- */
 /* 持仓是账本，不是缓存：成本与股数存在后端（holdings.json），现价、盈亏、
