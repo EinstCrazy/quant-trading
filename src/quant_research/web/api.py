@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from quant_research import holdings as holdings_store
 from quant_research import overseas as overseas_mod
+from quant_research import playbook as playbook_mod
 from quant_research import review_archive as review_store
 from quant_research import sectors as sectors_mod
 from quant_research import volume as volume_mod
@@ -2161,6 +2162,26 @@ def overseas_refresh() -> dict[str, Any]:
     payload["available"] = True
     payload["saved"] = True
     return payload
+
+
+@router.get("/playbook")
+def playbook() -> dict[str, Any]:
+    """战法清单 + 今日环境标注。
+
+    环境取两个现成的分析输出：昨日量价四象限（volume.market）与外围情绪分
+    （overseas）。缺一块就少一块标注——「今日：数据不足」和「今日无事可做」
+    都会如实标注，战法本体永远照给：缺环境不等于战法失效。
+    """
+    settings = load_settings()
+    volume_env: dict[str, Any] | None = None
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+        volume_env = volume_mod.market(panel).to_dict()
+    except (HTTPException, ValueError):
+        volume_env = None
+    snapshot = overseas_mod.load(settings.data.directory)
+    tone_env = overseas_mod.analyze(snapshot)["tone"] if snapshot else None
+    return playbook_mod.analyze(volume_env, tone_env)
 
 
 # --- 大事件 -------------------------------------------------------------------

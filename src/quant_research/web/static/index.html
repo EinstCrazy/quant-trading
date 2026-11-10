@@ -45,6 +45,15 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th[data-sortable] { cursor: pointer; user-select: none; }
   th:first-child, td:first-child { text-align: left; }
+  details.card { padding: 0; }
+  details.card summary { padding: 12px 16px; cursor: pointer; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  details.card summary::marker { color: var(--muted); }
+  details.card .play-body { padding: 4px 16px 14px; border-top: 1px solid var(--line); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 26px; }
+  .grid2 h4 { margin: 12px 0 6px; font-size: 13px; color: var(--ink); }
+  .grid2 ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
+  .grid2 li::marker { color: var(--muted); }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
   .volbars { display: flex; align-items: flex-end; gap: 4px; height: 64px; margin-top: 10px; }
   .volbars span { flex: 1; background: var(--line); border-radius: 2px 2px 0 0; min-height: 2px; }
   .volbars span.hot { background: var(--accent, #2563eb); }
@@ -156,6 +165,7 @@
       <button data-view="sectors">板块</button>
       <button data-view="volume">量能</button>
       <button data-view="overseas">外围</button>
+      <button data-view="playbook">战法</button>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -512,6 +522,17 @@
       </div>
     </section>
 
+    <!-- ⑫ 战法 -->
+    <section id="view-playbook" class="view">
+      <h2>战法</h2>
+      <div class="card">
+        <h3>今日环境 <span class="muted" id="pb-note"></span></h3>
+        <div id="pb-env"></div>
+      </div>
+      <div id="pb-plays"></div>
+      <p class="muted" id="pb-disclaimer" style="font-size:12px;line-height:1.7;margin-top:12px"></p>
+    </section>
+
     <div id="toast"></div>
   </main>
 </div>
@@ -702,6 +723,7 @@ function showView(name, push = true) {
   if (name === "sectors") loadSectors();
   if (name === "volume") loadVolume();
   if (name === "overseas") loadOverseas();
+  if (name === "playbook") loadPlaybook();
 }
 
 /* hash 路由：#/watchlist、#/indicators/600519.SH——刷新与浏览器前进后退都能
@@ -1908,6 +1930,74 @@ function renderOverseas() {
 }
 
 $("os-refresh").addEventListener("click", refreshOverseas);
+
+/* ---------- 战法 ---------- */
+/* 战法是 checklist 不是信号机：页面不出现胜率。「今日顺/慎/避」由昨日量价
+   四象限与外围情绪两个客观状态推出，规则在后端 playbook 里可读可测。 */
+
+let PLAYBOOK = null;
+
+const STATUS_META = {
+  顺: { cls: "good", text: "今日：顺" },
+  慎: { cls: "warn", text: "今日：慎" },
+  避: { cls: "bad", text: "今日：避" },
+  null: { cls: "muted", text: "今日：无事可做" },
+};
+
+async function loadPlaybook() {
+  $("pb-note").textContent = "加载中…";
+  PLAYBOOK = await api("/playbook").catch((error) => ({ error: error.message }));
+  renderPlaybook();
+}
+
+function playSection(title, items) {
+  return `<div><h4>${title}</h4><ul>${items.map((item) => `<li>${item}</li>`).join("")}</ul></div>`;
+}
+
+function renderPlaybook() {
+  const note = $("pb-note");
+  const envBox = $("pb-env");
+  const target = $("pb-plays");
+  if (!PLAYBOOK) return;
+  if (PLAYBOOK.error) {
+    note.textContent = "";
+    envBox.innerHTML = `<div class="empty">${PLAYBOOK.error}</div>`;
+    target.innerHTML = "";
+    return;
+  }
+  const env = PLAYBOOK.environment;
+  note.textContent = env.as_of ? `截至 ${env.as_of}` : "";
+  envBox.innerHTML = `
+    <div class="row" style="gap:14px;align-items:baseline;margin-bottom:8px">
+      ${env.quadrant ? `<span class="badge">${env.quadrant}</span>` : '<span class="badge muted">量价数据缺失</span>'}
+      ${env.tone_label ? `<span class="badge ${env.tone_label === "风险偏好回升" ? "good" : env.tone_label === "风险偏好回落" ? "bad" : "muted"}">外围 ${env.tone_label}</span>` : '<span class="badge muted">无外围快照</span>'}
+      <span class="muted" style="font-size:12px">标注规则在后端 playbook 里，可读可测</span>
+    </div>
+    <p style="margin:0;line-height:1.7">${env.summary}</p>`;
+  target.innerHTML = PLAYBOOK.plays
+    .map((play) => {
+      const meta = STATUS_META[String(play.status)] || STATUS_META.null;
+      return `<details class="card" style="margin-bottom:10px">
+      <summary>
+        <b>${play.name}</b>
+        <span class="badge">${play.scope}</span>
+        <span class="badge ${meta.cls}">${meta.text}</span>
+        <span class="muted" style="font-size:13px">${play.one_liner}</span>
+      </summary>
+      <div class="play-body">
+        <p class="muted" style="margin:10px 0 0;font-size:13px;line-height:1.7">今日：${play.today_note}</p>
+        <div class="grid2">
+          ${playSection("观察面", play.watch)}
+          ${playSection("成立机制", play.enter)}
+          ${playSection("失败与退出", play.exit)}
+          ${playSection("注意事项", play.caveats)}
+        </div>
+      </div>
+    </details>`;
+    })
+    .join("");
+  $("pb-disclaimer").textContent = PLAYBOOK.disclaimer;
+}
 
 /* ---------- 板块分析 ---------- */
 /* 板块回答两个问题：哪些板块在动（等权涨幅 + 上涨占比），动的里面是谁
