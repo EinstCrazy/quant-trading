@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -31,10 +33,12 @@ class TestCatalog:
         for play in PLAYS:
             for section in (play.watch, play.enter, play.exit, play.caveats):
                 assert section, f"{play.name} 的 {section!r} 是空的"
-            # 观察面、成立、退出三节必须带具体条件（注意事项是劝告，不要求数字）
-            for section in (play.watch, play.enter, play.exit):
+            # 观察面与成立必须带具体条件；退出的条件形态多样（死叉、两根红柱、
+            # 停止补格），由动作断言管——两道网合起来守住「可核对、可执行」
+            for section in (play.watch, play.enter):
                 assert any(
-                    any(ch.isdigit() for ch in text) or "量" in text or "MA" in text
+                    any(ch.isdigit() for ch in text)
+                    or any(word in text for word in ("量", "MA", "止损", "止盈", "一格"))
                     for text in section
                 ), f"{play.name} 有一条没有具体条件：{section}"
 
@@ -47,16 +51,29 @@ class TestCatalog:
         for play in PLAYS:
             joined = " ".join(play.exit)
             assert any(
-                word in joined for word in ("止损", "减", "撤", "收掉", "清", "不接", "不再")
+                word in joined
+                for word in (
+                    "止损",
+                    "减",
+                    "撤",
+                    "收掉",
+                    "清",
+                    "不接",
+                    "不再",
+                    "停止",
+                    "结束",
+                    "出场",
+                )
             ), f"{play.name} 的退出机制没有可执行动作"
 
     def test_no_win_rate_claims_anywhere(self):
-        """没回测过就不给胜率——价位百分比可以有，胜率表述不可以有。"""
+        """没回测过就不给胜率数字——「胜率低赔率高」这种风险描述可以，「胜率 70%」不行。"""
         for play in PLAYS:
             for text in (*play.watch, *play.enter, *play.exit, *play.caveats, play.one_liner):
-                assert "胜率" not in text and "成功率达" not in text and "命中" not in text, (
-                    f"{play.name} 里出现了胜率式表述：{text}"
+                assert not re.search(r"胜率[达超过约为]*\s*[\d.]+\s*%?", text), (
+                    f"{play.name} 里出现了胜率数字：{text}"
                 )
+                assert "成功率达" not in text and "命中率高" not in text
 
 
 class TestTodayRules:
@@ -98,8 +115,8 @@ class TestTodayRules:
                 analyze({"quadrant": "放量上涨", "ratio": 1.6, "level": "放量", "streak": 1}, None),
                 "ground-volume",
             )["status"]
-            is None
-        )  # 量能充沛的日子这条战法无事可做
+            == "歇"
+        )  # 量能充沛的日子这条战法无事可做——不是「不适用」，是「歇」
 
     def test_volume_discipline_always_applies(self):
         for env in (SUNNY, GLOOMY, DRY, BALANCED):
@@ -124,6 +141,40 @@ class TestTodayRules:
         # 战法本体照给：环境缺失不等于战法失效
         assert payload["n_plays"] == len(PLAYS)
         assert "缺失" in payload["environment"]["summary"]
+
+    def test_grid_stays_out_of_downtrends_not_just_downtrends_with_volume(self):
+        # 缩量下跌也是单边：还在寻底，区间下沿可能不保
+        assert _by_key(analyze(DRY, None), "grid")["status"] == "慎"
+        assert _by_key(analyze(BALANCED, None), "grid")["status"] == "顺"
+
+    def test_form_plays_do_not_pretend_to_read_the_environment(self):
+        # 仙人指路、缺口回补、MACD 是个股 K 线上的形态：不挂环境规则
+        for key in ("immortal-guide", "gap-fill", "macd-second-cross"):
+            play = _by_key(analyze(SUNNY, None), key)
+            assert play["status"] is None
+            assert "不依赖" in play["today_note"] or "个股" in play["today_note"]
+
+    def test_first_board_is_avoided_in_cold_markets(self):
+        assert _by_key(analyze(DRY, None), "first-board")["status"] == "避"
+        assert _by_key(analyze(SUNNY, None), "first-board")["status"] == "慎"
+
+    def test_turtle_breakout_follows_the_market_volume(self):
+        assert _by_key(analyze(GLOOMY, None), "turtle")["status"] == "避"
+        assert _by_key(analyze(SUNNY, None), "turtle")["status"] == "顺"
+
+    def test_the_catalog_now_carries_the_classic_public_plays(self):
+        names = {play.name for play in PLAYS}
+        assert {
+            "海龟突破（唐奇安通道）",
+            "MACD 二次金叉",
+            "W 底（双重底）",
+            "黄金坑",
+            "仙人指路",
+            "缺口回补",
+            "网格交易",
+            "首板打板（涨停首板）",
+        } <= names
+        assert len(PLAYS) == 16
 
     def test_summary_quotes_both_sources_when_available(self):
         summary = analyze(SUNNY, {"label": "风险偏好回落", "score": -0.8})["environment"]
