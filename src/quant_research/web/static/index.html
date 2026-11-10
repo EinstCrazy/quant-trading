@@ -1961,7 +1961,26 @@ function renderSectors() {
     target.innerHTML = `<div class="empty">${SECTORS.error}</div>`;
     return;
   }
-  note.textContent = `近 ${SECTORS.days} 日 · ${SECTORS.as_of} · ${SECTORS.provider} · ${SECTORS.n_sectors} 个板块 · 覆盖 ${SECTORS.n_covered}/${SECTORS.n_symbols} 只`;
+  note.textContent = `近 ${SECTORS.days} 日 · ${SECTORS.as_of} · ${SECTORS.provider} · ${SECTORS.n_sectors} 个板块 · 覆盖 ${SECTORS.n_covered}/${SECTORS.n_symbols} 只${
+    SECTORS.overseas_fetched_at
+      ? " · 外围快照 " + new Date(SECTORS.overseas_fetched_at).toLocaleString("zh-CN", { hour12: false })
+      : " · 无外围快照（去「外围」页刷新）"
+  }`;
+  const links = SECTORS.links || {};
+  // 关联是关键词匹配出来的：锚品种行情没抓到的板块不显示，宁缺毋假
+  const linkCell = (row) => {
+    const link = links[row.sector];
+    if (!link) return '<span class="muted">—</span>';
+    return (
+      link.items
+        .map((item) =>
+          item.change_bp != null
+            ? `<span title="截至 ${item.as_of || "—"}"><b>${item.name} ${item.change_bp > 0 ? "+" : ""}${item.change_bp}bp</b></span>`
+            : `<span title="截至 ${item.as_of || "—"}">${item.name} ${pctCell(item.change_pct)}</span>`,
+        )
+        .join(" · ") + `<div class="muted" style="font-size:11px;line-height:1.5;margin-top:2px">${link.note}</div>`
+    );
+  };
   const rows = SECTORS.sectors.map((row) => {
     const thin = row.n <= 1; // 单票板块没有「领涨/领跌」可言
     return `<tr data-sector="${row.sector.replace(/"/g, "&quot;")}">
@@ -1975,6 +1994,7 @@ function renderSectors() {
       <td>${row.amount == null ? "—" : row.amount.toFixed(1)}</td>
       <td style="text-align:left">${thin ? '<span class="muted">—</span>' : namesCell(row.leaders)}</td>
       <td style="text-align:left">${thin ? '<span class="muted">—</span>' : namesCell(row.laggards)}</td>
+      <td style="text-align:left">${linkCell(row)}</td>
     </tr>`;
   });
   target.innerHTML = rows.length
@@ -1989,6 +2009,7 @@ function renderSectors() {
         "成交额(亿)",
         "领涨",
         "领跌",
+        "外围关联",
       ]
         .map((c) => `<th data-sortable title="点击排序">${c}</th>`)
         .join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`

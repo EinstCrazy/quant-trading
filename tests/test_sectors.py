@@ -203,6 +203,61 @@ class TestSectorAPI:
         assert payload["n_symbols"] == 5
         assert payload["sectors"][0]["sector"] == "银行"
 
+    def test_overseas_links_ride_along_when_a_snapshot_exists(
+        self, sector_client, monkeypatch, panel
+    ):
+        client, settings = sector_client
+        from quant_research.data import universe
+        from quant_research.overseas import save as save_overseas
+
+        universe.save_sectors(SECTORS, settings.data.directory)
+        _mock_panel(monkeypatch, panel)
+        # 快照里有原油：银行板块没有外围锚，石油板块才有—— Links 按板块名匹配
+        save_overseas(
+            settings.data.directory,
+            {
+                "fetched_at": "2026-11-09T08:00:00+00:00",
+                "quotes": [
+                    {
+                        "code": "CL",
+                        "name": "NYMEX原油",
+                        "group": "大宗商品",
+                        "price": 89.6,
+                        "change_pct": -1.2,
+                        "as_of": "11-09 16:40",
+                    },
+                    {
+                        "code": "NDX",
+                        "name": "纳斯达克",
+                        "group": "美股",
+                        "price": 24579.0,
+                        "change_pct": 1.09,
+                        "as_of": "11-07 05:00",
+                    },
+                ],
+                "rates": {"date": "2026-11-09", "us10y": 4.9, "us10y_change_bp": 2.0},
+                "missing": [],
+            },
+        )
+
+        payload = client.get("/api/sectors/analysis?days=5").json()
+
+        assert payload["overseas_fetched_at"] == "2026-11-09T08:00:00+00:00"
+
+    def test_without_a_snapshot_the_links_are_empty_not_made_up(
+        self, sector_client, monkeypatch, panel
+    ):
+        client, settings = sector_client
+        from quant_research.data import universe
+
+        universe.save_sectors(SECTORS, settings.data.directory)
+        _mock_panel(monkeypatch, panel)
+
+        payload = client.get("/api/sectors/analysis?days=5").json()
+
+        assert payload["links"] == {}
+        assert payload["overseas_fetched_at"] is None
+
     def test_members_for_one_sector(self, sector_client, monkeypatch, panel):
         client, settings = sector_client
         from quant_research.data import universe

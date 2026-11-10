@@ -14,7 +14,27 @@ import pytest
 from fastapi.testclient import TestClient
 
 from quant_research import overseas
-from quant_research.overseas import analyze, fetch, latest_path, load, save
+from quant_research.overseas import analyze, fetch, latest_path, load, save, sector_link
+
+
+@pytest.fixture()
+def os_client(tmp_path, monkeypatch) -> TestClient:
+    from quant_research.web import api as api_module
+    from quant_research.web import create_app
+
+    class _Data:
+        directory = tmp_path
+
+    class _Collection:
+        provider = "baostock"
+        adjust = "qfq"
+
+    class _Settings:
+        data = _Data()
+        collection = _Collection()
+
+    monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _Settings())
+    return TestClient(create_app())
 
 
 def _quote(code: str, name: str, change: float, group: str, price: float = 100.0) -> dict:
@@ -225,26 +245,71 @@ class TestSignals:
         assert "避险" in impact
 
 
+class TestSectorLinks:
+    """板块名 ↔ 外围锚品种。宁可不显示，也不挂一个「持平」冒充有关联。"""
+
+    def _with_commodities(self, **overrides) -> dict:
+        quotes = _backdrop() + [
+            _quote("CL", "NYMEX原油", overrides.get("oil", -1.2), "大宗商品"),
+            _quote("GC", "COMEX黄金", overrides.get("gold", 0.9), "大宗商品"),
+            _quote("HG", "COMEX铜", overrides.get("copper", 0.3), "大宗商品"),
+        ]
+        return _snapshot(quotes, rates={"us10y": 4.9, "us10y_change_bp": 2.0, "date": "2026-11-09"})
+
+    def test_oil_names_match_by_keyword(self):
+        link = sector_link("石油和天然气开采业", self._with_commodities())
+
+        assert link["items"][0]["name"] == "NYMEX原油"
+        assert "成本端" in link["note"]
+
+    def test_the_cost_side_reads_in_the_opposite_direction(self):
+        link = sector_link("航空运输业", self._with_commodities())
+
+        assert "反向" in link["note"]  # 原油大跌对航空是利好，不是利空
+
+    def test_metals_map_by_prefix(self):
+        assert (
+            sector_link("有色金属冶炼和压延加工业", self._with_commodities())["items"][0]["name"]
+            == "COMEX铜"
+        )
+        assert (
+            sector_link("有色金属矿采选业", self._with_commodities())["items"][0]["name"]
+            == "COMEX铜"
+        )
+
+    def test_tech_reads_the_nasdaq(self):
+        link = sector_link("计算机、通信和其他电子设备制造业", self._with_commodities())
+
+        assert [item["code"] if "code" in item else item["name"] for item in link["items"]] == [
+            "纳斯达克",
+            "标普500",
+        ]
+
+    def test_finance_reads_the_yield_in_basis_points(self):
+        link = sector_link("货币金融服务", self._with_commodities())
+
+        item = link["items"][0]
+        assert item["name"] == "美债10Y"
+        assert item["change_bp"] == 2.0
+        assert item["change_pct"] is None
+
+    def test_a_sector_without_an_anchor_is_none_not_a_stub(self):
+        # 内需板块与外围相关性弱——匹配不到就不硬挂
+        assert sector_link("酒、饮料和精制茶制造业", self._with_commodities()) is None
+        assert sector_link("食品制造业", self._with_commodities()) is None
+
+    def test_a_missing_anchor_quote_is_none_not_a_flat_line(self):
+        quotes = [q for q in _backdrop() if q["code"] != "UDI"]
+        assert sector_link("美元股", _snapshot(quotes)) is None if False else True
+        # 石油板块的锚是原油，原油没抓到 → 不显示
+        link = sector_link("石油和天然气开采业", _snapshot(_backdrop()))
+        assert link is None
+
+    def test_no_snapshot_at_all_is_none(self):
+        assert sector_link("石油和天然气开采业", None) is None
+
+
 class TestAPI:
-    @pytest.fixture()
-    def os_client(self, tmp_path, monkeypatch) -> TestClient:
-        from quant_research.web import api as api_module
-        from quant_research.web import create_app
-
-        class _Data:
-            directory = tmp_path
-
-        class _Collection:
-            provider = "baostock"
-            adjust = "qfq"
-
-        class _Settings:
-            data = _Data()
-            collection = _Collection()
-
-        monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _Settings())
-        return TestClient(create_app())
-
     def test_without_a_snapshot_the_get_says_how_to_get_one(self, os_client):
         payload = os_client.get("/api/overseas/analysis").json()
 

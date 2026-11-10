@@ -1985,6 +1985,7 @@ def sector_analysis(
     panel = _load_panel(source, basis)
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    snapshot = overseas_mod.load(settings.data.directory)
     try:
         rows = sectors_mod.analyze(panel, sector_map, name_of, days=days)
     except ValueError as exc:
@@ -1999,6 +2000,14 @@ def sector_analysis(
         # 有板块归属且在面板里的票：覆盖率和「板块涨幅」的可信度直接相关
         "n_covered": sum(row.n for row in rows),
         "sectors": [row.to_dict() for row in rows],
+        # 外围关联：只读本地快照，不联网——板块页刷新不该变成一次抓取。
+        # 关键词匹配不到、或锚品种行情缺失的板块不出现，宁缺毋假。
+        "links": {
+            row.sector: link
+            for row in rows
+            if (link := overseas_mod.sector_link(row.sector, snapshot)) is not None
+        },
+        "overseas_fetched_at": snapshot.get("fetched_at") if snapshot else None,
     }
 
 

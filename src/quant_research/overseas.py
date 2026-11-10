@@ -30,6 +30,7 @@ __all__ = [
     "latest_path",
     "load",
     "save",
+    "sector_link",
 ]
 
 DIRECTORY = "overseas"
@@ -46,6 +47,13 @@ _INDEX_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 # 外盘商品：黄金避险、原油成本端、铜需求端、白银跟黄金。
 _COMMODITY_CODES = ("GC", "CL", "HG", "SI")
+# 接口只回名称不回代码，按名称对回关注清单里的代码——板块关联按代码找锚
+_COMMODITY_CODE_BY_NAME = {
+    "COMEX黄金": "GC",
+    "NYMEX原油": "CL",
+    "COMEX铜": "HG",
+    "COMEX白银": "SI",
+}
 
 # 展示顺序：分组按上面的清单，组内按清单里的代码顺序——接口返回的顺序
 # 是按行情活跃度排的，读起来会跳。
@@ -76,6 +84,80 @@ def _num(value: Any, digits: int = 2) -> float | None:
 
 def latest_path(directory: Path | str) -> Path:
     return Path(directory).expanduser() / DIRECTORY / _FILENAME
+
+
+# --- 板块 × 外围 --------------------------------------------------------------
+
+
+# 板块名里的关键词 → 外围品种 → 一句联动说明。只挂有真实传导路径的：
+# 内需板块（食品、白酒）与外围相关性弱，匹配不到就显示 —，不硬挂一个
+# 品种上去充数。US10Y 是伪代码，取的是 rates 里的美债收益率。
+_SECTOR_LINKS: tuple[tuple[tuple[str, ...], tuple[str, ...], str], ...] = (
+    (
+        ("石油", "天然气", "油服"),
+        ("CL",),
+        "原油是开采板块的收入端；油价下行时化工、航空的成本端反而受益",
+    ),
+    (("黄金", "贵金属"), ("GC",), "金价直接决定黄金股的利润与情绪"),
+    (("有色", "铜"), ("HG",), "铜价跟踪全球制造业需求，是周期板块的先行指标"),
+    (
+        ("计算机", "通信", "电子", "半导体", "软件"),
+        ("NDX", "SPX"),
+        "纳指是全球科技股风向标：隔夜科技行情直接影响开盘情绪",
+    ),
+    (
+        ("银行", "保险", "证券", "货币金融", "非银"),
+        ("US10Y",),
+        "美债长端利率影响保险投资收益与成长/价值风格的切换",
+    ),
+    (("航空", "航运", "物流"), ("CL",), "原油是成本端（反向）：油价大跌对航空反而是利好"),
+)
+
+
+def sector_link(sector_name: str, snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    """一个板块在外围有哪些锚品种，各自最新涨跌多少。
+
+    匹配不到关键词、或者锚品种的行情没抓到，都返回 ``None``——宁可不显示，
+    也不挂一个「持平」上去冒充有关联。
+    """
+    if not snapshot:
+        return None
+    quotes = snapshot.get("quotes") or []
+    rates = snapshot.get("rates") or {}
+    for keywords, codes, note in _SECTOR_LINKS:
+        if not any(word in sector_name for word in keywords):
+            continue
+        items: list[dict[str, Any]] = []
+        for code in codes:
+            if code == "US10Y":
+                if rates.get("us10y") is not None:
+                    change = rates.get("us10y_change_bp")
+                    items.append(
+                        {
+                            "name": "美债10Y",
+                            "change_pct": None,
+                            "change_bp": change,
+                            "as_of": rates.get("date"),
+                        }
+                    )
+                continue
+            row = next(
+                (q for q in quotes if q["code"] == code and q.get("change_pct") is not None),
+                None,
+            )
+            if row is not None:
+                items.append(
+                    {
+                        "name": row["name"],
+                        "change_pct": row["change_pct"],
+                        "change_bp": None,
+                        "as_of": row["as_of"],
+                    }
+                )
+        if not items:
+            return None
+        return {"sector": sector_name, "items": items, "note": note}
+    return None
 
 
 # --- 采集 ----------------------------------------------------------------------
@@ -122,7 +204,7 @@ def fetch() -> dict[str, Any]:
             quotes.append(
                 {
                     "group": "大宗商品",
-                    "code": "COMEX",
+                    "code": _COMMODITY_CODE_BY_NAME.get(str(row["名称"]).strip(), "COMMODITY"),
                     "name": str(row["名称"]).strip(),
                     "price": _num(row["最新价"]),
                     "change_pct": _num(row["涨跌幅"]),
