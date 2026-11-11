@@ -1093,3 +1093,40 @@ class TestBreadthUI:
         )
         assert "breadth_mod.fetch()" in nightly
         assert 'result["market_breadth"]' in nightly
+
+
+class TestHoldingsTotals:
+    """持仓分析加账户市值汇总 + 个股仓位占比列。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_weight_column_exists(self):
+        """个股列表「占比」列：编辑行与正常行都有。"""
+        html = self._html()
+        assert '"占比"' in html
+        # 全文件恰两处：编辑行 + 正常行（切片从定义处起会把自身算进去）
+        assert html.count("weightOf(p)") >= 2
+
+    def test_weight_denominator_is_valued_only(self):
+        """占比分母 = 该账户**有现价**的市值合计——无现价的票进不了分母
+        （不然占比没法定义），汇总里用 N/M 只有行情写明覆盖面。"""
+        html = self._html()
+        render = html[html.index("const byAccount") : html.index("const rows = visible.map")]
+        assert "pos.market_value != null" in render
+        assert "只有行情" in html[html.index("const totals") :]
+
+    def test_account_totals_and_grand_total(self):
+        html = self._html()
+        assert 'id="pf-totals"' in html
+        assert "全部合计" in html
+        assert "浮动盈亏" in html[html.index("const totals") :]
+
+    def test_unpriced_weight_is_blank_not_zero(self):
+        """无现价的票占比留空——不把缺失装成 0%。"""
+        html = self._html()
+        render = html[html.index("const weightOf") : html.index("const rows = visible.map")]
+        assert 'return ""' in render

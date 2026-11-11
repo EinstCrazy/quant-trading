@@ -175,6 +175,8 @@
   .pf-plan-title { font-size: 13px; font-weight: 700; margin: 10px 0 4px; }
   .pf-plan-row { display: grid; grid-template-columns: 46px 1fr; gap: 8px; font-size: 12.5px; margin: 2px 0; }
   .pf-plan-tag { font-weight: 700; color: var(--muted); }
+  .pf-total-row { font-size: 12.5px; color: var(--muted); margin: 2px 0; }
+  .pf-total-row b { color: inherit; }
   .breadth-bar { display: flex; height: 10px; border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
   .breadth-bar .up { background: #e05252; }
   .breadth-bar .down { background: #2e9e5b; }
@@ -3881,6 +3883,27 @@ function renderHoldings() {
     '<option value="">全部账户</option>' +
     names.map((name) => `<option value="${name}"${name === active ? " selected" : ""}>${name}</option>`).join("");
   const visible = HOLDINGS.positions.filter((p) => !active || (p.account || "默认") === active);
+  /* 账户汇总 + 仓位占比：占比分母 = 该账户**有现价**的市值合计——
+     无现价的票进不了分母（否则占比没法定义），在汇总里写明 N/M 只有行情，
+     不把缺失装成 0。 */
+  const byAccount = {};
+  for (const pos of HOLDINGS.positions) {
+    const who = pos.account || "默认";
+    const a = (byAccount[who] ||= { n: 0, valued: 0, mv: 0, pnl: 0, cost: 0 });
+    a.n += 1;
+    if (pos.market_value != null) {
+      a.valued += 1;
+      a.mv += pos.market_value;
+      a.pnl += pos.pnl || 0;
+      a.cost += (pos.cost || 0) * (pos.shares || 0);
+    }
+  }
+  const weightOf = (pos) => {
+    const a = byAccount[pos.account || "默认"];
+    if (!a || !a.mv || pos.market_value == null) return "";
+    const w = (pos.market_value / a.mv) * 100;
+    return `<span title="占${pos.account || "默认"}账户有现价市值（${fmt(a.mv, 2)}）的比重">${w.toFixed(1)}%</span>`;
+  };
   const rows = visible.map((p) => {
     const change = p.change_pct == null ? "—" : `${p.change_pct > 0 ? "+" : ""}${p.change_pct.toFixed(2)}%`;
     const tone = p.change_pct > 0 ? "up" : p.change_pct < 0 ? "down" : "muted";
@@ -3900,6 +3923,7 @@ function renderHoldings() {
         `<input id="pf-e-cost" type="number" step="0.001" min="0.001" value="${p.cost}" style="width:90px">`,
         p.last_close == null ? "—" : fmt(p.last_close, 2),
         p.market_value == null ? "—" : fmt(p.market_value, 2),
+        weightOf(p),
         `<span class="${pnlTone}">${pnl}</span>`,
         `<span class="${pnlTone}">${pnlPct}</span>`,
         `<span class="${tone}">${change}</span>`,
@@ -3915,6 +3939,7 @@ function renderHoldings() {
       fmt(p.cost, 2),
       p.last_close == null ? "—" : fmt(p.last_close, 2),
       p.market_value == null ? "—" : fmt(p.market_value, 2),
+      weightOf(p),
       `<span class="${pnlTone}">${pnl}</span>`,
       `<span class="${pnlTone}">${pnlPct}</span>`,
       `<span class="${tone}">${change}</span>`,
@@ -3922,12 +3947,42 @@ function renderHoldings() {
       `<a data-pf-edit="${p.symbol}" data-pf-account="${who}" class="muted" style="cursor:pointer">编辑</a> <a data-pf-del="${p.symbol}" data-pf-account="${who}" class="muted" style="cursor:pointer">移除</a>`,
     ];
   });
-  $("pf-table").innerHTML = rows.length
-    ? table(
-        ["账户", "代码", "名称", "股数", "成本", "现价", "市值", "浮动盈亏", "盈亏率", "日涨跌", "备注", ""],
-        rows,
-      )
-    : '<div class="empty">还没有持仓：填代码、成本价、股数，加入即可开始复盘</div>';
+  const totals = Object.entries(byAccount)
+    .map(([name, a]) => {
+      const parts = [
+        `<b>${name}</b>：市值 <b>${fmt(a.mv, 2)}</b>`,
+        `${a.valued}/${a.n} 只有行情`,
+      ];
+      if (a.mv) {
+        const pnlPct = a.cost ? ((a.pnl / a.cost) * 100).toFixed(2) : null;
+        parts.push(
+          `浮动盈亏 <span class="${a.pnl > 0 ? "up" : a.pnl < 0 ? "down" : "muted"}">${a.pnl > 0 ? "+" : ""}${fmt(a.pnl, 2)}${pnlPct ? `（${a.pnl > 0 ? "+" : ""}${pnlPct}%）` : ""}</span>`,
+        );
+      }
+      return `<div class="pf-total-row">${parts.join(" · ")}</div>`;
+    })
+    .join("");
+  const all = Object.values(byAccount).reduce(
+    (acc, a) => ({ n: acc.n + a.n, valued: acc.valued + a.valued, mv: acc.mv + a.mv, pnl: acc.pnl + a.pnl, cost: acc.cost + a.cost }),
+    { n: 0, valued: 0, mv: 0, pnl: 0, cost: 0 },
+  );
+  const allParts = all.mv
+    ? [
+        `全部合计（${Object.keys(byAccount).length} 个账户）：市值 <b>${fmt(all.mv, 2)}</b>`,
+        `${all.valued}/${all.n} 只有行情`,
+        `浮动盈亏 <span class="${all.pnl > 0 ? "up" : all.pnl < 0 ? "down" : "muted"}">${all.pnl > 0 ? "+" : ""}${fmt(all.pnl, 2)}</span>`,
+      ]
+    : [];
+  $("pf-table").innerHTML =
+    (rows.length
+      ? table(
+          ["账户", "代码", "名称", "股数", "成本", "现价", "市值", "占比", "浮动盈亏", "盈亏率", "日涨跌", "备注", ""],
+          rows,
+        )
+      : '<div class="empty">还没有持仓：填代码、成本价、股数，加入即可开始复盘</div>') +
+    (totals
+      ? `<div id="pf-totals" style="margin-top:8px">${totals}${allParts.length ? `<div class="pf-total-row" style="border-top:1px dashed #eceff3;padding-top:6px;margin-top:4px">${allParts.join(" · ")}</div>` : ""}</div>`
+      : "");
   $("pf-table").querySelectorAll("[data-pf-del]").forEach((el) => {
     el.addEventListener("click", async () => {
       const account = el.dataset.pfAccount;
