@@ -30,6 +30,9 @@ collect = [
 web = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
+    # 批量导入的 Excel 文件上传：multipart 解码 + 工作簿解析
+    "python-multipart>=0.0.9",
+    "openpyxl>=3.1",
 ]
 futu = [
     # Live quotes and trading through Futu's OpenAPI. Also needs the OpenD

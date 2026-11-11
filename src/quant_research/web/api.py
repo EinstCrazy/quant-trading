@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from openpyxl.utils import get_column_letter
 
 from quant_research import holdings as holdings_store
 from quant_research import overseas as overseas_mod
@@ -2326,6 +2327,154 @@ def _parse_position_lines(text: str) -> list[dict[str, Any]]:
             continue
         entries.append({"symbol": tokens[0], "shares": tokens[1], "cost": tokens[2]})
     return entries
+
+
+_EXCEL_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    # 宽容映射：用户表格的表头五花八门，能对上的都对上
+    "symbol": ("代码", "证券代码", "股票代码", "代码/code", "symbol", "code"),
+    "name": ("名称", "股票名称", "证券简称", "名称/name", "name"),
+    "categories": ("分类", "分组", "标签", "板块", "备注分类"),
+    "shares": ("股数", "数量", "持仓数量", "持股数", "shares", "数量/股"),
+    "cost": ("成本", "成本价", "买入价", "成本单价", "持仓成本", "cost"),
+}
+
+
+def _rows_from_excel(content: bytes) -> tuple[list[str], list[dict[str, object]]]:
+    """读工作簿第一个 sheet：返回 (表头, 行字典列表)。
+
+    表头必须能认出「代码」列——认不出来就如实报错并列出实际表头，
+    不猜。空行（整行无值）跳过；数字单元格可能是 int/float/str，原样
+    交给下游的解析与校验。
+    """
+    import io
+
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
+
+    try:
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400, detail=f"读不了这个文件：{type(exc).__name__}: {exc}"
+        ) from exc
+    sheet = workbook.active
+    if sheet is None:
+        raise HTTPException(status_code=400, detail="工作簿没有工作表")
+    rows_iter = sheet.iter_rows(values_only=True)
+    header = next(rows_iter, None)
+    if header is None:
+        raise HTTPException(status_code=400, detail="表格是空的")
+    headers = [str(cell).strip() if cell is not None else "" for cell in header]
+    rows: list[dict[str, object]] = []
+    line = 1  # 表头占第 1 行；空行也占号——报告要用 Excel 行号，错位比拒绝更误导
+    for values in rows_iter:
+        line += 1
+        if values is None or all(value is None or str(value).strip() == "" for value in values):
+            continue
+        row = {get_column_letter(i + 1): value for i, value in enumerate(values)}
+        row["_line"] = line
+        rows.append(row)
+    return headers, rows
+
+
+def _map_excel_headers(headers: list[str]) -> dict[str, str]:
+    """表头 → 标准字段名；返回 {标准名: 列字母}。找不到代码列直接报错。"""
+    lowered = {
+        h.strip().lower(): get_column_letter(i + 1) for i, h in enumerate(headers) if h.strip()
+    }
+    mapping: dict[str, str] = {}
+    for field, aliases in _EXCEL_HEADER_ALIASES.items():
+        for alias in aliases:
+            if alias.lower() in lowered:
+                mapping[field] = lowered[alias.lower()]
+                break
+    if "symbol" not in mapping:
+        raise HTTPException(
+            status_code=400,
+            detail=f"没认出「代码」列。实际表头：{headers}。把代码列命名为「代码」或「证券代码」",
+        )
+    return mapping
+
+
+def _excel_field(row: dict[str, object], mapping: dict[str, str], field: str) -> object:
+    value = row.get(mapping[field])
+    return value if value is not None else None
+
+
+@router.post("/watchlist/import/excel")
+async def watchlist_import_excel(file: UploadFile) -> dict[str, Any]:
+    """Excel 批量导入自选：列「代码 [名称] [分类]」，表头宽容映射。
+
+    与粘贴导入同一套诚实约定：已在自选里的不动、invalid 逐条带行号。
+    """
+    content = await file.read()
+    headers, rows = _rows_from_excel(content)
+    mapping = _map_excel_headers(headers)
+    entries: list[dict[str, Any]] = []
+    skipped_rows: list[dict[str, str]] = []
+    lines: list[int] = []  # entries[i] 来自 Excel 第几行（1 是表头）
+    for row in rows:
+        symbol = _excel_field(row, mapping, "symbol")
+        if symbol is None or str(symbol).strip() == "":
+            skipped_rows.append({"line": str(row["_line"]), "reason": "代码为空"})
+            continue
+        lines.append(int(str(row.pop("_line"))))  # object → str → int
+        raw_categories = _excel_field(row, mapping, "categories")
+        categories = (
+            [
+                c.strip()
+                for c in str(raw_categories).replace("，", ",").replace("、", ",").split(",")
+                if c.strip()
+            ]
+            if raw_categories is not None
+            else []
+        )
+        entries.append(
+            {
+                "symbol": str(symbol).strip(),
+                "name": str(_excel_field(row, mapping, "name") or "").strip(),
+                "categories": categories,
+            }
+        )
+    result = watchlist_store.import_stocks(load_settings().data.directory, entries)
+    invalid = [
+        {**item, "line": str(lines[int(item["line"]) - 1])}  # 行号换成 Excel 行号
+        for item in result["invalid"]
+    ]
+    return {**result, "n_added": len(result["added"]), "invalid": [*invalid, *skipped_rows]}
+
+
+@router.post("/portfolio/import/excel")
+async def portfolio_import_excel(file: UploadFile) -> dict[str, Any]:
+    """Excel 批量导入持仓：列「代码 股数 成本」，默认跳过已有持仓。"""
+    content = await file.read()
+    headers, rows = _rows_from_excel(content)
+    mapping = _map_excel_headers(headers)
+    missing = [field for field in ("shares", "cost") if field not in mapping]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"没认出{'和'.join('「股数」' if m == 'shares' else '「成本价」' for m in missing)}列。实际表头：{headers}",
+        )
+    entries: list[dict[str, Any]] = []
+    skipped_rows: list[dict[str, str]] = []
+    lines: list[int] = []
+    for row in rows:
+        symbol = _excel_field(row, mapping, "symbol")
+        if symbol is None or str(symbol).strip() == "":
+            skipped_rows.append({"line": str(row["_line"]), "reason": "代码为空"})
+            continue
+        lines.append(int(str(row.pop("_line"))))  # object → str → int
+        entries.append(
+            {
+                "symbol": str(symbol).strip(),
+                "shares": _excel_field(row, mapping, "shares"),
+                "cost": _excel_field(row, mapping, "cost"),
+            }
+        )
+    result = holdings_store.import_positions(load_settings().data.directory, entries)
+    invalid = [{**item, "line": str(lines[int(item["line"]) - 1])} for item in result["invalid"]]
+    return {**result, "n_added": len(result["added"]), "invalid": [*invalid, *skipped_rows]}
 
 
 @router.post("/watchlist/import")
