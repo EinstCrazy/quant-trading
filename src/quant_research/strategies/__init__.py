@@ -7,6 +7,7 @@ from quant_research.strategies.base import (
     get_signal,
     register,
 )
+from quant_research.strategies.custom import custom_signal
 from quant_research.strategies.momentum import moving_average_signal
 from quant_research.strategies.random import random_signal
 from quant_research.strategies.tactics import (
@@ -20,6 +21,7 @@ __all__ = [
     "SignalFn",
     "apply_lag",
     "breakout_signal",
+    "custom_signal",
     "get_signal",
     "ma20_pullback_signal",
     "moving_average_signal",

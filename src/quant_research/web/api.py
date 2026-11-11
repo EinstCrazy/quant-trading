@@ -72,6 +72,7 @@ from quant_research.review import (
 from quant_research.scoring import screen, to_target_weights
 from quant_research.scoring.ledger import ScreenLedger, review
 from quant_research.strategies import STRATEGY_REGISTRY, get_signal
+from quant_research.strategies import custom as custom_mod
 from quant_research.volume import VolumeRules
 
 from .experiments import ExperimentStore
@@ -2215,6 +2216,101 @@ TACTIC_STRATEGIES: dict[str, tuple[str, dict[str, float]]] = {
     "breakout-20d-high": ("breakout-20d-high", {}),
     "pullback-ma20": ("pullback-ma20", {}),
 }
+
+
+@router.get("/strategies/custom/spec")
+def custom_strategy_spec() -> dict[str, Any]:
+    """自定义策略 DSL 的语法说明：界面直接渲染给用户看。"""
+    return {
+        "metrics": custom_mod.METRIC_SPEC,
+        "operators": {
+            "compare": [">", ">=", "<", "<=", "=="],
+            "logic": ["AND", "OR（不区分大小写）"],
+            "note": "比较右边可以是数字或另一个指标（如 close > ma20）；AND 优先于 OR，括号改变优先级",
+        },
+        "examples": [
+            "close > ma20 AND vol_ratio > 1.5",
+            "close > high20 OR (chg > 5 AND vol_ratio > 2)",
+            "close < low20 AND chg < -2",
+        ],
+        "notes": [
+            "出场条件留空 = 持有到样本结束（如实标注，不假装有出场）",
+            "窗口不足时指标为「不知道」，不触发信号（如上市不满 20 日的前高）",
+            "表达式在「0/1 信号 × 等权持有 × 含成本」的日线回测里跑——金字塔、盘中触发不在表达范围",
+        ],
+    }
+
+
+@router.post("/strategies/custom/validate")
+def custom_strategy_validate(payload: dict[str, Any]) -> dict[str, Any]:
+    """语法初步检测：逐条带字符位置。语法不挡语义——「close > ma20 AND
+    vol_ratio > 2」语法对但可能从未触发，那是回测要回答的问题。"""
+    errors = custom_mod.validate_expr(str(payload.get("expr") or ""))
+    exit_errors = (
+        custom_mod.validate_expr(str(payload.get("exit_expr") or ""))
+        if payload.get("exit_expr")
+        else []
+    )
+    return {
+        "ok": not errors and not exit_errors,
+        "errors": [{"pos": err.pos, "message": err.message, "field": "expr"} for err in errors]
+        + [{"pos": err.pos, "message": err.message, "field": "exit_expr"} for err in exit_errors],
+    }
+
+
+@router.post("/strategies/custom/backtest")
+def custom_strategy_backtest(payload: dict[str, Any]) -> dict[str, Any]:
+    """跑一条自定义策略的本样本回测：口径与战法验证一致。
+
+    先语法检测（400 + 逐条错误），再算信号——语法错了别浪费一次整
+    面板回测。从未触发如实说，不给空转净值。
+    """
+    expr = str(payload.get("expr") or "")
+    exit_expr = str(payload.get("exit_expr") or "") or None
+    errors = custom_mod.validate_expr(expr) + (
+        custom_mod.validate_expr(exit_expr) if exit_expr else []
+    )
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail="；".join(err.message for err in errors[:5]),
+        )
+
+    settings = load_settings()
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    except HTTPException as exc:
+        raise HTTPException(status_code=400, detail=f"面板不可用：{exc.detail}") from None
+
+    try:
+        kwargs: dict[str, Any] = {"expr": expr, "exit_expr": exit_expr}
+        if panel.has_field("amount"):
+            kwargs["amount"] = panel.field("amount")
+        signal = get_signal("custom")(panel.prices, **kwargs)
+    except ValueError as exc:
+        # vol_ratio 需要成交额而面板缺失——如实拒绝，不静默放行量条件
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    if not bool(signal.to_numpy().any()):
+        return {
+            "available": False,
+            "as_of": None,
+            "reason": "全样本从未触发——条件太严或面板窗口不足，不编结果",
+            "n_symbols": len(panel.symbols),
+        }
+
+    config = BacktestConfig.from_settings(settings)
+    result = run_signal_backtest(panel.prices, signal, weight_method="equal_weight", config=config)
+    metrics = _metrics(result.summary(benchmark_buy_hold(panel.prices)))
+    return {
+        "available": True,
+        "as_of": str(panel.prices.index[-1].date()),
+        "metrics": metrics,
+        "n_symbols": len(panel.symbols),
+        "n_days_in_market": int(signal.to_numpy().sum()),
+        "n_symbols_with_signal": int((signal.to_numpy().sum(axis=0) > 0).sum()),
+        "note": "出场条件留空 = 持有到样本结束" if not exit_expr else None,
+    }
 
 
 @router.get("/volume/ranking")

@@ -683,6 +683,29 @@
         </div>
         <div id="pv-body"></div>
       </div>
+      <div class="card">
+        <h3>自定义策略 <span class="muted" id="cs-note"></span></h3>
+        <p class="muted" style="margin:0 0 10px;line-height:1.7">用条件表达式定义你自己的战法，先检测语法再回测。比较右边可以是数字或另一个指标；AND / OR（不区分大小写）连接，括号改优先级。</p>
+        <div class="row" style="margin-bottom:8px">
+          <label>进场条件</label>
+          <input id="cs-expr" style="flex:1;font-family:monospace" placeholder="close > ma20 AND vol_ratio > 1.5">
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <label>出场条件</label>
+          <input id="cs-exit" style="flex:1;font-family:monospace" placeholder="可选：close < ma20 AND vol_ratio > 2（留空 = 持有到样本结束）">
+        </div>
+        <div class="row">
+          <button class="btn ghost" id="cs-validate">检测语法</button>
+          <button class="btn" id="cs-run">回测</button>
+          <span class="muted" id="cs-status"></span>
+        </div>
+        <div id="cs-errors" style="margin-top:8px"></div>
+        <details style="margin-top:10px">
+          <summary style="cursor:pointer" class="muted">语法说明：可用指标与运算符</summary>
+          <div id="cs-spec" style="margin-top:8px"></div>
+        </details>
+        <div id="cs-body" style="margin-top:10px"></div>
+      </div>
       <p class="muted" id="pb-disclaimer" style="font-size:12px;line-height:1.7;margin-top:12px"></p>
     </section>
 
@@ -2654,6 +2677,110 @@ function renderPlayVerify() {
 }
 
 $("pv-run").addEventListener("click", () => withButton($("pv-run"), runPlayVerify));
+
+/* ---------- 自定义策略 ----------
+   用户写条件表达式 → 先语法检测（逐条带字符位置）→ 再本样本回测。
+   语法说明从 /strategies/custom/spec 渲染：可用指标与口径跟着定义走，
+   界面上的说明不许和代码各说各话。 */
+let CUSTOM_SPEC = null;
+
+async function ensureCustomSpec() {
+  if (CUSTOM_SPEC) return CUSTOM_SPEC;
+  CUSTOM_SPEC = await api("/strategies/custom/spec");
+  return CUSTOM_SPEC;
+}
+
+async function renderCustomSpec() {
+  const spec = await ensureCustomSpec();
+  const target = $("cs-spec");
+  if (!spec) return;
+  target.innerHTML = `
+    <table><thead><tr><th>指标</th><th>口径</th></tr></thead><tbody>
+    ${Object.entries(spec.metrics)
+      .map(([name, desc]) => `<tr><td style="font-family:monospace">${name}</td><td class="muted">${desc}</td></tr>`)
+      .join("")}
+    </tbody></table>
+    <p class="muted" style="margin:8px 0 0;line-height:1.7">${spec.operators.note}</p>
+    <p class="muted" style="margin:6px 0 0;line-height:1.7">示例：${spec.examples
+      .map((ex) => `<code style="font-family:monospace">${ex}</code>`)
+      .join("、")}</p>
+    <ul class="muted" style="margin:6px 0 0;line-height:1.7">${spec.notes.map((n) => `<li>${n}</li>`).join("")}</ul>`;
+}
+
+function renderCustomErrors(errors) {
+  const target = $("cs-errors");
+  if (!errors?.length) {
+    target.innerHTML = "";
+    return;
+  }
+  target.innerHTML = `<div class="error-box"><b>语法问题（${errors.length}）</b><ul style="margin:6px 0 0;padding-left:18px">${errors
+    .map((e) => `<li>${e.field === "exit_expr" ? "出场条件" : "进场条件"} 第 ${e.pos + 1} 字符附近：${e.message}</li>`)
+    .join("")}</ul></div>`;
+}
+
+function renderCustomBacktest(result) {
+  const target = $("cs-body");
+  if (!result.available) {
+    target.innerHTML = `<div class="empty">${result.reason || "未触发"}</div>`;
+    return;
+  }
+  const m = result.metrics;
+  target.innerHTML = `
+    <table><thead><tr><th>累计收益</th><th>年化</th><th>夏普</th><th>最大回撤</th><th>日胜率</th><th>触发票数</th><th>在市票日</th></tr></thead><tbody>
+    <tr>
+      <td class="${m.cumulative_return >= 0 ? "up" : "down"}">${(m.cumulative_return * 100).toFixed(1)}%</td>
+      <td class="${m.cagr >= 0 ? "up" : "down"}">${(m.cagr * 100).toFixed(1)}%</td>
+      <td>${fmt(m.sharpe)}</td>
+      <td class="down">${(m.max_drawdown * 100).toFixed(1)}%</td>
+      <td>${(m.win_rate * 100).toFixed(0)}%</td>
+      <td>${result.n_symbols_with_signal}</td>
+      <td>${result.n_days_in_market}</td>
+    </tr>
+    </tbody></table>
+    <p class="muted" style="margin:8px 0 0;line-height:1.7">样本 ${result.n_symbols} 只 · 截至 ${result.as_of} · 等权含成本${result.note ? ` · ${result.note}` : ""}。亏不代表规则错，赚也不代表照做就对。</p>`;
+}
+
+$("cs-validate").addEventListener("click", async () => {
+  $("cs-errors").innerHTML = "";
+  try {
+    const payload = await api("/strategies/custom/validate", {
+      expr: $("cs-expr").value,
+      exit_expr: $("cs-exit").value,
+    });
+    renderCustomErrors(payload.errors);
+    if (payload.ok) toast("语法正确——可以回测了", "success");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+});
+
+$("cs-run").addEventListener("click", () =>
+  withButton($("cs-run"), async () => {
+    $("cs-errors").innerHTML = "";
+    $("cs-status").textContent = "";
+    try {
+      // 先本地走一遍语法检测：语法错别浪费一次整面板回测
+      const check = await api("/strategies/custom/validate", {
+        expr: $("cs-expr").value,
+        exit_expr: $("cs-exit").value,
+      });
+      if (!check.ok) {
+        renderCustomErrors(check.errors);
+        toast("语法有问题——先看提示", "error");
+        return;
+      }
+      const result = await api("/strategies/custom/backtest", {
+        expr: $("cs-expr").value,
+        exit_expr: $("cs-exit").value,
+      });
+      renderCustomBacktest(result);
+      if (result.available) toast("回测完成", "success");
+    } catch (error) {
+      renderError($("cs-body"), error.message, () => {});
+      toast(error.message, "error");
+    }
+  })
+);
 
 /* ---------- 批量导入（自选 / 持仓） ---------- */
 /* 粘贴一整批进来：幂等、逐条报告——成功几条、重复几条、失败几条

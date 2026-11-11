@@ -55,7 +55,13 @@ def test_registry_exposes_registered_strategies(sample_prices):
     assert "random" in STRATEGY_REGISTRY
 
     for name in STRATEGY_REGISTRY:
-        signal = get_signal(name)(sample_prices)
+        if name == "custom":
+            # custom 无表达式必须报错——空表达式编不出信号
+            with pytest.raises(ValueError, match="进场条件"):
+                get_signal(name)(sample_prices)
+            signal = get_signal(name)(sample_prices, expr="close > close")
+        else:
+            signal = get_signal(name)(sample_prices)
         assert signal.shape == sample_prices.shape
 
 
