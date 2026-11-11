@@ -81,6 +81,8 @@
   .volbars span { flex: 1; background: var(--line); border-radius: 2px 2px 0 0; min-height: 2px; }
   .volbars span.hot { background: var(--accent, #2563eb); }
   .volbars span.cold { background: var(--muted, #999); opacity: 0.45; }
+  .volaxis { display: flex; gap: 4px; font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .volaxis div { flex: 1; text-align: center; white-space: nowrap; }
   tr[data-sector] { cursor: pointer; }
   tr[data-sector]:hover { background: var(--hit, #fff7d6); }
   th[data-sortable]:hover { color: var(--accent, #2563eb); }
@@ -2205,6 +2207,16 @@ function renderVolume() {
       return `<span class="${tone}" style="height:${height}%" title="${point.date} · ${point.amount} 亿 · ${point.ratio ?? "—"} 倍"></span>`;
     })
     .join("");
+  /* 日期轴与柱同构（flex 对齐）：柱多时隔根显示，首尾必显——
+     悬停 title 有全量日期，但这行是肉眼看趋势时的坐标系 */
+  const n = m.series.length;
+  const step = n <= 10 ? 1 : n <= 20 ? 2 : 5;
+  const axis = m.series
+    .map((point, i) => {
+      const show = i % step === 0 || i === n - 1;
+      return `<div style="${show ? "" : "visibility:hidden"}">${String(point.date).slice(5)}</div>`;
+    })
+    .join("");
   target.innerHTML = `
     <div class="row" style="gap:18px;align-items:baseline">
       <div><span class="muted">总量</span> <b>${m.amount}</b> ${m.unit === "amount" ? "亿" : "万手"}</div>
@@ -2216,6 +2228,7 @@ function renderVolume() {
     </div>
     <p style="margin:10px 0 0;line-height:1.7">${m.advice}</p>
     <div class="volbars">${bars}</div>
+    <div class="volaxis">${axis}</div>
     <p class="muted" style="margin:4px 0 0;font-size:12px">近 ${m.series.length} 日成交额（蓝色 = 量比 ≥1.2，灰色 = ≤0.8）</p>`;
   renderSectorVolume();
   renderStockVolume();

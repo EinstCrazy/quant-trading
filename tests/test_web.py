@@ -1002,3 +1002,31 @@ class TestPositionPlanUI:
         )
         assert '"position_plan": plan' in api
         assert api.count('"position_plan": None') >= 2
+
+
+class TestVolAxis:
+    """大盘量能柱状图加日期轴：肉眼看趋势得有坐标系，不能全靠悬停。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_axis_aligns_with_bars(self):
+        """日期轴与柱同构（每柱一格，flex 对齐）——错位一格日期就全对错了。"""
+        html = self._html()
+        assert 'class="volaxis"' in html
+        assert "const step = n <= 10 ? 1 : n <= 20 ? 2 : 5" in html
+        assert "visibility:hidden" in html  # 隐藏格占位，保持对齐
+
+    def test_axis_shows_first_and_last(self):
+        """首尾必显：起止日期一眼可见，中间隔根稀疏。"""
+        html = self._html()
+        render = html[
+            html.index("const step = n <= 10") : html.index(
+                "target.innerHTML = `", html.index("const step = n <= 10")
+            )
+        ]
+        assert "i % step === 0 || i === n - 1" in render
+        assert "String(point.date).slice(5)" in render  # MM-DD，年份省略
