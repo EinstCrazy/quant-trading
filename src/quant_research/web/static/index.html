@@ -168,6 +168,9 @@
   .pf-item { border-left: 3px solid var(--line); padding: 4px 10px; margin: 6px 0; }
   /* 滚动定位：导航栏是 sticky 的，不加边距会被它盖住标题 */
   #etf-hist-chart { scroll-margin-top: 76px; }
+  /* 名单卡置顶 + 高亮：选完股第一眼就该看到今天选了什么 */
+  #scr-latest.scr-hot { border-left: 4px solid #e6b800; background: #fdf6e3; }
+  .scr-headline { font-size: 17px; font-weight: 700; margin: 4px 0 8px; }
   .chip { padding: 2px 10px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; font-size: 12px; user-select: none; }
   .chip:hover { border-color: #9db4d8; }
   .chip.on { background: #eef4ff; border-color: #7aa7ff; color: #1d4ed8; }
@@ -1842,10 +1845,19 @@ function buildScreenForm() {
 }
 
 function renderScreen(data) {
+  /* 选完股显眼可见：名单卡移到视图最顶上（表单之前），选出标的时
+     加高亮边框 + 大字摘要——用户跑选股就是为了看这个，不该让它
+     蹲在表单下面等滚动条。 */
+  const card = $("scr-latest");
+  const view = $("view-screen");
+  const firstCard = view.querySelector(".card");
+  if (firstCard && firstCard !== card) view.insertBefore(card, firstCard);
+  card.classList.toggle("scr-hot", Boolean(data && data.picks && data.picks.length));
   if (!data || !data.picks || !data.picks.length) {
-    $("scr-latest").innerHTML = "<h3>名单</h3><p class='muted'>这一天没有选出标的——安静的日子宁可空着。</p>";
+    card.innerHTML = "<h3>名单</h3><p class='muted'>这一天没有选出标的——安静的日子宁可空着。</p>";
     return;
   }
+  const top = data.picks[0];
   const rows = data.picks.map((pick) => `
     <tr><td>${pick.rank}</td><td>${symbolCell(pick.symbol)}</td>
     <td>${pick.score >= 0 ? "+" : ""}${pick.score.toFixed(3)}</td>
@@ -1854,8 +1866,9 @@ function renderScreen(data) {
     .filter(([, count]) => count > 0)
     .map(([reason, count]) => `${DROP_LABELS[reason] || reason} ${count}`)
     .join(" · ");
-  $("scr-latest").innerHTML = `
+  card.innerHTML = `
     <h3>名单 · ${data.as_of}</h3>
+    <p class="scr-headline">今日选出 ${data.picks.length} 只 · 首选 ${top.symbol}（权重 ${(top.weight * 100).toFixed(1)}%）</p>
     <p class="muted">
       数据源 ${data.provider} · 候选 ${data.universe} 只 · 数据截至 ${data.latest_session}
       ${data.stale ? `｜这是 ${data.as_of} 的名单，不是最新收盘` : ""}
@@ -1864,6 +1877,10 @@ function renderScreen(data) {
     <tbody>${rows}</tbody></table>
     ${dropped ? `<p class="muted">剔除：${dropped}</p>` : ""}
     <p class="muted">研究用的候选名单，不是投资建议，也不接实盘。</p>`;
+}
+
+function scrollToScreenLatest() {
+  $("scr-latest").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 async function loadScreenLatest() {
@@ -1911,6 +1928,7 @@ async function runScreen() {
       record: $("scr-record").checked,
     }, $("scr-status"));
     renderScreen(result);
+    scrollToScreenLatest();
     $("scr-status").textContent = `完成 · ${result.picks.length} 只 · ${new Date().toLocaleTimeString()}`;
     toast("选股完成");
     await loadScreenReview();

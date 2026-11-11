@@ -922,3 +922,47 @@ class TestAccountFirstUI:
         assert 'id="pf-account-new"' in html
         assert '"/portfolio/accounts"' in html  # POST 创建
         assert "先建户、后录入" in html
+
+
+class TestScreenProminent:
+    """选完股显眼可见：名单卡置顶 + 高亮 + 大字摘要——跑选股就是为了看
+    这个，不该让它蹲在表单下面等滚动条。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_latest_card_moves_above_the_form(self):
+        html = self._html()
+        render = html[
+            html.index("function renderScreen(data)") : html.index("function scrollToScreenLatest")
+        ]
+        assert "insertBefore" in render
+        assert 'view.querySelector(".card")' in render
+
+    def test_headline_with_top_pick(self):
+        """大字摘要：几只、首选是谁、多少权重——一眼看完。"""
+        html = self._html()
+        assert 'class="scr-headline"' in html
+        render = html[
+            html.index("function renderScreen(data)") : html.index("function scrollToScreenLatest")
+        ]
+        assert "今日选出" in render and "首选" in render
+
+    def test_hot_style_only_when_picks_exist(self):
+        html = self._html()
+        assert "#scr-latest.scr-hot" in html
+        render = html[
+            html.index("function renderScreen(data)") : html.index("function scrollToScreenLatest")
+        ]
+        assert (
+            'classList.toggle("scr-hot", Boolean(data && data.picks && data.picks.length))'
+            in render
+        )
+
+    def test_run_scrolls_to_the_list(self):
+        """跑完自动滚到名单——不用自己找。"""
+        html = self._html()
+        assert "scrollToScreenLatest();" in html[html.index("async function runScreen()") :]
