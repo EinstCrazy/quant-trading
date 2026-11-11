@@ -2216,6 +2216,12 @@ TACTIC_STRATEGIES: dict[str, tuple[str, dict[str, float]]] = {
 }
 
 
+@router.get("/indexes")
+def indexes_compare() -> dict[str, Any]:
+    """国内主要指数对比：只读缓存。没采过的进 missing，不静默少行。"""
+    return index_mod.compare(load_settings().data.directory)
+
+
 @router.get("/etf/snapshot")
 def etf_snapshot(adjust: str = "qfq") -> dict[str, Any]:
     """ETF 清单快照：只读缓存。没采集过的代码进 missing，绝不悄悄消失。"""

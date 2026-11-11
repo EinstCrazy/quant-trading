@@ -91,12 +91,14 @@ def _refresh_environment(data_root: Path) -> dict[str, object]:
         result["overseas"] = {"quotes": len(snapshot["quotes"]), "missing": snapshot["missing"]}
     except Exception as exc:  # noqa: BLE001 - 环境刷新失败不阻断夜间采集
         result["overseas"] = {"error": f"{type(exc).__name__}: {exc}"}
-    try:
-        for symbol in index_mod.INDEXES:
+    indexes: dict[str, object] = {}
+    for symbol, name in index_mod.INDEXES.items():
+        try:
             frame = index_mod.refresh(Path(data_root), symbol)
-            result["index"] = {"symbol": symbol, "as_of": str(frame.index[-1].date())}
-    except Exception as exc:  # noqa: BLE001
-        result["index"] = {"error": f"{type(exc).__name__}: {exc}"}
+            indexes[symbol] = {"name": name, "as_of": str(frame.index[-1].date())}
+        except Exception as exc:  # noqa: BLE001 - 单只指数失败不拖垮其余
+            indexes[symbol] = {"name": name, "error": f"{type(exc).__name__}: {exc}"}
+    result["index"] = indexes
     try:
         snapshot = sector_flow_mod.fetch()
         sector_flow_mod.save(Path(data_root), snapshot)

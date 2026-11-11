@@ -237,7 +237,8 @@ class TestEnvironmentRefresh:
 
         assert result["overseas"] == {"quotes": 1, "missing": []}
         assert result["etf_spot"] == {"as_of": "2026-11-11", "n_rows": 14}
-        assert result["index"]["symbol"] == "sh000001"
+        assert set(result["index"]) == {"sh000001", "sh000300", "sz399006", "sz399001"}
+        assert result["index"]["sh000001"]["as_of"] == str(_MONDAY)
         assert result["sector_flow"] == {"sectors": 0, "missing": []}
         assert stored["snap"]["quotes"][0]["code"] == "NDX"
 
@@ -266,7 +267,7 @@ class TestEnvironmentRefresh:
         result = nightly._refresh_environment(tmp_path)
 
         assert "ConnectionError" in result["overseas"]["error"]
-        assert result["index"]["as_of"] == str(_MONDAY)
+        assert result["index"]["sh000001"]["as_of"] == str(_MONDAY)
         assert result["sector_flow"] == {"sectors": 0, "missing": []}
 
     def test_a_broken_etf_spot_does_not_block_the_rest(self, tmp_path, monkeypatch):
@@ -295,5 +296,5 @@ class TestEnvironmentRefresh:
         result = nightly._refresh_environment(tmp_path)
 
         assert "TimeoutError" in result["etf_spot"]["error"]
-        assert result["index"]["as_of"] == str(_MONDAY)
+        assert result["index"]["sh000001"]["as_of"] == str(_MONDAY)
         assert result["overseas"] == {"quotes": 1, "missing": []}

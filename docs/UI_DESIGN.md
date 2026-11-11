@@ -318,6 +318,7 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | GET | `/api/overseas/analysis` | 外围快照分析：六组行情、情绪分、传导路径与建议（只读缓存，不联网） |
 | POST | `/api/overseas/refresh` | 联网抓取外围快照并落盘，返回同一份分析（部分接口失败也保存） |
 | GET | `/api/playbook` | 战法清单 + 今日环境标注（顺/慎/避），由量价四象限与外围情绪推出，缺数据照给战法 |
+| GET | `/api/indexes` | 国内四指数对比（上证/沪深300/创业板指/深证成指）：只读缓存，没采过的进 missing |
 | GET | `/api/etf/snapshot` | 14 只 ETF（宽基+行业/跨境/商品）快照：量比/水位/MA20 偏离；独立落盘不进股票面板 |
 | POST | `/api/etf/refresh` | 逐只联网采集 ETF 日线（fund_etf_hist_em），单只失败不拖垮整批 |
 | POST | `/api/playbook/verify` | 三条可编码战法（海龟/放量突破/MA20 回踩）在本样本上的回测轮廓：等权、含成本；从未触发如实说未触发 |

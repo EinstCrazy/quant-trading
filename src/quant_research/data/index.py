@@ -24,7 +24,12 @@ import pandas as pd
 __all__ = ["DIRECTORY", "INDEXES", "fetch", "load", "refresh", "store"]
 
 INDEXES: dict[str, str] = {
+    # 顺序有意：第一个是「大盘量能」的主口径（全市场成交额），
+    # 其余是结构对照——只涨上证不涨中证/创业板，环境结论就不完整
     "sh000001": "上证指数",
+    "sh000300": "沪深300",
+    "sz399006": "创业板指",
+    "sz399001": "深证成指",
 }
 
 DIRECTORY = Path("processed/index")
@@ -82,6 +87,38 @@ def refresh(root: Path, symbol: str) -> pd.DataFrame:
     frame = fetch(symbol)
     store(root, symbol, frame)
     return frame
+
+
+def compare(root: Path) -> dict[str, Any]:
+    """全部 INDEXES 的对比快照（只读缓存，不联网）。
+
+    没采过的指数进 missing——「没采」必须可见，不能让对比表
+    静悄悄少一行、让人觉得那个指数「没涨没跌」。
+    """
+    rows: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for symbol, name in INDEXES.items():
+        frame = load(root, symbol)
+        if frame is None:
+            missing.append(f"{name}({symbol})")
+            continue
+        close = frame["close"]
+        day_change = float(close.iloc[-1] / close.iloc[-2] - 1) if len(close) >= 2 else None
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": name,
+                "last": float(close.iloc[-1]),
+                "day_change": day_change,
+                "as_of": str(close.index[-1].date()),
+            }
+        )
+    return {
+        "available": bool(rows),
+        "rows": rows,
+        "missing": missing,
+        "note": "主口径：上证指数（量能分析的大盘成交额用它）；其余为结构对照",
+    }
 
 
 def meta(root: Path, symbol: str) -> dict[str, Any] | None:

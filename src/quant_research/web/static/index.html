@@ -646,6 +646,10 @@
         <div id="os-summary"></div>
       </div>
       <div class="card">
+        <h3>国内指数 <span class="muted" id="ix-note"></span></h3>
+        <div id="ix-body"></div>
+      </div>
+      <div class="card">
         <h3>品种明细 <span class="muted">按关注清单排序</span></h3>
         <div id="os-groups"></div>
       </div>
@@ -2066,8 +2070,48 @@ const TONE_CLASS = (label) =>
   label === "风险偏好回升" ? "good" : label === "风险偏好回落" ? "bad" : "muted";
 
 async function loadOverseas() {
-  OVERSEAS = await api("/overseas/analysis").catch((error) => ({ available: false, reason: error.message }));
+  const [data, indexes] = await Promise.all([
+    api("/overseas/analysis").catch((error) => ({ available: false, reason: error.message })),
+    loadIndexes().catch(() => null),
+  ]);
+  OVERSEAS = data;
   renderOverseas();
+}
+
+/* 国内指数对比：只读缓存。涨跌不一致时结构问题自己会浮出来——
+   只涨上证不涨创业板的「大盘向好」要打折看。 */
+let INDEXES_DATA = null;
+
+async function loadIndexes() {
+  if (INDEXES_DATA) return INDEXES_DATA;
+  INDEXES_DATA = await api("/indexes");
+  return INDEXES_DATA;
+}
+
+function renderIndexes() {
+  const note = $("ix-note");
+  const target = $("ix-body");
+  if (!INDEXES_DATA) return;
+  note.textContent = INDEXES_DATA.missing?.length ? `未采集：${INDEXES_DATA.missing.join("、")}` : `${INDEXES_DATA.rows.length} 只`;
+  if (!INDEXES_DATA.available) {
+    target.innerHTML = '<div class="empty">指数缓存还没有数据——跑一次夜间刷新，或等下一位交易日由 nightly 补上。</div>';
+    return;
+  }
+  const pct = (value) =>
+    value == null ? '<span class="muted">—</span>'
+      : `<span class="${value >= 0 ? "up" : "down"}">${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%</span>`;
+  target.innerHTML = `
+    <table><thead><tr><th>指数</th><th>收盘</th><th>当日</th><th>截至</th></tr></thead><tbody>
+    ${INDEXES_DATA.rows
+      .map((row) => `<tr>
+        <td>${row.name}</td>
+        <td>${row.last.toFixed(2)}</td>
+        <td>${pct(row.day_change)}</td>
+        <td class="muted">${row.as_of}</td>
+      </tr>`)
+      .join("")}
+    </tbody></table>
+    <p class="muted" style="margin:10px 0 0;line-height:1.7">${INDEXES_DATA.note}。各行的「截至」日期可能不同（缓存逐只更新）——拿旧日期对比新日期前先看清。</p>`;
 }
 
 
@@ -2084,6 +2128,7 @@ async function refreshOverseas() {
 }
 
 function renderOverseas() {
+  renderIndexes();
   const note = $("os-note");
   const summary = $("os-summary");
   const groupsBox = $("os-groups");
@@ -2232,16 +2277,17 @@ function ovGoto(view, label) {
 
 async function loadDashboard() {
   ["ov-market", "ov-overseas", "ov-flow", "ov-book", "ov-data"].forEach((id) => skeleton($(id), "rows"));
-  const [volume, overseas, flow, datasets, book, etf] = await Promise.all([
+  const [volume, overseas, flow, datasets, book, etf, indexes] = await Promise.all([
     api("/volume/analysis").catch((e) => ({ error: e.message })),
     api("/overseas/analysis").catch((e) => ({ available: false, reason: e.message })),
     api("/sector-flow").catch((e) => ({ available: false, reason: e.message })),
     api("/datasets").catch(() => []),
     Promise.all([api("/portfolio").catch(() => ({ positions: [] })), api("/watchlist").catch(() => ({ stocks: [] }))]),
     api("/etf/snapshot").catch(() => null),
+    api("/indexes").catch(() => null),
   ]);
   renderOvMarket(volume, etf);
-  renderOvOverseas(overseas);
+  renderOvOverseas(overseas, indexes);
   renderOvFlow(flow);
   renderOvData(datasets);
   renderOvBook(book[0], book[1]);
@@ -2292,9 +2338,21 @@ function renderOvMarket(volume, etf) {
   bindOvGoto();
 }
 
-function renderOvOverseas(o) {
+function renderOvOverseas(o, indexes) {
   const note = $("ov-overseas-note");
   const target = $("ov-overseas");
+  /* 指数对比行：只涨一两个指数的「大盘向好」要打折看——结构问题
+     在这里就应该被看见，而不是进了持仓才想起来。 */
+  const indexLine =
+    indexes?.available && indexes.rows.length
+      ? `<div class="row" style="gap:10px;flex-wrap:wrap;margin:4px 0 10px">${indexes.rows
+          .map((row) =>
+            row.day_change == null
+              ? ""
+              : `<span class="${row.day_change >= 0 ? "up" : "down"}">${row.name} ${row.day_change >= 0 ? "+" : ""}${(row.day_change * 100).toFixed(2)}%</span>`
+          )
+          .join("")}</div>`
+      : "";
   if (!o.available) {
     note.textContent = "";
     const reason = o.reason || o.error || "没有外围数据";
@@ -2315,9 +2373,10 @@ function renderOvOverseas(o) {
       <span class="muted">情绪分</span><b>${tone.score == null ? "—" : tone.score}</b>
       ${o.stale ? '<span class="badge warn">快照已过时</span>' : ""}
     </div>
+    ${indexLine}
     <p class="muted" style="margin:0 0 10px;line-height:1.7">${o.advice || ""}</p>
     ${o.missing.length ? `<p class="muted" style="margin:0 0 10px;font-size:12px">缺失：${o.missing.join("；")}</p>` : ""}
-    ${ovGoto("overseas", "看传导路径")}`;
+    ${ovGoto("overseas", "看传导路径与指数明细")}`;
   bindOvGoto();
 }
 
