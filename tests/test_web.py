@@ -7,6 +7,9 @@ Skipped entirely when the ``web`` extra is not installed.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 SAMPLE = "sample:sample_prices"
@@ -600,3 +603,34 @@ def test_an_unrecognisable_code_is_a_422_with_a_readable_reason():
 
     with pytest.raises(ValidationError, match="999999"):
         CollectRequest(symbols=["999999.HZ"])
+
+
+class TestApiHelperContract:
+    """前端 api() 封装的约定回归：body 与 method 的组合曾经一起坏过。
+
+    事故：三参形式（显式 method）丢 body——持仓添加一直发空请求 422；
+    两参 { method: "POST" } 的 options 写法被误当 body 序列化出去。
+    统一约定：第二参永远是请求体（对象 JSON 化、FormData 原样），第三参
+    是显式 method。这里用结构断言钉住：约定不许再出现两种语义并存。
+    """
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_no_options_style_calls_remain(self):
+        """api(path, { method: "POST" }) 是旧 options 约定——必须死绝。"""
+        assert not re.search(r'api\([^,\n]+, \{ method: "POST" \}\)', self._html())
+
+    def test_form_data_is_passed_through_untouched(self):
+        """Excel 上传走 multipart：FormData 原样直传，不带默认 Content-Type。"""
+        assert "body instanceof FormData" in self._html()
+
+    def test_explicit_method_branch_carries_the_body(self):
+        """三参形式必须带体——修复的起点就是这个分支丢了 body。"""
+        assert (
+            'options = { method: method || (body != null ? "POST" : "GET"), ...jsonBody }'
+            in self._html()
+        )

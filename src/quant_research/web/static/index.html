@@ -765,11 +765,21 @@ async function withButton(button, action) {
 }
 
 async function api(path, body, method) {
-  const options = method
-    ? { method }
-    : body
-      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-      : {};
+  /* 约定：第二参永远是请求体——对象自动 JSON 化，FormData 原样直传
+     （multipart 不能带默认 Content-Type）；第三参显式 method，省略时
+     有 body 即 POST。之前 method 分支把 body 丢了（持仓添加一直发空
+     请求 422），而两参 { method: "POST" } 的 options 写法被误当 body
+     序列化出去——两种歧义一起消灭：调用点统一 body 语义。 */
+  let options;
+  if (body instanceof FormData) {
+    options = { method: method || "POST", body };
+  } else {
+    const jsonBody =
+      body != null
+        ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+        : {};
+    options = { method: method || (body != null ? "POST" : "GET"), ...jsonBody };
+  }
   _busy(1);
   try {
     const response = await fetch("/api" + path, options);
@@ -2163,7 +2173,7 @@ function renderIndexes() {
 async function refreshOverseas() {
   await withButton($("os-refresh"), async () => {
     try {
-      OVERSEAS = await api("/overseas/refresh", { method: "POST" });
+      OVERSEAS = await api("/overseas/refresh", null, "POST");
       toast("外围快照已更新", "success");
     } catch (error) {
       toast(`抓取失败：${error.message}`, "error");
@@ -2571,7 +2581,7 @@ async function refreshEtf() {
   skeleton(target, "table");
   note.textContent = "逐只采集，14 只约半分钟…";
   try {
-    ETF_DATA = await api("/etf/refresh", { method: "POST" });
+    ETF_DATA = await api("/etf/refresh", null, "POST");
     if (ETF_DATA.failed?.length) {
       toast(`采集完成：${ETF_DATA.fetched?.length || 0} 只成功，${ETF_DATA.failed.length} 只失败`, "error");
     } else {
@@ -2604,7 +2614,7 @@ async function runPlayVerify() {
   skeleton(target, "rows");
   note.textContent = "整面板 × 3 条策略，约几秒…";
   try {
-    PLAY_VERIFY = await api("/playbook/verify", { method: "POST" });
+    PLAY_VERIFY = await api("/playbook/verify", null, "POST");
   } catch (error) {
     renderError(target, error.message, () => runPlayVerify());
     note.textContent = "";
@@ -2691,7 +2701,7 @@ function wireImport(prefix, endpoint, reload) {
     try {
       const form = new FormData();
       form.append("file", file);
-      const payload = await api(`${endpoint}/excel`, { method: "POST", body: form });
+      const payload = await api(`${endpoint}/excel`, form);
       await submitImport(`${prefix}-import`, endpoint, payload, reload);
     } catch (error) {
       renderError(target, error.message, () => {});
@@ -2740,7 +2750,7 @@ async function loadSectorFlow() {
 async function refreshSectorFlow() {
   await withButton($("flow-refresh"), async () => {
     try {
-      SECTOR_FLOW = await api("/sector-flow/refresh", { method: "POST" });
+      SECTOR_FLOW = await api("/sector-flow/refresh", null, "POST");
       toast("资金流快照已更新", "success");
     } catch (error) {
       toast(`抓取失败：${error.message}`, "error");
@@ -2991,7 +3001,7 @@ async function loadFundRisk() {
 async function refreshFundRisk() {
   await withButton($("fr-refresh"), async () => {
     try {
-      FUND_RISK = await api("/fundamentals/refresh", { method: "POST" });
+      FUND_RISK = await api("/fundamentals/refresh", null, "POST");
       toast("季报已更新并核对", "success");
     } catch (error) {
       toast(`采集失败：${error.message}`, "error");
@@ -3237,7 +3247,7 @@ $("pf-advice").addEventListener("click", async (event) => {
   button.textContent = "采集中…";
   try {
     if (/^(50|51|58|15|16|18)/.test(symbol.replace(/\.\S+$/, ""))) {
-      const result = await api("/etf/refresh", { method: "POST" });
+      const result = await api("/etf/refresh", null, "POST");
       toast(`ETF 日线已更新（${result.fetched?.length || 0} 只成功）`, result.failed?.length ? "error" : "success");
     } else {
       await api("/collection/collect", { symbols: [symbol] });
