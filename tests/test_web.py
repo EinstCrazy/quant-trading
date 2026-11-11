@@ -1030,3 +1030,36 @@ class TestVolAxis:
         ]
         assert "i % step === 0 || i === n - 1" in render
         assert "String(point.date).slice(5)" in render  # MM-DD，年份省略
+
+
+class TestEtfCheckCompare:
+    """ETF 清单勾选框 → 对比：选择权在清单里，不用再跑到对比卡点一遍。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_list_rows_have_checkboxes(self):
+        """清单每行一个勾选框，状态来自同一份 ETF_CMP——与选择片联动。"""
+        html = self._html()
+        assert 'data-etf-check="${row.symbol}"' in html
+        assert "对比</th>" in html
+        assert 'ETF_CMP.has(row.symbol) ? "checked" : ""' in html
+
+    def test_checkbox_click_does_not_jump_to_detail(self):
+        """勾选框点击不该顺带跳详情——两个意图混在一个点击里就是误操作。"""
+        html = self._html()
+        assert 'if (event.target.closest("[data-etf-check]")) return;' in html
+
+    def test_change_drives_compare(self):
+        html = self._html()
+        assert 'document.addEventListener("change"' in html
+        assert "一次最多对比 6 只" in html[html.index('document.addEventListener("change"') :]
+
+    def test_seed_only_once(self):
+        """用户清空勾选是想自己挑——默认 3 只只种一次，不偷偷塞回。"""
+        html = self._html()
+        assert "ETF_CMP_SEEDED" in html
+        assert "if (!ETF_CMP.size && !ETF_CMP_SEEDED)" in html

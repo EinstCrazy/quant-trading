@@ -2113,6 +2113,8 @@ document.addEventListener("click", (event) => {
 /* ETF 列表：名称与代码都可点，进同页详情（哈希可分享）。整行点也行——
    行不是链接时也能点，符合「列表里点一只看它」的直觉。 */
 document.addEventListener("click", (event) => {
+  /* 勾选框只是选对比，不该顺带跳详情 */
+  if (event.target.closest("[data-etf-check]")) return;
   const link = event.target.closest("[data-etf-jump]");
   if (link) {
     event.preventDefault();
@@ -2126,6 +2128,25 @@ document.addEventListener("click", (event) => {
   }
   const row = event.target.closest("#etf-body tr[data-etf-row]");
   if (row) jumpToEtf(row.dataset.etfRow);
+});
+
+/* 清单勾选框 → 对比：勾上即入列对比，取消即移出——选择权在清单里，
+   不用再跑到对比卡上点一遍。 */
+document.addEventListener("change", (event) => {
+  const box = event.target.closest("[data-etf-check]");
+  if (!box) return;
+  const symbol = box.dataset.etfCheck;
+  if (box.checked) {
+    if (ETF_CMP.size >= 6) {
+      toast("一次最多对比 6 只：再多就看不清了");
+      box.checked = false;
+      return;
+    }
+    ETF_CMP.add(symbol);
+  } else {
+    ETF_CMP.delete(symbol);
+  }
+  renderEtfCompareChips();
 });
 
 /* ---------- 量能分析 ---------- */
@@ -2828,9 +2849,10 @@ function renderEtf() {
     value == null ? '<span class="muted">—</span>'
       : `<span class="${value >= 0 ? "up" : "down"}">${value >= 0 ? "+" : ""}${(value * 100).toFixed(digits)}%</span>`;
   target.innerHTML = `
-    <table><thead><tr><th>名称</th><th>代码</th><th>收盘</th><th>当日</th><th>量比</th><th>水位</th><th>MA20 偏离</th><th>份额变化</th><th>规模</th><th>更新</th></tr></thead><tbody>
+    <table><thead><tr><th title="勾选加入多只对比（与上方选择片联动）">对比</th><th>名称</th><th>代码</th><th>收盘</th><th>当日</th><th>量比</th><th>水位</th><th>MA20 偏离</th><th>份额变化</th><th>规模</th><th>更新</th></tr></thead><tbody>
     ${rows
       .map((row) => `<tr data-etf-row="${row.symbol}">
+        <td><input type="checkbox" data-etf-check="${row.symbol}" ${ETF_CMP.has(row.symbol) ? "checked" : ""} title="勾选加入多只对比"></td>
         <td><a class="sym-link" data-etf-jump="${row.symbol}" title="看这只 ETF 的走势与历史">${row.name}</a></td>
         <td class="muted"><a class="sym-link" data-etf-jump="${row.symbol}">${row.symbol}</a></td>
         <td>${row.last_close.toFixed(3)}</td>
@@ -2941,6 +2963,7 @@ async function loadEtfHistory() {
    和 7 元的黄金）直接画会被压成一条直线，归一化后比的是「谁走得更强」。
    对齐与统计都在后端同一段窗口里算，画面与数字不会对不上。 */
 let ETF_CMP = new Set();
+let ETF_CMP_SEEDED = false;
 
 function renderEtfCompareChips() {
   const rows = (ETF_DATA?.rows || []).filter((row) => row.last_close != null);
@@ -2954,11 +2977,19 @@ function renderEtfCompareChips() {
   }
   const available = new Set(rows.map((row) => row.symbol));
   for (const symbol of [...ETF_CMP]) if (!available.has(symbol)) ETF_CMP.delete(symbol);
-  // 首次进入给三只默认选择：不选就没有图，等于这个功能不存在
-  if (!ETF_CMP.size) rows.slice(0, 3).forEach((row) => ETF_CMP.add(row.symbol));
+  // 首次进入给三只默认选择：不选就没有图，等于这个功能不存在。
+  // 只种一次——用户清空勾选是想自己挑，不偷偷塞回去
+  if (!ETF_CMP.size && !ETF_CMP_SEEDED) {
+    rows.slice(0, 3).forEach((row) => ETF_CMP.add(row.symbol));
+  }
+  ETF_CMP_SEEDED = true;
   box.innerHTML = rows
-    .map((row) => `<span class="chip${ETF_CMP.has(row.symbol) ? " on" : ""}" data-etf-cmp="${row.symbol}" title="点击加入/移出对比">${row.name}</span>`)
+    .map((row) => `<span class="chip${ETF_CMP.has(row.symbol) ? " on" : ""}" data-etf-cmp="${row.symbol}" title="点击加入/移出对比（与清单勾选框联动）">${row.name}</span>`)
     .join("");
+  // 清单勾选框与 chips 同一份状态，双向都同步
+  document.querySelectorAll("[data-etf-check]").forEach((box) => {
+    box.checked = ETF_CMP.has(box.dataset.etfCheck);
+  });
   loadEtfCompare();
 }
 
