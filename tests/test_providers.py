@@ -280,3 +280,68 @@ def test_list_industries_reads_the_code_and_industry_columns(monkeypatch):
     assert found["600000.SH"] == "货币金融服务"
     assert "000002.SZ" not in found  # 行业列为空 → 跳过，而不是存一个空板块
     assert len(found) == 3
+
+
+def _good_hist(start: str = "19940101") -> pd.DataFrame:
+    """一张合法的日线表：日期列从 start 派生，避免测试里写死长列表。"""
+    dates = pd.bdate_range("2024-01-02", periods=30).strftime("%Y-%m-%d")
+    return pd.DataFrame(
+        {
+            "日期": dates,
+            "开盘": [100.0] * 30,
+            "收盘": [101.0] * 30,
+            "最高": [102.0] * 30,
+            "最低": [99.0] * 30,
+            "成交量": [100000] * 30,
+            "成交额": [10100000.0] * 30,
+            "涨跌幅": [0.99] * 30,
+            "换手率": [1.23] * 30,
+        }
+    )
+
+
+def test_akshare_retries_a_short_window_when_qfq_goes_negative(monkeypatch):
+    """000559 实测坑：超长历史 qfq 把早期价格折成负数，校验拒绝。
+    缩窗到 2015 重试比「要么全历史要么没有」有用——用户要的是这只票
+    能进面板复盘，不是一份哲学上完整的 30 年日线。"""
+    calls: list[str] = []
+
+    class FakeAkshare:
+        @staticmethod
+        def stock_zh_a_hist(**kwargs: object) -> pd.DataFrame:
+            calls.append(str(kwargs.get("start_date")))
+            frame = _good_hist()
+            if calls[-1] == "19900101":
+                frame.loc[0, "收盘"] = -0.09  # 复权负价：校验必须拒绝
+            return frame
+
+    monkeypatch.setitem(sys.modules, "akshare", FakeAkshare)
+    provider = AkshareProvider(adjust="qfq")
+
+    frames = provider.fetch_daily(["000559.SH"])
+
+    assert len(frames["000559.SH"]) == 30
+    assert calls == ["19900101", "20150101"]  # 全历史被拒 → 缩窗重试
+
+
+def test_akshare_keeps_the_explicit_window_when_qfq_goes_negative(monkeypatch):
+    """显式指定过 start 的失败如实上抛——用户要 2020 起就该拿到 2020 起
+    的真相或一个明确的错误，不是悄悄被改成 2015 起。"""
+    calls: list[str] = []
+
+    class FakeAkshare:
+        @staticmethod
+        def stock_zh_a_hist(**kwargs: object) -> pd.DataFrame:
+            calls.append(str(kwargs.get("start_date")))
+            frame = _good_hist()
+            frame.loc[0, "收盘"] = -0.09
+            return frame
+
+    monkeypatch.setitem(sys.modules, "akshare", FakeAkshare)
+    provider = AkshareProvider(adjust="qfq")
+    start = date(2020, 1, 1)
+
+    with pytest.raises(ProviderError, match="non-positive"):
+        provider.fetch_daily(["000559.SH"], start=start)
+
+    assert calls == ["20200101"]  # 没有第二次调用：显式窗口不许被改写

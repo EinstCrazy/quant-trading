@@ -147,7 +147,29 @@ class AkshareProvider(MarketDataProvider):
                 raise ProviderError(f"{normalised}: unexpected AKShare columns {list(raw.columns)}")
 
             frame = raw.rename(columns=_COLUMN_MAP).set_index("date")
-            frames[normalised] = normalise_bars(frame, source=f"{self.name}:{normalised}")
+            try:
+                frames[normalised] = normalise_bars(frame, source=f"{self.name}:{normalised}")
+            except ProviderError as exc:
+                # 超长历史的 qfq 有个东财复权算法的坑：低价/高分红标的的
+                # 早期价格可能被折成负数（000559 1994 年附近、510050 的
+                # 2005 年附近都实测踩过），校验正确拒绝。缩窗到 2015 年
+                # 重试——十年日线足够算指标，比「要么全历史要么没有」
+                # 有用；显式指定过 start 的失败如实上抛，不悄悄改窗口。
+                if "non-positive" not in str(exc) or start is not None:
+                    raise
+                retried = akshare.stock_zh_a_hist(
+                    symbol=to_bare_symbol(normalised),
+                    period="daily",
+                    start_date="20150101",
+                    end_date=end_text,
+                    adjust=adjust,
+                )
+                if retried is None or retried.empty:
+                    raise
+                frames[normalised] = normalise_bars(
+                    retried.rename(columns=_COLUMN_MAP).set_index("date"),
+                    source=f"{self.name}:{normalised}",
+                )
         return frames
 
 

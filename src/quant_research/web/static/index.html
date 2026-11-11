@@ -3187,6 +3187,7 @@ function renderReview() {
               ${shift ? `<span class="pf-changed">上次${shift.from_label} → 现在${shift.to_label}</span>` : ""}</div>
             <div>${row.headline}</div>
             <ul>${(row.reasons || []).map((r) => `<li>${r}</li>`).join("")}</ul>
+            ${stance === "nodata" ? `<div class="row" style="margin-top:6px"><button class="btn" data-collect-symbol="${row.symbol}">补采这只票</button><span class="muted" style="font-size:12px">把它的日线补进样本面板（约几秒）；补完复盘才有价位与档位</span></div>` : ""}
             ${levels ? `<div class="pf-levels">明日关注：${levels}</div>` : ""}
             ${plans ? `<div class="pf-plans"><div class="pf-plans-title">情景预案（如果发生 → 通常怎么做）</div>${plans}</div>` : ""}
           </div>`;
@@ -3196,6 +3197,32 @@ function renderReview() {
     })
     .join("");
 }
+
+/* 补采：不在样本面板里的持仓票，把它日线补进面板（ETF 走 ETF 采集）。
+     补采是显式动作——不在样本里的票不会因为进了持仓就悄悄扩大样本，
+     但复盘卡会把「缺什么、怎么补」摆在眼前。 */
+$("pf-advice").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-collect-symbol]");
+  if (!button) return;
+  const symbol = button.dataset.collectSymbol;
+  button.disabled = true;
+  button.textContent = "采集中…";
+  try {
+    if (/^(50|51|58|15|16|18)/.test(symbol.replace(/\.\S+$/, ""))) {
+      const result = await api("/etf/refresh", { method: "POST" });
+      toast(`ETF 日线已更新（${result.fetched?.length || 0} 只成功）`, result.failed?.length ? "error" : "success");
+    } else {
+      await api("/collection/collect", { symbols: [symbol] });
+      toast(`${symbol} 日线已补进样本面板`, "success");
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "补采这只票";
+    toast(`补采失败：${error.message}`);
+    return;
+  }
+  await loadPortfolio();
+});
 
 $("pf-add").addEventListener("click", async () => {
   const symbol = $("pf-symbol").value.trim();
