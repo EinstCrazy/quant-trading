@@ -2561,6 +2561,46 @@ _EXCEL_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+@router.get("/import/excel/spec")
+def excel_import_spec() -> dict[str, Any]:
+    """Excel 导入的格式说明：界面直接渲染，别名与解析代码同源。
+
+    说明写死在文档里就会和 _EXCEL_HEADER_ALIASES 漂移——改了别名
+    忘了改说明，用户按说明写的表头反而导不进来。这里从同一份常量
+    出，说明永远等于实现。
+    """
+    return {
+        "required": {"portfolio": ["symbol", "shares", "cost"], "watchlist": ["symbol"]},
+        "optional": {
+            "portfolio": ["name"],
+            "watchlist": ["name", "categories"],
+        },
+        "aliases": {field: list(aliases) for field, aliases in _EXCEL_HEADER_ALIASES.items()},
+        "rules": [
+            "只读第一张工作表（文件打开时激活的那张）",
+            "表头必须在第 1 行——上面不要留标题行",
+            "整行空白的空行自动跳过；报错里的行号是 Excel 里的真实行号",
+            "代码写法宽容：600519、600519.SH 都认",
+            "持仓：股数与成本必须是正数；已在持仓里的票默认跳过，不覆盖真实成本",
+            "自选：已在自选里的票跳过，不覆盖已有分类与备注",
+            "分类列用逗号或顿号分隔多个（如「白酒, 核心」）",
+            "支持 .xlsx；老 .xls 请先另存为 .xlsx。公式单元格读缓存值——在 Excel 里打开保存过一次即可",
+        ],
+        "examples": {
+            "portfolio": [
+                ["代码", "股数", "成本价"],
+                ["600519", 100, 1500.5],
+                ["000333", 20000, 55.2],
+            ],
+            "watchlist": [
+                ["代码", "名称", "分类"],
+                ["600519", "贵州茅台", "白酒, 核心"],
+                ["300750", "宁德时代", ""],
+            ],
+        },
+    }
+
+
 def _rows_from_excel(content: bytes) -> tuple[list[str], list[dict[str, object]]]:
     """读工作簿第一个 sheet：返回 (表头, 行字典列表)。
 

@@ -426,7 +426,7 @@
             <label class="btn ghost" style="cursor:pointer">选 Excel 文件<input id="wl-import-file" type="file" accept=".xlsx" style="display:none"></label>
             <span class="muted" id="wl-import-status"></span>
           </div>
-          <p class="muted" style="margin:6px 0 0;font-size:12px">Excel：表头认「代码」（必需）、「名称」「分类」（可选，分类支持逗号/顿号分隔多个）。</p>
+          <div class="excel-spec" data-kind="watchlist" style="margin-top:6px"></div>
           <div id="wl-import-result" style="margin-top:8px"></div>
         </div>
         <span class="muted" id="wl-status"></span>
@@ -530,7 +530,7 @@
             <label class="btn ghost" style="cursor:pointer">选 Excel 文件<input id="pf-import-file" type="file" accept=".xlsx" style="display:none"></label>
             <span class="muted" id="pf-import-status"></span>
           </div>
-          <p class="muted" style="margin:6px 0 0;font-size:12px">Excel：表头认「代码」「股数」「成本价」三列（列名写法宽容：数量/买入价等都能对上），读第一个工作表。</p>
+          <div class="excel-spec" data-kind="portfolio" style="margin-top:6px"></div>
           <div id="pf-import-result" style="margin-top:8px"></div>
         </div>
         <p class="muted" style="margin-top:6px">
@@ -2935,11 +2935,54 @@ async function submitImport(result, endpoint, payload, reload) {
   }
 }
 
+const EXCEL_FIELD_LABELS = { symbol: "代码", shares: "股数", cost: "成本价", name: "名称", categories: "分类" };
+
+/* Excel 格式说明：别名与解析代码同源（/import/excel/spec）——说明永远
+   等于实现。展开导入区才渲染，页面加载不白打一次请求。 */
+let EXCEL_SPEC = null;
+
+async function renderExcelSpec(prefix) {
+  const target = document.querySelector(`#${prefix}-import .excel-spec`);
+  if (!target || target.dataset.rendered) return;
+  try {
+    EXCEL_SPEC = EXCEL_SPEC || (await api("/import/excel/spec"));
+  } catch (error) {
+    target.innerHTML = `<p class="muted" style="margin:6px 0 0;font-size:12px">格式说明暂时取不到（${error.message}）</p>`;
+    return;
+  }
+  const kind = target.dataset.kind;
+  const required = EXCEL_SPEC.required[kind] || [];
+  const optional = EXCEL_SPEC.optional[kind] || [];
+  const fields = [...required, ...optional];
+  const aliasRows = fields
+    .map(
+      (field) =>
+        `<tr><td>${EXCEL_FIELD_LABELS[field] || field}${required.includes(field) ? ' <span class="badge">必需</span>' : ""}</td><td class="muted">${(EXCEL_SPEC.aliases[field] || [])
+          .map((a) => `<code style="font-family:monospace">${a}</code>`)
+          .join(" / ")}</td></tr>`
+    )
+    .join("");
+  const example = EXCEL_SPEC.examples[kind] || [];
+  target.innerHTML = `
+    <details class="muted" style="font-size:12px">
+      <summary style="cursor:pointer">Excel 格式说明：${required.map((f) => EXCEL_FIELD_LABELS[f]).join("、")} 必填；列名宽容</summary>
+      <div style="margin-top:6px;line-height:1.7">
+        <table style="margin-bottom:6px"><thead><tr><th>列</th><th>可用的表头写法（不区分大小写）</th></tr></thead>
+        <tbody>${aliasRows}</tbody></table>
+        <div class="muted">示例表（第 1 行是表头，从第 2 行开始是数据）：</div>
+        ${table(example[0] || [], example.slice(1).map((row) => row.map((cell) => (cell === "" || cell == null ? "—" : String(cell)))))}
+        <ul style="margin:6px 0 0;padding-left:18px">${EXCEL_SPEC.rules.map((rule) => `<li>${rule}</li>`).join("")}</ul>
+      </div>
+    </details>`;
+  target.dataset.rendered = "1";
+}
+
 function wireImport(prefix, endpoint, reload) {
   const toggle = $(`${prefix}-import-toggle`);
   const panel = $(`${prefix}-import`);
   toggle.addEventListener("click", () => {
     panel.style.display = panel.style.display === "none" ? "block" : "none";
+    if (panel.style.display === "block") renderExcelSpec(prefix);
   });
   /* Excel 入口：文件走 multipart 直传后端解析——表头宽容映射，
      列名写法五花八门（数量/买入价/持仓成本…）能对上的都对上。 */

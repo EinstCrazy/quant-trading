@@ -165,3 +165,81 @@ class TestPortfolioExcel:
 
         assert "detail" in payload
         assert "成本" in payload["detail"]
+
+
+class TestExcelFormatSpec:
+    """格式说明必须等于实现：别名从 _EXCEL_HEADER_ALIASES 出，说明不会
+    在改了别名之后悄悄变成骗人的文档。"""
+
+    @pytest.fixture()
+    def spec(self) -> dict:
+        from fastapi.testclient import TestClient
+
+        from quant_research.web import create_app
+
+        return TestClient(create_app()).get("/api/import/excel/spec").json()
+
+    def test_aliases_come_from_the_parser(self, spec):
+        from quant_research.web.api import _EXCEL_HEADER_ALIASES
+
+        assert spec["aliases"] == {
+            field: list(aliases) for field, aliases in _EXCEL_HEADER_ALIASES.items()
+        }
+
+    def test_required_columns_differ_by_target(self, spec):
+        """持仓要三列，自选只要代码——说明写错了比没有说明更糟。"""
+        assert spec["required"]["portfolio"] == ["symbol", "shares", "cost"]
+        assert spec["required"]["watchlist"] == ["symbol"]
+
+    def test_rules_cover_the_traps_users_hit(self, spec):
+        """每条规则都对应一个真实踩过的坑：表头行、空行、xlsx、公式缓存。"""
+        text = "".join(spec["rules"])
+        for keyword in ("第 1 行", "空行", "xlsx", "公式"):
+            assert keyword in text
+
+    def test_examples_match_their_required_columns(self, spec):
+        """示例表头必须覆盖必填列——否则照抄示例反而导不进来。"""
+        from quant_research.web.api import _EXCEL_HEADER_ALIASES
+
+        for kind, example in spec["examples"].items():
+            header = [str(h) for h in example[0]]
+            for field in spec["required"][kind]:
+                assert any(alias in header for alias in _EXCEL_HEADER_ALIASES[field]), (kind, field)
+
+    def test_documented_example_actually_imports(self, tmp_path, monkeypatch):
+        """照抄说明里的示例表，必须真的导得进来——说明与解析器的最终一致性。"""
+        import io
+
+        from fastapi.testclient import TestClient
+        from openpyxl import Workbook
+
+        from quant_research.web import api as api_module
+        from quant_research.web import create_app
+
+        class _Settings:
+            class data:
+                directory = tmp_path
+
+        monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _Settings())
+        client = TestClient(create_app())
+        spec = client.get("/api/import/excel/spec").json()
+
+        for kind, endpoint in (("portfolio", "/api/portfolio"), ("watchlist", "/api/watchlist")):
+            workbook = Workbook()
+            sheet = workbook.active
+            for row in spec["examples"][kind]:
+                sheet.append(list(row))
+            buffer = io.BytesIO()
+            workbook.save(buffer)
+            payload = client.post(
+                f"{endpoint}/import/excel",
+                files={
+                    "file": (
+                        f"{kind}.xlsx",
+                        buffer.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                },
+            ).json()
+            assert payload["n_added"] == 2, (kind, payload)
+            assert not payload["invalid"], (kind, payload["invalid"])
