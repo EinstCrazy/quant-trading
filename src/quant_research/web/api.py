@@ -2362,11 +2362,17 @@ def _etf_refresh_view(adjust: str) -> dict[str, Any]:
             )
         except Exception as exc:  # noqa: BLE001 - 单只失败逐条上报
             failed.append({"symbol": bare, "error": str(exc)})
+    spot: dict[str, Any] | None = None
+    try:
+        spot = etf_mod.refresh_spot(root)
+    except Exception as exc:  # noqa: BLE001 - 份额快照失败不拖垮日线结果
+        failed.append({"symbol": "spot", "error": f"份额快照失败：{exc}"})
     snapshot = etf_mod.snapshot(root, adjust=adjust)
     return {
         **snapshot,
         "fetched": fetched,
         "failed": failed,
+        "spot": spot,
         "saved": bool(fetched),
         "available": bool(fetched) or snapshot["available"],
     }

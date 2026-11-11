@@ -35,12 +35,17 @@ __all__ = [
     "DIRECTORY",
     "ETF_UNIVERSE",
     "fetch",
+    "fetch_spot",
     "is_etf",
     "load",
+    "load_spot",
     "meta",
     "refresh",
+    "refresh_spot",
+    "share_delta",
     "snapshot",
     "store",
+    "store_spot",
 ]
 
 ETF_UNIVERSE: dict[str, str] = {
@@ -64,6 +69,8 @@ ETF_UNIVERSE: dict[str, str] = {
 _ETF_PREFIXES = ("50", "51", "58", "15", "16", "18")
 
 DIRECTORY = Path("processed/etf")
+# 份额快照按日留档：单日快照只有「是多少」，两次之间才有「在流入还是流出」
+SPOT_DIRECTORY = DIRECTORY / "spot"
 
 _COLUMN_MAP: dict[str, str] = {
     "日期": "date",
@@ -171,6 +178,108 @@ def refresh(root: Path, symbol: str, adjust: str = "qfq") -> pd.DataFrame:
     return frame
 
 
+def fetch_spot() -> tuple[dict[str, dict[str, Any]], str]:
+    """拉全部场内基金行情，过滤出清单里的 14 只。
+
+    一次全表（东财分页约 20 秒）比逐只查便宜；只留清单内的行，
+    未在清单里的 ETF 不进快照——清单外的代码不该悄悄出现在表里。
+    """
+    import akshare as ak
+
+    raw = ak.fund_etf_spot_em()
+    if raw is None or raw.empty:
+        raise ValueError("ETF 现货行情返回为空")
+    needed = {"代码", "最新价", "成交额", "最新份额", "总市值", "数据日期"}
+    missing = needed - set(raw.columns)
+    if missing:
+        raise ValueError(f"ETF 现货行情缺少列：{sorted(missing)}")
+    as_of = str(pd.to_datetime(raw["数据日期"].dropna().iloc[0]).date())
+    rows: dict[str, dict[str, Any]] = {}
+    for record in raw.itertuples(index=False):
+        code = str(record.代码).zfill(6)
+        if code not in ETF_UNIVERSE:
+            continue
+        share = record.最新份额
+        mktcap = record.总市值
+        rows[code] = {
+            "price": _num_or_none(record.最新价),
+            "amount": _num_or_none(record.成交额),
+            "share": _num_or_none(share),
+            "mktcap": _num_or_none(mktcap),
+        }
+    return rows, as_of
+
+
+def _num_or_none(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
+
+
+def store_spot(root: Path, rows: dict[str, dict[str, Any]], as_of: str) -> Path:
+    target = root / SPOT_DIRECTORY / f"{as_of}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({"as_of": as_of, "rows": rows}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return target
+
+
+def load_spot(root: Path, limit: int = 2) -> list[dict[str, Any]]:
+    """按日期倒序读最近 limit 份份额快照（坏文件跳过，不阻断分析）。"""
+    directory = root / SPOT_DIRECTORY
+    if not directory.is_dir():
+        return []
+    snapshots: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.json"), reverse=True)[:limit]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(payload.get("rows"), dict):
+            snapshots.append(payload)
+    return snapshots
+
+
+def share_delta(root: Path) -> dict[str, dict[str, Any]]:
+    """每只 ETF 的最新份额与「较上一份快照」的变化。
+
+    只有一份快照时 change 为 None——首次采集没有可比对象，如实标注
+    「需要至少两次采集」，不编一个 0% 的假变化。
+    """
+    snapshots = load_spot(root)
+    if not snapshots:
+        return {}
+    latest = snapshots[0]
+    previous = snapshots[1] if len(snapshots) > 1 else None
+    out: dict[str, dict[str, Any]] = {}
+    for code, row in latest["rows"].items():
+        share = row.get("share")
+        change: float | None = None
+        if previous and share and previous["rows"].get(code, {}).get("share"):
+            base = previous["rows"][code]["share"]
+            if base:
+                change = share / base - 1
+        out[code] = {
+            "share": share,
+            "mktcap": row.get("mktcap"),
+            "share_change": change,
+            "spot_as_of": latest["as_of"],
+            "spot_prev_as_of": previous["as_of"] if previous else None,
+        }
+    return out
+
+
+def refresh_spot(root: Path) -> dict[str, Any]:
+    """联网采一份份额快照并留档；返回本次采到的行与日期。"""
+    rows, as_of = fetch_spot()
+    if not rows:
+        raise ValueError("清单内 14 只 ETF 在现货行情里一只都没找到")
+    store_spot(root, rows, as_of)
+    return {"as_of": as_of, "n_rows": len(rows)}
+
+
 def _row(frame: pd.DataFrame) -> dict[str, Any]:
     """一只 ETF 的状态行：价位与量能，口径见模块 docstring。"""
     close = frame["close"]
@@ -206,12 +315,23 @@ def snapshot(root: Path, adjust: str = "qfq") -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     missing: list[str] = []
     as_of: str | None = None
+    shares = share_delta(root)
     for bare, name in sorted(ETF_UNIVERSE.items()):
         frame = load(root, bare)
         if frame is None:
             missing.append(f"{bare} {name}")
             continue
         row = {"symbol": bare, "name": name, **_row(frame)}
+        share = shares.get(bare)
+        if share:
+            row.update(
+                {
+                    "share": share["share"],
+                    "mktcap": share["mktcap"],
+                    "share_change": share["share_change"],
+                    "spot_as_of": share["spot_as_of"],
+                }
+            )
         if as_of is None or row["as_of"] > as_of:
             as_of = row["as_of"]
         rows.append(row)
@@ -222,5 +342,6 @@ def snapshot(root: Path, adjust: str = "qfq") -> dict[str, Any]:
         "missing": missing,
         "n_tracked": len(ETF_UNIVERSE),
         "adjust": adjust,
-        "note": "量比=当日额/前20日均额（不含当日）；水位=现价/近250日最高（含当日，今日新高即100%）；MA20偏离=现价/20日均-1",
+        "spot_as_of": (shares and next(iter(shares.values()))["spot_as_of"]) or None,
+        "note": "量比=当日额/前20日均额（不含当日）；水位=现价/近250日最高（含当日，今日新高即100%）；MA20偏离=现价/20日均-1；份额变化=最新份额/上一份快照-1（需要至少两次采集）",
     }

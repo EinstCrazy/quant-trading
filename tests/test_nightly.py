@@ -24,6 +24,21 @@ _SYMBOLS = (
     "000001.SZ",
     "000651.SZ",
 )  # real-shaped codes: the collector validates them
+
+
+@pytest.fixture(autouse=True)
+def _no_live_etf_spot(monkeypatch):
+    """nightly 的 ETF 份额快照一律本地假采：这套测试不该碰网络。
+
+    单条测试要验证「快照失败不阻断」时，在测试内再 monkeypatch 覆盖。
+    """
+    monkeypatch.setattr(
+        nightly.etf_mod,
+        "refresh_spot",
+        lambda root: {"as_of": "2026-11-11", "n_rows": 14},
+    )
+
+
 _MONDAY = date(2026, 11, 2)
 
 
@@ -214,10 +229,14 @@ class TestEnvironmentRefresh:
             lambda: {"fetched_at": None, "sectors": [], "top_in": [], "top_out": [], "missing": []},
         )
         monkeypatch.setattr(nightly.sector_flow_mod, "save", lambda root, snapshot: None)
+        monkeypatch.setattr(
+            nightly.etf_mod, "refresh_spot", lambda root: {"as_of": "2026-11-11", "n_rows": 14}
+        )
 
         result = nightly._refresh_environment(tmp_path)
 
         assert result["overseas"] == {"quotes": 1, "missing": []}
+        assert result["etf_spot"] == {"as_of": "2026-11-11", "n_rows": 14}
         assert result["index"]["symbol"] == "sh000001"
         assert result["sector_flow"] == {"sectors": 0, "missing": []}
         assert stored["snap"]["quotes"][0]["code"] == "NDX"
@@ -240,9 +259,41 @@ class TestEnvironmentRefresh:
             lambda: {"fetched_at": None, "sectors": [], "top_in": [], "top_out": [], "missing": []},
         )
         monkeypatch.setattr(nightly.sector_flow_mod, "save", lambda root, snapshot: None)
+        monkeypatch.setattr(
+            nightly.etf_mod, "refresh_spot", lambda root: {"as_of": "2026-11-11", "n_rows": 14}
+        )
 
         result = nightly._refresh_environment(tmp_path)
 
         assert "ConnectionError" in result["overseas"]["error"]
         assert result["index"]["as_of"] == str(_MONDAY)
         assert result["sector_flow"] == {"sectors": 0, "missing": []}
+
+    def test_a_broken_etf_spot_does_not_block_the_rest(self, tmp_path, monkeypatch):
+        """份额快照失败只是少了一天的份额变化，其余环境刷新照常落盘。"""
+        monkeypatch.setattr(nightly.overseas_mod, "fetch", self._snapshot)
+        monkeypatch.setattr(nightly.overseas_mod, "save", lambda root, snap: root)
+        monkeypatch.setattr(
+            nightly.index_mod,
+            "refresh",
+            lambda root, symbol: pd.DataFrame(
+                {"close": [1.0], "amount": [1.0]}, index=[pd.Timestamp(_MONDAY)]
+            ),
+        )
+        monkeypatch.setattr(
+            nightly.sector_flow_mod,
+            "fetch",
+            lambda: {"fetched_at": None, "sectors": [], "top_in": [], "top_out": [], "missing": []},
+        )
+        monkeypatch.setattr(nightly.sector_flow_mod, "save", lambda root, snapshot: None)
+
+        def boom(root) -> dict:
+            raise TimeoutError("行情接口超时")
+
+        monkeypatch.setattr(nightly.etf_mod, "refresh_spot", boom)
+
+        result = nightly._refresh_environment(tmp_path)
+
+        assert "TimeoutError" in result["etf_spot"]["error"]
+        assert result["index"]["as_of"] == str(_MONDAY)
+        assert result["overseas"] == {"quotes": 1, "missing": []}

@@ -25,6 +25,7 @@ import pandas as pd
 from quant_research import overseas as overseas_mod
 from quant_research import sector_flow as sector_flow_mod
 from quant_research.collector import DEFAULT_TIMEZONE, collect_once, now_in
+from quant_research.data import etf as etf_mod
 from quant_research.data import index as index_mod
 from quant_research.data.cache import (
     build_panel_cache,
@@ -105,6 +106,13 @@ def _refresh_environment(data_root: Path) -> dict[str, object]:
         }
     except Exception as exc:  # noqa: BLE001
         result["sector_flow"] = {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        # ETF 份额快照必须每晚留档：单日快照只有「是多少」，两次之间
+        # 才有「在流入还是流出」——断了就有洞，所以跟着 nightly 走
+        spot = etf_mod.refresh_spot(Path(data_root))
+        result["etf_spot"] = spot
+    except Exception as exc:  # noqa: BLE001
+        result["etf_spot"] = {"error": f"{type(exc).__name__}: {exc}"}
     return result
 
 

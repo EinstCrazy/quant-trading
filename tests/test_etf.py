@@ -200,6 +200,9 @@ class TestAPI:
             return _bars()
 
         monkeypatch.setattr(etf_mod, "refresh", fake_refresh)
+        monkeypatch.setattr(
+            etf_mod, "refresh_spot", lambda root: {"as_of": "2026-11-11", "n_rows": 0}
+        )
 
         payload = etf_client.post("/api/etf/refresh").json()
 
@@ -292,3 +295,91 @@ class TestRefreshFallback:
         assert frame is not None
         assert attempts[0] is None and attempts[1] == date(2015, 1, 1)
         assert etf_mod.load(tmp_path, "510050") is not None
+
+
+class TestSpot:
+    """份额快照：单日只有「是多少」，两次之间才有「在流入还是流出」。"""
+
+    def test_fetch_spot_filters_to_the_watchlist(self, monkeypatch):
+        import akshare as ak
+
+        raw = pd.DataFrame(
+            {
+                "代码": ["510300", "511990", "159915"],
+                "最新价": [4.12, 100.0, 2.52],
+                "成交额": [1.5e9, 3e8, 4.2e9],
+                "最新份额": [4.6e10, 1e9, 4.5e10],
+                "总市值": [1.9e11, 1e11, 1.1e11],
+                "数据日期": ["2026-11-11"] * 3,
+            }
+        )
+        monkeypatch.setattr(ak, "fund_etf_spot_em", lambda: raw)
+
+        rows, as_of = etf_mod.fetch_spot()
+
+        assert as_of == "2026-11-11"
+        assert set(rows) == {"510300", "159915"}  # 清单外的 511990 不进快照
+        assert rows["510300"]["share"] == pytest.approx(4.6e10)
+
+    def test_single_snapshot_has_no_fake_change(self, tmp_path):
+        etf_mod.store_spot(tmp_path, {"510300": {"share": 4.6e10, "mktcap": 1.9e11}}, "2026-11-10")
+
+        delta = etf_mod.share_delta(tmp_path)
+
+        assert delta["510300"]["share_change"] is None  # 同比对象不存在就是 None
+        assert delta["510300"]["spot_prev_as_of"] is None
+
+    def test_change_is_measured_against_the_previous_snapshot(self, tmp_path):
+        etf_mod.store_spot(tmp_path, {"510300": {"share": 4.6e10, "mktcap": 1.9e11}}, "2026-11-10")
+        etf_mod.store_spot(tmp_path, {"510300": {"share": 4.83e10, "mktcap": 2.0e11}}, "2026-11-11")
+
+        delta = etf_mod.share_delta(tmp_path)
+
+        assert delta["510300"]["share_change"] == pytest.approx(0.05)  # 4.83/4.6-1
+        assert delta["510300"]["spot_prev_as_of"] == "2026-11-10"
+        assert delta["510300"]["spot_as_of"] == "2026-11-11"
+
+    def test_snapshot_merges_share_info(self, tmp_path):
+        etf_mod.store(tmp_path, "510300", _bars())
+        etf_mod.store_spot(tmp_path, {"510300": {"share": 4.6e10, "mktcap": 1.9e11}}, "2026-11-11")
+
+        row = next(r for r in etf_mod.snapshot(tmp_path)["rows"] if r["symbol"] == "510300")
+
+        assert row["share"] == pytest.approx(4.6e10)
+        assert row["mktcap"] == pytest.approx(1.9e11)
+        assert row["spot_as_of"] == "2026-11-11"
+
+    def test_broken_spot_file_is_skipped(self, tmp_path):
+        directory = tmp_path / etf_mod.SPOT_DIRECTORY
+        directory.mkdir(parents=True)
+        (directory / "2026-11-11.json").write_text("{not json", encoding="utf-8")
+
+        assert etf_mod.load_spot(tmp_path) == []
+        assert etf_mod.share_delta(tmp_path) == {}
+
+    def test_refresh_spot_failure_does_not_sink_the_daily_bars(self, tmp_path, monkeypatch):
+        """份额快照挂了，日线结果照常返回，失败在 failed 里逐条可见。"""
+        from quant_research.web import api as api_module
+
+        monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _FakeSettings(tmp_path))
+        monkeypatch.setattr(etf_mod, "refresh", lambda root, symbol, adjust="qfq": _bars())
+        monkeypatch.setattr(
+            etf_mod,
+            "refresh_spot",
+            lambda root: (_ for _ in ()).throw(RuntimeError("现货行情超时")),
+        )
+
+        payload = api_module._etf_refresh_view("qfq")
+
+        assert len(payload["fetched"]) == len(etf_mod.ETF_UNIVERSE)
+        assert any(row["symbol"] == "spot" for row in payload["failed"])
+        assert payload["available"] is True
+
+
+class _FakeSettings:
+    def __init__(self, directory):
+        class _Data:
+            pass
+
+        self.data = _Data()
+        self.data.directory = directory

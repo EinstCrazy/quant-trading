@@ -2391,7 +2391,7 @@ function renderEtf() {
   const note = $("etf-note");
   const target = $("etf-body");
   if (!ETF_DATA) return;
-  note.textContent = `${ETF_DATA.n_tracked} 只清单 · 截至 ${ETF_DATA.as_of || "—"} · ${ETF_DATA.adjust}`;
+  note.textContent = `${ETF_DATA.n_tracked} 只清单 · 行情截至 ${ETF_DATA.as_of || "—"} · 份额 ${ETF_DATA.spot_as_of || "未采"}`;
   const rows = ETF_DATA.rows || [];
   if (!rows.length) {
     target.innerHTML = `<div class="empty">清单里 ${ETF_DATA.n_tracked} 只 ETF 还一只都没采集过。点「刷新（联网采集）」补数——快照只读缓存，不会自己联网。</div>`;
@@ -2401,7 +2401,7 @@ function renderEtf() {
     value == null ? '<span class="muted">—</span>'
       : `<span class="${value >= 0 ? "up" : "down"}">${value >= 0 ? "+" : ""}${(value * 100).toFixed(digits)}%</span>`;
   target.innerHTML = `
-    <table><thead><tr><th>名称</th><th>代码</th><th>收盘</th><th>当日</th><th>量比</th><th>水位</th><th>MA20 偏离</th><th>更新</th></tr></thead><tbody>
+    <table><thead><tr><th>名称</th><th>代码</th><th>收盘</th><th>当日</th><th>量比</th><th>水位</th><th>MA20 偏离</th><th>份额变化</th><th>规模</th><th>更新</th></tr></thead><tbody>
     ${rows
       .map((row) => `<tr>
         <td>${row.name}</td>
@@ -2411,6 +2411,8 @@ function renderEtf() {
         <td>${row.vol_ratio == null ? '<span class="muted">—</span>' : row.vol_ratio.toFixed(2)}</td>
         <td>${row.level == null ? '<span class="muted">—</span>' : (row.level * 100).toFixed(0) + "%"}</td>
         <td>${pct(row.ma20_gap)}</td>
+        <td>${row.share_change == null ? '<span class="muted" title="需要至少两次份额快照">—</span>' : pct(row.share_change, 2)}</td>
+        <td>${row.mktcap == null ? '<span class="muted">—</span>' : (row.mktcap / 1e8).toFixed(0) + " 亿"}</td>
         <td class="muted">${row.as_of}</td>
       </tr>`)
       .join("")}
