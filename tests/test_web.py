@@ -709,3 +709,48 @@ if ((target.innerHTML.match(/<rect/g) || []).length < 2) { console.error("NO_CAN
         )
         result = subprocess.run(["node", str(script)], capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stderr
+
+
+class TestEtfDetailLink:
+    """ETF 列表点一只进详情：同页详情区 + 可分享的哈希深链。
+
+    不做第二个页面：同一份数据画两遍，迟早有一边先腐坏。列表行、名称、
+    代码都可点；#/etf/510300 刷新与前进后退都能还原。
+    """
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_snapshot_rows_are_clickable(self):
+        html = self._html()
+        assert '<tr data-etf-row="${row.symbol}">' in html
+        assert 'data-etf-jump="${row.symbol}"' in html
+
+    def test_hash_route_selects_the_etf(self):
+        html = self._html()
+        assert "ETF_PENDING = decodeURIComponent(arg)" in html
+        assert 'if (name === "etf" && arg)' in html
+
+    def test_jump_reuses_the_same_detail_section(self):
+        """详情就是「走势与历史」卡：选中 + 滚动 + 行高亮，不新开页面。"""
+        html = self._html()
+        assert "function jumpToEtf(" in html
+        assert "function selectEtfDetail(" in html
+        assert "function highlightEtfRow(" in html
+        assert 'row.classList.toggle("selected"' in html
+
+    def test_pending_selection_is_cleared_when_nothing_is_collectable(self):
+        """没有可选的标的时待选必须清掉，否则下次进页会莫名选中旧标的。"""
+        html = self._html()
+        section = html.split("function renderEtfHistory(")[1].split("async function refreshEtf(")[0]
+        assert section.count("ETF_PENDING = null") >= 1
+
+    def test_deep_link_does_not_double_fetch(self):
+        """深链进入只取一次历史：选中与加载同一趟完成，不调两次 selectEtfDetail。"""
+        html = self._html()
+        section = html.split("function renderEtfHistory(")[1].split("async function refreshEtf(")[0]
+        assert "selectEtfDetail(pending)" not in section
+        assert "highlightEtfRow(pending)" in section

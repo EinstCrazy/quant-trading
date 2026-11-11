@@ -166,6 +166,11 @@
   .pf-group { margin-top: 12px; }
   .pf-group h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
   .pf-item { border-left: 3px solid var(--line); padding: 4px 10px; margin: 6px 0; }
+  /* 滚动定位：导航栏是 sticky 的，不加边距会被它盖住标题 */
+  #etf-hist-chart { scroll-margin-top: 76px; }
+  #etf-body tbody tr[data-etf-row] { cursor: pointer; }
+  #etf-body tbody tr[data-etf-row]:hover { background: #f7f9fc; }
+  #etf-body tbody tr.selected { background: #eef4ff; }
   .pf-bar { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; }
   .pf-bar-label { width: 150px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pf-bar-track { flex: 1; height: 10px; background: #f1f3f6; border-radius: 5px; overflow: hidden; }
@@ -1042,6 +1047,16 @@ function applyHash() {
     $("ind-symbol").value = decodeURIComponent(arg);
     if (!$("view-indicators").classList.contains("active")) showView("indicators", false);
     loadIndicatorDetail();
+    return;
+  }
+  if (name === "etf" && arg) {
+    // 待选标的交给渲染流程：快照与走势都还没加载时先走一遍，加载完再选中
+    ETF_PENDING = decodeURIComponent(arg);
+    if (!$("view-etf").classList.contains("active")) {
+      showView("etf", false);
+    } else if (ETF_DATA) {
+      renderEtf();
+    }
     return;
   }
   if ($("view-" + name).classList.contains("active")) return;
@@ -2031,6 +2046,19 @@ document.addEventListener("click", (event) => {
   jumpToSymbol(link.dataset.jump);
 });
 
+/* ETF 列表：名称与代码都可点，进同页详情（哈希可分享）。整行点也行——
+   行不是链接时也能点，符合「列表里点一只看它」的直觉。 */
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("[data-etf-jump]");
+  if (link) {
+    event.preventDefault();
+    jumpToEtf(link.dataset.etfJump);
+    return;
+  }
+  const row = event.target.closest("#etf-body tr[data-etf-row]");
+  if (row) jumpToEtf(row.dataset.etfRow);
+});
+
 /* ---------- 量能分析 ---------- */
 /* 成交量本身没有方向：放量上涨是资金流入，放量下跌是有人离场，缩量上涨
    是没人跟。所以这里给的是量价组合的四象限 + 每个象限该盯什么，不是
@@ -2649,6 +2677,39 @@ $("ov-go-collect").addEventListener("click", () => showView("collect"));
 
 let ETF_DATA = null;
 
+/* 点列表进详情：同页的「走势与历史」卡就是详情区——选中、滚到那里、
+    hash 变成 #/etf/510300 可直接分享/刷新还原。不做第二个页面：同一份
+    数据画两遍，迟早有一边先腐坏。 */
+let ETF_PENDING = null;
+
+function jumpToEtf(symbol) {
+  const target = `#/etf/${encodeURIComponent(symbol)}`;
+  if (location.hash === target) {
+    selectEtfDetail(symbol);
+  } else {
+    location.hash = target;
+  }
+}
+
+function highlightEtfRow(symbol) {
+  document.querySelectorAll("#etf-body tr[data-etf-row]").forEach((row) => {
+    row.classList.toggle("selected", row.dataset.etfRow === symbol);
+  });
+  const card = $("etf-hist-chart")?.closest(".card");
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function selectEtfDetail(symbol) {
+  const select = $("etf-hist-symbol");
+  if (![...select.options].some((item) => item.value === symbol)) {
+    toast(`清单里没有 ${symbol}，或它还没采集过日线`);
+    return;
+  }
+  select.value = symbol;
+  loadEtfHistory();
+  highlightEtfRow(symbol);
+}
+
 async function loadEtf() {
   const note = $("etf-note");
   const target = $("etf-body");
@@ -2678,6 +2739,7 @@ function renderEtf() {
   note.textContent = `${ETF_DATA.n_tracked} 只清单 · 行情截至 ${ETF_DATA.as_of || "—"} · 份额 ${ETF_DATA.spot_as_of || "未采"}`;
   const rows = ETF_DATA.rows || [];
   if (!rows.length) {
+    ETF_PENDING = null;
     target.innerHTML = `<div class="empty">清单里 ${ETF_DATA.n_tracked} 只 ETF 还一只都没采集过。点「刷新（联网采集）」补数——快照只读缓存，不会自己联网。</div>`;
     return;
   }
@@ -2687,9 +2749,9 @@ function renderEtf() {
   target.innerHTML = `
     <table><thead><tr><th>名称</th><th>代码</th><th>收盘</th><th>当日</th><th>量比</th><th>水位</th><th>MA20 偏离</th><th>份额变化</th><th>规模</th><th>更新</th></tr></thead><tbody>
     ${rows
-      .map((row) => `<tr>
-        <td>${row.name}</td>
-        <td class="muted">${row.symbol}</td>
+      .map((row) => `<tr data-etf-row="${row.symbol}">
+        <td><a class="sym-link" data-etf-jump="${row.symbol}" title="看这只 ETF 的走势与历史">${row.name}</a></td>
+        <td class="muted"><a class="sym-link" data-etf-jump="${row.symbol}">${row.symbol}</a></td>
         <td>${row.last_close.toFixed(3)}</td>
         <td>${pct(row.day_change)}</td>
         <td>${row.vol_ratio == null ? '<span class="muted">—</span>' : row.vol_ratio.toFixed(2)}</td>
@@ -2717,19 +2779,24 @@ function renderEtfHistory() {
   if (!ETF_DATA) return;
   const rows = (ETF_DATA.rows || []).filter((row) => row.last_close != null);
   if (!rows.length) {
+    ETF_PENDING = null;  // 没有可选的标的：不留待选，免得下次进页莫名选中
     $("etf-hist-chart").innerHTML = '<div class="empty">还没有采集过任何 ETF 日线：点上面的「刷新（联网采集）」</div>';
     select.innerHTML = "";
     $("etf-hist-facts").innerHTML = "";
     $("etf-hist-amount").innerHTML = "";
     return;
   }
-  const previous = select.value;
+  const previous = ETF_PENDING || select.value;
   select.innerHTML = rows
     .map((row) => `<option value="${row.symbol}">${row.symbol} ${row.name}</option>`)
     .join("");
   const values = [...select.options].map((option) => option.value);
-  select.value = values.includes(previous) ? previous : values[0];
-  loadEtfHistory();
+  const pending = ETF_PENDING;
+  ETF_PENDING = null;
+  const wanted = values.includes(previous) ? previous : values[0];
+  select.value = wanted;
+  loadEtfHistory();  // 只取一次历史：深链进入时选中与加载同一趟完成
+  if (pending && pending === wanted) highlightEtfRow(pending);
 }
 
 async function loadEtfHistory() {
