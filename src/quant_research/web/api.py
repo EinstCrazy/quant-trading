@@ -7,6 +7,7 @@ pricing logic of its own, so the UI can never disagree with a notebook.
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 from collections.abc import Callable
@@ -232,7 +233,12 @@ def _execute(request: BacktestRequest) -> tuple[BacktestResult, pd.Series]:
             status_code=404,
             detail=f"unknown strategy {request.strategy!r}; available: {sorted(STRATEGY_REGISTRY)}",
         )
-    signal = get_signal(request.strategy)(panel.prices, **request.params)
+    factory = get_signal(request.strategy)
+    kwargs: dict[str, Any] = dict(request.params)
+    if "amount" in inspect.signature(factory).parameters:
+        # 声明需要成交额的策略（放量/缩量条件）拿到面板实数；没有时策略内部如实降级
+        kwargs.setdefault("amount", panel.field("amount") if panel.has_field("amount") else None)
+    signal = factory(panel.prices, **kwargs)
 
     exec_prices = panel.field("open") if request.exec_price == "open" else None
     policy = _policy(request.policy)
@@ -2181,6 +2187,73 @@ def playbook() -> dict[str, Any]:
     snapshot = overseas_mod.load(settings.data.directory)
     tone_env = overseas_mod.analyze(snapshot)["tone"] if snapshot else None
     return playbook_mod.analyze(volume_env, tone_env)
+
+
+# 可编码进日线回测的战法：key → (策略注册名, 默认参数)。
+# 金字塔加仓、ATR 定仓、盘中触发这类细节不在日线等权回测的编码范围内，
+# 结果只回答「这条规则在本样本上的毛收益轮廓」，不是战法全文的验证。
+TACTIC_STRATEGIES: dict[str, tuple[str, dict[str, float]]] = {
+    "turtle": ("turtle", {}),
+    "breakout-20d-high": ("breakout-20d-high", {}),
+    "pullback-ma20": ("pullback-ma20", {}),
+}
+
+
+@router.post("/playbook/verify")
+def playbook_verify() -> dict[str, Any]:
+    """对可编码战法跑本样本回测，把「胜率未知」变成「本样本上的轮廓」。
+
+    POST 而非 GET：整面板 × 3 条策略的向量化计算是重活，不该在页面
+    刷新的路径上。样本范围（多少只、多少天）随响应返回——脱离样本
+    范围谈回测数字都是编造。整样本从未触发的战法如实说「未触发」，
+    不给一个空转的净值曲线。
+    """
+    settings = load_settings()
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    except HTTPException as exc:
+        raise HTTPException(status_code=400, detail=f"面板不可用：{exc.detail}") from None
+
+    results: list[dict[str, Any]] = []
+    for key, (strategy, params) in TACTIC_STRATEGIES.items():
+        factory = get_signal(strategy)
+        kwargs: dict[str, Any] = dict(params)
+        if "amount" in inspect.signature(factory).parameters and panel.has_field("amount"):
+            kwargs["amount"] = panel.field("amount")
+        signal = factory(panel.prices, **kwargs)
+        if not bool(signal.to_numpy().any()):
+            results.append(
+                {
+                    "key": key,
+                    "name": next(p.name for p in playbook_mod.PLAYS if p.key == key),
+                    "available": False,
+                    "reason": "全样本从未触发——规则太严或面板窗口不足，不编结果",
+                }
+            )
+            continue
+        config = BacktestConfig.from_settings(settings)
+        result = run_signal_backtest(
+            panel.prices, signal, weight_method="equal_weight", config=config
+        )
+        metrics = _metrics(result.summary(benchmark_buy_hold(panel.prices)))
+        results.append(
+            {
+                "key": key,
+                "name": next(p.name for p in playbook_mod.PLAYS if p.key == key),
+                "available": True,
+                "metrics": metrics,
+                "n_symbols_with_signal": int((signal.sum() > 0).sum()),
+                "n_days_in_market": int(signal.to_numpy().sum()),
+            }
+        )
+
+    return {
+        "available": True,
+        "as_of": str(panel.prices.index[-1].date()),
+        "n_symbols": int(panel.prices.shape[1]),
+        "n_days": len(panel.prices),
+        "results": results,
+    }
 
 
 def _market_volume(settings: Any) -> tuple[dict[str, Any] | None, str]:

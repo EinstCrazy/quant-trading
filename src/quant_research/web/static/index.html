@@ -625,6 +625,14 @@
         <div id="pb-env"></div>
       </div>
       <div id="pb-plays"></div>
+      <div class="card">
+        <h3>回测验证 <span class="muted" id="pv-note"></span></h3>
+        <div class="row" style="margin-bottom:10px">
+          <button class="btn" id="pv-run">跑本样本回测验证</button>
+          <span class="muted">三条可编码战法（海龟 / 放量突破 / MA20 回踩）按日线 0/1 信号、等权持有、含成本回测；金字塔加仓、ATR 定仓、盘中触发不在编码范围——结果只回答「规则在本样本上的毛收益轮廓」，亏不代表战法错，赚也不代表照做就对</span>
+        </div>
+        <div id="pv-body"></div>
+      </div>
       <p class="muted" id="pb-disclaimer" style="font-size:12px;line-height:1.7;margin-top:12px"></p>
     </section>
 
@@ -649,6 +657,9 @@ const PCT = new Set(["cumulative_return", "cagr", "annualized_volatility", "max_
 const STRATEGY_PARAMS = {
   ma_cross: [["fast_window", "快线窗口", 20], ["slow_window", "慢线窗口", 50]],
   random: [],
+  turtle: [["entry_window", "突破窗口", 20], ["exit_window", "出场窗口", 10]],
+  "breakout-20d-high": [["entry_window", "突破窗口", 20], ["vol_ratio_min", "量比下限", 1.5], ["exit_days", "跌回确认天数", 2]],
+  "pullback-ma20": [["band", "回踩带宽", 0.02], ["exit_days", "破位确认天数", 2], ["exit_vol_ratio", "破位量比", 1.5]],
 };
 const COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2",
   "#4b5563", "#ca8a04"];
@@ -1137,8 +1148,7 @@ function buildBacktestForm() {
   $("bt-form").innerHTML = `
     <div class="field"><label>策略</label><select id="bt-strategy">
       ${strategies.map((s) => `<option value="${s}">${s}</option>`).join("")}</select></div>
-    <div class="field"><label>快线窗口</label><input id="bt-fast" type="number" value="20"></div>
-    <div class="field"><label>慢线窗口</label><input id="bt-slow" type="number" value="50"></div>
+    <div id="bt-params"></div>
     <div class="field"><label>权重方法</label><select id="bt-weight">
       <option value="equal_weight">等权</option><option value="fixed">固定</option>
       <option value="inverse_volatility">波动率倒数</option></select></div>
@@ -1150,13 +1160,27 @@ function buildBacktestForm() {
     <div class="field"><label>最小成交额</label><input id="bt-mintrade" type="number" value="0" step="100"></div>
     <div class="field"><label>单标的上限（空=不限）</label><input id="bt-maxw" type="number" step="0.05"></div>
     <div class="field"><label>初始资金</label><input id="bt-cash" type="number" value="100000" step="10000"></div>`;
+  renderBtParams();
+  if (!s.dataset.btWired) {
+    $("bt-strategy").addEventListener("change", renderBtParams);
+    s.dataset.btWired = "1";
+  }
+}
+
+/* 参数区按当前策略动态渲染——新增策略只需在 STRATEGY_PARAMS 加一行 */
+function renderBtParams() {
+  const strategy = $("bt-strategy").value;
+  $("bt-params").innerHTML = (STRATEGY_PARAMS[strategy] || [])
+    .map(([key, label, value]) =>
+      `<div class="field"><label>${label}</label><input id="bp-${key}" type="number" value="${value}" step="any"></div>`)
+    .join("");
 }
 
 function currentRequest() {
   const params = {};
   const strategy = $("bt-strategy").value;
-  (STRATEGY_PARAMS[strategy] || []).forEach(([key, _label, _default]) => {
-    const value = Number($(key === "fast_window" ? "bt-fast" : "bt-slow").value);
+  (STRATEGY_PARAMS[strategy] || []).forEach(([key]) => {
+    const value = Number($("bp-" + key).value);
     if (!Number.isNaN(value)) params[key] = value;
   });
   const maxWeight = $("bt-maxw").value === "" ? null : Number($("bt-maxw").value);
@@ -2315,6 +2339,60 @@ async function loadOvRisk() {
 }
 
 $("ov-go-collect").addEventListener("click", () => showView("collect"));
+
+/* ---------- 战法回测验证 ---------- */
+/* 「胜率未知」到「本样本上的轮廓」：POST 本地计算，不联网、不写盘。
+   数字里带成本（回测页默认 5bps 佣金 + 2bps 滑点）——换手率高的规则
+   被成本吃掉多少，是战法能不能落地的一部分。 */
+
+let PLAY_VERIFY = null;
+
+async function runPlayVerify() {
+  const note = $("pv-note");
+  const target = $("pv-body");
+  skeleton(target, "rows");
+  note.textContent = "整面板 × 3 条策略，约几秒…";
+  try {
+    PLAY_VERIFY = await api("/playbook/verify", { method: "POST" });
+  } catch (error) {
+    renderError(target, error.message, () => runPlayVerify());
+    note.textContent = "";
+    return;
+  }
+  renderPlayVerify();
+}
+
+function renderPlayVerify() {
+  const note = $("pv-note");
+  const target = $("pv-body");
+  if (!PLAY_VERIFY) return;
+  note.textContent = `样本 ${PLAY_VERIFY.n_symbols} 只 × ${PLAY_VERIFY.n_days} 个交易日 · 截至 ${PLAY_VERIFY.as_of} · 等权含成本`;
+  target.innerHTML = `
+    <table><thead><tr><th>战法</th><th>累计收益</th><th>年化</th><th>夏普</th><th>最大回撤</th><th>日胜率</th><th>触发票数</th><th>在市票日</th></tr></thead><tbody>
+    ${PLAY_VERIFY.results
+      .map((row) =>
+        row.available
+          ? `<tr>
+              <td>${row.name}</td>
+              <td class="${row.metrics.cumulative_return >= 0 ? "up" : "down"}">${(row.metrics.cumulative_return * 100).toFixed(1)}%</td>
+              <td class="${row.metrics.cagr >= 0 ? "up" : "down"}">${(row.metrics.cagr * 100).toFixed(1)}%</td>
+              <td>${fmt(row.metrics.sharpe)}</td>
+              <td class="down">${(row.metrics.max_drawdown * 100).toFixed(1)}%</td>
+              <td>${(row.metrics.win_rate * 100).toFixed(0)}%</td>
+              <td>${row.n_symbols_with_signal}</td>
+              <td>${row.n_days_in_market}</td>
+            </tr>`
+          : `<tr><td>${row.name}</td><td colspan="7" class="muted" style="text-align:left">${row.reason}</td></tr>`,
+      )
+      .join("")}
+    </tbody></table>
+    <p class="muted" style="margin:10px 0 0;line-height:1.7">
+      这是规则编码后的回测，不是战法全文的验证：日线等权只吃了规则的骨架，成本按回测页默认参数。
+      样本是 238 只跨行业代表票——换一个市场、换一段行情，轮廓会变。数字让人清醒，不替人决定。
+    </p>`;
+}
+
+$("pv-run").addEventListener("click", () => withButton($("pv-run"), runPlayVerify));
 
 /* ---------- 行业资金流 ---------- */
 /* 东财口径与板块表的证监会分类对不上，所以独立成卡：宁缺毋配。 */

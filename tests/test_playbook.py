@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -226,3 +227,112 @@ class TestAPI:
 
         assert payload["environment"]["as_of"] == "2024-02-09"
         assert _by_key(payload, "first-red")["status"] is not None
+
+
+class TestPlaybookVerify:
+    """可编码战法的回测验证：把「胜率未知」变成「本样本上的轮廓」——
+    前提是数字真的来自本样本；从未触发就如实说未触发，不编曲线。"""
+
+    @pytest.fixture()
+    def pv_client(self, tmp_path, monkeypatch) -> TestClient:
+        from quant_research.web import api as api_module
+        from quant_research.web import create_app
+
+        class _Data:
+            directory = tmp_path
+
+        class _Collection:
+            provider = "baostock"
+            adjust = "qfq"
+
+        class _Backtest:
+            initial_cash = 100000
+            commission_bps = 5.0
+            slippage_bps = 2.0
+            allow_short = False
+
+        class _Settings:
+            data = _Data()
+            collection = _Collection()
+            backtest = _Backtest()
+
+        monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _Settings())
+        return TestClient(create_app())
+
+    @staticmethod
+    def _panel(rows: int = 30, symbols: int = 3):
+        """横盘 + 末日放量跳升：海龟与放量突破确定性触发。"""
+        import pandas as pd
+
+        from quant_research.data.loader import PricePanel
+
+        index = pd.bdate_range("2024-01-01", periods=rows)
+        steps = np.concatenate([np.full(rows - 1, 100.0), [120.0]])
+        prices = pd.DataFrame({f"S{step}": steps for step in range(symbols)}, index=index)
+        amounts = np.full(rows, 1e6)
+        amounts[-1] = 3e6  # 量比 3：放量条件达标
+        amount = pd.DataFrame({f"S{step}": amounts for step in range(symbols)}, index=index)
+        return PricePanel(prices=prices, extra={"amount": amount, "volume": amount / 10})
+
+    def test_verify_scores_every_codable_play_on_this_sample(self, pv_client, monkeypatch):
+        from quant_research.web import api as api_module
+
+        panel = self._panel(rows=30)
+        monkeypatch.setattr(api_module, "_load_panel", lambda *a, **k: panel)
+
+        payload = pv_client.post("/api/playbook/verify").json()
+
+        assert payload["available"] is True
+        assert payload["n_symbols"] == 3 and payload["n_days"] == 30
+        keys = {row["key"] for row in payload["results"]}
+        assert keys == {"turtle", "breakout-20d-high", "pullback-ma20"}
+        scored = {row["key"]: row for row in payload["results"] if row["available"]}
+        # 横盘 + 末日放量跳升：海龟与放量突破确定性触发
+        assert "turtle" in scored and "breakout-20d-high" in scored
+        for row in scored.values():
+            metrics = row["metrics"]
+            assert metrics["cumulative_return"] is not None
+            assert metrics["win_rate"] is not None
+            assert row["n_symbols_with_signal"] >= 1
+
+    def test_untriggered_play_reads_as_untriggered_not_zero_return(self, pv_client, monkeypatch):
+        """单边下跌面板喂给海龟：从不创 20 日新高就从不入场——
+        回测必须如实说「未触发」，而不是给一条空转的净值曲线。"""
+        import pandas as pd
+
+        from quant_research.data.loader import PricePanel
+        from quant_research.web import api as api_module
+
+        rows = 40
+        index = pd.bdate_range("2024-01-01", periods=rows)
+        prices = pd.DataFrame(
+            {
+                "S0": np.linspace(120.0, 80.0, rows),
+                "S1": np.linspace(100.0, 60.0, rows),
+                "S2": np.linspace(90.0, 70.0, rows),
+            },
+            index=index,
+        )
+        panel = PricePanel(prices=prices, extra={"amount": prices * 1e6, "volume": prices * 1e5})
+        monkeypatch.setattr(api_module, "_load_panel", lambda *a, **k: panel)
+
+        payload = pv_client.post("/api/playbook/verify").json()
+
+        by_key = {row["key"]: row for row in payload["results"]}
+        assert by_key["turtle"]["available"] is False
+        assert "未触发" in by_key["turtle"]["reason"]
+
+    def test_without_a_panel_the_400_names_the_prerequisite(self, pv_client, monkeypatch):
+        from fastapi import HTTPException
+
+        from quant_research.web import api as api_module
+
+        def no_panel(*args, **kwargs):
+            raise HTTPException(status_code=404, detail="没有缓存面板")
+
+        monkeypatch.setattr(api_module, "_load_panel", no_panel)
+
+        response = pv_client.post("/api/playbook/verify")
+
+        assert response.status_code == 400
+        assert "面板不可用" in response.json()["detail"]
