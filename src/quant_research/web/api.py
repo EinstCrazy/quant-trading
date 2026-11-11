@@ -2867,6 +2867,30 @@ def etf_history(symbol: str, days: int = Query(250, ge=20, le=1500)) -> dict[str
         raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
+@router.post("/etf/{symbol}/refresh")
+def etf_refresh_one(symbol: str, adjust: str = "qfq") -> dict[str, Any]:
+    """单只 ETF 联网采集：详情页「更新这只」用。
+
+    整批刷新一轮十几只，用户等的是半分钟；看某一只时只需要这一只的新
+    数据。失败如实 400 带上原因，不返回一个「成功」的空壳。
+    """
+    settings = load_settings()
+    bare = etf_mod.to_bare_symbol(symbol)
+    try:
+        frame = etf_mod.refresh(settings.data.directory, bare, adjust=adjust)
+    except Exception as exc:  # noqa: BLE001 - 采集异常原样上报
+        raise HTTPException(
+            status_code=400, detail=f"{bare} 采集失败：{type(exc).__name__}: {exc}"
+        ) from None
+    return {
+        "symbol": bare,
+        "name": etf_mod.ETF_UNIVERSE.get(bare, ""),
+        "rows": len(frame),
+        "as_of": str(frame.index[-1].date()) if len(frame) else None,
+        "snapshot": etf_mod.snapshot(settings.data.directory, adjust=adjust),
+    }
+
+
 @router.post("/etf/refresh")
 def etf_refresh(adjust: str = "qfq") -> dict[str, Any]:
     """逐只联网采集 ETF 日线（东财 fund_etf_hist_em）。"""

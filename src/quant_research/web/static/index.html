@@ -677,7 +677,8 @@
         <div class="row" style="margin-bottom:8px">
           <label>标的</label>
           <select id="etf-hist-symbol" style="width:260px"></select>
-          <span class="muted" style="font-size:12px">日线蜡烛 + MA20 / MA60；下方为成交额（亿元）——只读缓存，不联网</span>
+          <button class="btn ghost" id="etf-hist-refresh" title="只联网采集这只 ETF 的日线，不动其他标的">更新这只（联网）</button>
+          <span class="muted" style="font-size:12px">日线蜡烛 + MA20 / MA60；下方为成交额（亿元）——图只读缓存，点按钮才联网</span>
         </div>
         <div id="etf-hist-chart"></div>
         <div id="etf-hist-facts" class="row" style="gap:16px;margin:8px 0;flex-wrap:wrap"></div>
@@ -693,6 +694,7 @@
             <option value="250" selected>250 日</option>
             <option value="500">500 日</option>
           </select>
+          <button class="btn ghost" id="etf-cmp-refresh" title="逐只联网采集选中的 ETF，失败会点名">更新选中（联网）</button>
         </div>
         <div id="etf-cmp-chart"></div>
         <div id="etf-cmp-table" style="margin-top:8px"></div>
@@ -4021,6 +4023,55 @@ $("pf-account-filter").addEventListener("change", () => renderHoldings());
 $("pf-chart-symbol").addEventListener("change", () => loadReviewChart());
 $("etf-hist-symbol").addEventListener("change", () => loadEtfHistory());
 $("etf-cmp-days").addEventListener("change", () => loadEtfCompare());
+
+/* 更新数据只发生在用户点按钮时：图与统计始终读缓存，采集是显式动作。
+   单只端点顺手带回快照，省一次请求；失败如实点名，不悄悄跳过。 */
+$("etf-hist-refresh").addEventListener("click", () =>
+  withButton($("etf-hist-refresh"), async () => {
+    const symbol = $("etf-hist-symbol").value;
+    if (!symbol) {
+      toast("先选一只 ETF");
+      return;
+    }
+    try {
+      const result = await api(`/etf/${encodeURIComponent(symbol)}/refresh`, null, "POST");
+      ETF_DATA = result.snapshot || ETF_DATA;
+      renderEtf();
+      toast(`${result.symbol} ${result.name} 已更新：${result.rows} 行，截至 ${result.as_of}`);
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }),
+);
+
+$("etf-cmp-refresh").addEventListener("click", () =>
+  withButton($("etf-cmp-refresh"), async () => {
+    const symbols = [...ETF_CMP];
+    if (!symbols.length) {
+      toast("先选几只 ETF");
+      return;
+    }
+    const failed = [];
+    let snapshot = null;
+    for (const symbol of symbols) {
+      try {
+        const result = await api(`/etf/${encodeURIComponent(symbol)}/refresh`, null, "POST");
+        snapshot = result.snapshot || snapshot;
+      } catch (error) {
+        failed.push(`${symbol}（${error.message}）`);
+      }
+    }
+    if (snapshot) {
+      ETF_DATA = snapshot;
+      renderEtf();
+    }
+    if (failed.length) {
+      toast(`部分失败：${failed.join("；")}`, "error");
+    } else {
+      toast(`已更新 ${symbols.length} 只`, "success");
+    }
+  }),
+);
 
 /* 一键补采：缺什么补什么——已有数据的不碰。结果逐只可见，
    失败的票（如已退市）如实留在 failed 里，不假装补齐了。 */

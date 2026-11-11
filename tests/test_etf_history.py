@@ -217,3 +217,72 @@ class TestCompare:
 
         assert response.status_code == 400
         assert "6 只" in response.json()["detail"]
+
+
+class TestRefreshOne:
+    """详情页「更新这只」：单只联网采集，失败如实点名。
+
+    图与统计读缓存，采集只在用户点按钮时发生——这个端点就是那个按钮
+    的后端。不联网跑测试：monkeypatch 掉 refresh，只验契约。
+    """
+
+    @pytest.fixture()
+    def client(self, tmp_path, monkeypatch):
+        from quant_research.web import api as api_module
+        from quant_research.web import create_app
+
+        class _Settings:
+            class data:
+                directory = tmp_path
+
+        monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _Settings())
+        return TestClient(create_app())
+
+    def test_single_refresh_reports_rows_and_snapshot(self, client, monkeypatch):
+        calls: list[tuple[str, str]] = []
+
+        def fake_refresh(root, symbol, adjust="qfq"):
+            calls.append((symbol, adjust))
+            frame = _frame(50)
+            etf.store(root, symbol, frame)
+            return frame
+
+        monkeypatch.setattr(etf, "refresh", fake_refresh)
+
+        payload = client.post("/api/etf/510300/refresh").json()
+
+        assert calls == [("510300", "qfq")]
+        assert payload["symbol"] == "510300"
+        assert payload["name"] == "沪深300ETF"
+        assert payload["rows"] == 50
+        assert payload["as_of"]
+        # 顺手带回快照：前端不用再打一次 /etf/snapshot
+        assert any(row["symbol"] == "510300" for row in payload["snapshot"]["rows"])
+
+    def test_failure_is_400_with_the_reason(self, client, monkeypatch):
+        def boom(root, symbol, adjust="qfq"):
+            raise RuntimeError("东财超时")
+
+        monkeypatch.setattr(etf, "refresh", boom)
+
+        response = client.post("/api/etf/515000/refresh")
+
+        assert response.status_code == 400
+        assert "515000" in response.json()["detail"]
+        assert "东财超时" in response.json()["detail"]
+
+    def test_symbol_with_suffix_is_normalised(self, client, monkeypatch):
+        seen: list[str] = []
+
+        def fake_refresh(root, symbol, adjust="qfq"):
+            seen.append(symbol)
+            frame = _frame(30)
+            etf.store(root, symbol, frame)
+            return frame
+
+        monkeypatch.setattr(etf, "refresh", fake_refresh)
+
+        payload = client.post("/api/etf/510300.SH/refresh").json()
+
+        assert seen == ["510300"]
+        assert payload["symbol"] == "510300"

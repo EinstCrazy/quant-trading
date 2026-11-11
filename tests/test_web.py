@@ -785,3 +785,31 @@ class TestEtfCompare:
     def test_single_selection_explains_why_there_is_no_chart(self):
         html = self._html()
         assert "选两只以上才能对比" in html
+
+
+class TestEtfRefreshButtons:
+    """ETF 更新数据的按钮：入口好找、失败点名、不重复请求。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_refresh_buttons_exist_in_both_cards(self):
+        """更新数据必须有点得着的入口：详情卡与对比卡各一个，标题就写明会联网。"""
+        html = self._html()
+        assert 'id="etf-hist-refresh"' in html
+        assert 'id="etf-cmp-refresh"' in html
+        assert "更新这只（联网）" in html
+        assert "更新选中（联网）" in html
+
+    def test_single_refresh_reuses_the_returned_snapshot(self):
+        """端点顺手带回快照：前端不再多打一次 /etf/snapshot。"""
+        html = self._html()
+        assert "result.snapshot || ETF_DATA" in html
+        assert "result.snapshot || snapshot" in html
+
+    def test_failed_symbols_are_named_not_silently_skipped(self):
+        html = self._html()
+        assert "部分失败：" in html
