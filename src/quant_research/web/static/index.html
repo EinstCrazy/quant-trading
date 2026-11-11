@@ -615,6 +615,10 @@
         <h3>个股量能 <span class="muted" id="vol-stock-note"></span></h3>
         <div id="vol-stocks"></div>
       </div>
+      <div class="card">
+        <h3>全样本量比排行 <span class="muted" id="vrank-note"></span></h3>
+        <div id="vrank-body"></div>
+      </div>
     </section>
 
     <!-- ⑪ 外围盘 -->
@@ -1947,12 +1951,47 @@ const QUAD_TONE = (quadrant) =>
         ? "warn"
         : "muted";
 
+let VRANK = null;
+
 async function loadVolume() {
-  const provider = $("vol-provider").value;
   skeleton($("vol-market"));
   $("vol-note").textContent = "加载中…";
-  VOLUME = await api(`/volume/analysis?provider=${provider}`).catch((error) => ({ error: error.message }));
+  const [data, rank] = await Promise.all([
+    api(`/volume/analysis?provider=${$("vol-provider").value}`).catch((error) => ({ error: error.message })),
+    api("/volume/ranking").catch(() => null),
+  ]);
+  VOLUME = data;
+  VRANK = rank;
   renderVolume();
+}
+
+function renderVolumeRanking() {
+  const note = $("vrank-note");
+  const target = $("vrank-body");
+  if (!VRANK) return;
+  if (!VRANK.available) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${VRANK.reason || "没有排行数据"}</div>`;
+    return;
+  }
+  note.textContent = `${VRANK.n_symbols} 只 · 截至 ${VRANK.as_of}`;
+  const pct = (value) =>
+    value == null ? '<span class="muted">—</span>'
+      : `<span class="${value >= 0 ? "up" : "down"}">${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%</span>`;
+  const table = (rows, label) => `
+    <h4 style="margin:0 0 6px;font-size:13px">${label}</h4>
+    <table><thead><tr><th>名称</th><th>代码</th><th>量比</th><th>当日</th></tr></thead><tbody>
+    ${rows.map((row) => `<tr>
+      <td>${row.name}</td><td class="muted">${row.symbol}</td>
+      <td>${row.vol_ratio.toFixed(2)}</td><td>${pct(row.day_change)}</td>
+    </tr>`).join("")}
+    </tbody></table>`;
+  target.innerHTML = `
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
+      ${table(VRANK.top_in, "放量最大（Top 15）")}
+      ${table(VRANK.top_out, "缩量最深（10）")}
+    </div>
+    <p class="muted" style="margin:10px 0 0;line-height:1.7">${VRANK.note}。量比大只是「今天被关注」，不是买入信号——放量方向（当日涨跌）和位置自己看，决定权在你。</p>`;
 }
 
 function renderVolume() {
@@ -1989,6 +2028,7 @@ function renderVolume() {
     <p class="muted" style="margin:4px 0 0;font-size:12px">近 ${m.series.length} 日成交额（蓝色 = 量比 ≥1.2，灰色 = ≤0.8）</p>`;
   renderSectorVolume();
   renderStockVolume();
+  renderVolumeRanking();
 }
 
 function renderSectorVolume() {
@@ -2057,6 +2097,7 @@ function renderStockVolume() {
     : '<div class="empty">没有可分析的个股</div>';
 }
 
+renderVolumeRanking();
 $("vol-refresh").addEventListener("click", loadVolume);
 $("vol-provider").addEventListener("change", loadVolume);
 

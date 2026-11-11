@@ -2216,6 +2216,74 @@ TACTIC_STRATEGIES: dict[str, tuple[str, dict[str, float]]] = {
 }
 
 
+@router.get("/volume/ranking")
+def volume_ranking() -> dict[str, Any]:
+    """全样本量比排行（只读缓存，不联网）。
+
+    量比口径与 volume._window_stats 一致：当日额 / 前 20 日均额
+    （shift(1)，今天的放量不抬高自己的基线）。这是 238 只股票样本的
+    排行——ETF 不在其中（它们在 ETF 视图有自己的量比）；缺成交额的
+    样本退回成交量并如实标注口径。
+    """
+    settings = load_settings()
+    try:
+        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    if panel.has_field("amount"):
+        field = panel.field("amount")
+        metric = "amount"
+    elif panel.has_field("volume"):
+        field = panel.field("volume")
+        metric = "volume"
+    else:
+        return {"available": False, "reason": "面板没有成交额/成交量列：先补数据"}
+
+    if len(field) < 21:
+        return {
+            "available": False,
+            "reason": f"面板只有 {len(field)} 天：量比需要至少 21 天（前 20 日均量做基线）",
+        }
+
+    baseline = field.iloc[-21:-1].mean()
+    today = field.iloc[-1]
+    close = panel.prices  # prices 即 close 面板（date × symbol）
+    prev_close = close.iloc[-2] if len(close) >= 2 else None
+    names = universe.load(settings.data.directory)
+    name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+
+    rows: list[dict[str, Any]] = []
+    for symbol in field.columns:
+        base = baseline[symbol]
+        if not base or pd.isna(base):
+            continue
+        ratio = float(today[symbol] / base)
+        day_change = (
+            float(close[symbol].iloc[-1] / prev_close[symbol] - 1)
+            if prev_close is not None and prev_close[symbol] and not pd.isna(prev_close[symbol])
+            else None
+        )
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": name_of.get(symbol, symbol),
+                "vol_ratio": ratio,
+                "day_change": day_change,
+            }
+        )
+    rows.sort(key=lambda row: row["vol_ratio"], reverse=True)
+    return {
+        "available": bool(rows),
+        "metric": metric,
+        "as_of": str(field.index[-1].date()),
+        "n_symbols": len(rows),
+        "top_in": rows[:15],
+        "top_out": list(reversed(rows[-10:])),
+        "note": f"量比口径：{'成交额' if metric == 'amount' else '成交量（缺成交额，如实退回）'} 当日 / 前 20 日均（不含当日）；范围 = 样本面板全部股票，ETF 不在其中",
+    }
+
+
 @router.get("/indexes")
 def indexes_compare() -> dict[str, Any]:
     """国内主要指数对比：只读缓存。没采过的进 missing，不静默少行。"""
