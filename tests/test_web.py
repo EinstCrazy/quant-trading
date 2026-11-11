@@ -1063,3 +1063,33 @@ class TestEtfCheckCompare:
         html = self._html()
         assert "ETF_CMP_SEEDED" in html
         assert "if (!ETF_CMP.size && !ETF_CMP_SEEDED)" in html
+
+
+class TestBreadthUI:
+    """大盘数据里的广度：量能卡占比条 + 概览行，缺快照给采集指引。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_volume_card_shows_breadth(self):
+        html = self._html()
+        assert "function breadthHtml(b)" in html
+        assert "breadthHtml(VOLUME.breadth)" in html
+        assert "breadth-bar" in html
+
+    def test_overview_line_with_guidance(self):
+        html = self._html()
+        assert "function ovBreadthLine(b)" in html
+        assert "还没有广度快照" in html
+        assert "ovBreadthLine(volume.breadth)" in html
+
+    def test_refresh_endpoint_in_nightly(self):
+        """「记录到每天」的另一半在 nightly：采集挂在夜间任务里。"""
+        nightly = (Path(__file__).parents[1] / "src/quant_research/nightly.py").read_text(
+            encoding="utf-8"
+        )
+        assert "breadth_mod.fetch()" in nightly
+        assert 'result["market_breadth"]' in nightly

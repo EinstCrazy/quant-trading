@@ -175,6 +175,10 @@
   .pf-plan-title { font-size: 13px; font-weight: 700; margin: 10px 0 4px; }
   .pf-plan-row { display: grid; grid-template-columns: 46px 1fr; gap: 8px; font-size: 12.5px; margin: 2px 0; }
   .pf-plan-tag { font-weight: 700; color: var(--muted); }
+  .breadth-bar { display: flex; height: 10px; border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
+  .breadth-bar .up { background: #e05252; }
+  .breadth-bar .down { background: #2e9e5b; }
+  .breadth-bar .other { background: #d5d9df; }
   .scr-headline { font-size: 17px; font-weight: 700; margin: 4px 0 8px; }
   .chip { padding: 2px 10px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; font-size: 12px; user-select: none; }
   .chip:hover { border-color: #9db4d8; }
@@ -2208,6 +2212,41 @@ function renderVolumeRanking() {
     <p class="muted" style="margin:10px 0 0;line-height:1.7">${VRANK.note}。量比大只是「今天被关注」，不是买入信号——放量方向（当日涨跌）和位置自己看，决定权在你。</p>`;
 }
 
+
+/* 大盘广度：涨跌家数 + 涨跌停家数。量能回答「多少钱在动」，广度
+   回答「多少人赚钱」——同一个成交额可以是 3300 家涨也可以是 3300
+   家跌，这两个数字必须和量能放在同一张卡上见面。
+   口径提示：广度是全市场统计，与面板样本量比分母不同，并排放不换算。 */
+function breadthHtml(b) {
+  if (!b || b.up == null || b.down == null) {
+    return "";
+  }
+  const up = b.up, down = b.down, other = Math.max(0, (b.flat || 0) + (b.halted || 0));
+  const total = up + down + other;
+  const w = (n) => (total ? (n / total) * 100 : 0).toFixed(1);
+  const limit = `涨停 <b>${b.limit_up ?? "—"}</b>${b.limit_up_real != null ? `（真实 ${b.limit_up_real}）` : ""} · 跌停 <b>${b.limit_down ?? "—"}</b>${b.limit_down_real != null ? `（真实 ${b.limit_down_real}）` : ""}`;
+  const meta = [
+    b.activity_pct != null ? `活跃度 ${b.activity_pct}%` : "",
+    b.trade_date ? `统计截至 ${String(b.trade_date).slice(0, 16)}` : "",
+  ].filter(Boolean).join(" · ");
+  return `
+    <div style="margin-top:10px">
+      <div class="row" style="gap:14px;align-items:baseline;flex-wrap:wrap">
+        <span class="up"><b>${up}</b> 上涨</span>
+        <span class="down"><b>${down}</b> 下跌</span>
+        ${other ? `<span class="muted">平盘/停牌 ${other}</span>` : ""}
+        <span>${limit}</span>
+        ${meta ? `<span class="muted" style="font-size:12px">${meta}</span>` : ""}
+      </div>
+      <div class="breadth-bar" title="上涨占比 ${w(up)}%">
+        <div class="up" style="width:${w(up)}%"></div>
+        <div class="down" style="width:${w(down)}%"></div>
+        <div class="other" style="width:${w(other)}%"></div>
+      </div>
+      <p class="muted" style="margin:2px 0 0;font-size:12px">红 = 上涨占比 ${w(up)}%（全市场口径，与上方样本量比的分母不同）</p>
+    </div>`;
+}
+
 function renderVolume() {
   const note = $("vol-note");
   const target = $("vol-market");
@@ -2250,7 +2289,8 @@ function renderVolume() {
     <p style="margin:10px 0 0;line-height:1.7">${m.advice}</p>
     <div class="volbars">${bars}</div>
     <div class="volaxis">${axis}</div>
-    <p class="muted" style="margin:4px 0 0;font-size:12px">近 ${m.series.length} 日成交额（蓝色 = 量比 ≥1.2，灰色 = ≤0.8）</p>`;
+    <p class="muted" style="margin:4px 0 0;font-size:12px">近 ${m.series.length} 日成交额（蓝色 = 量比 ≥1.2，灰色 = ≤0.8）</p>
+    ${breadthHtml(VOLUME.breadth)}`;
   renderSectorVolume();
   renderStockVolume();
   renderVolumeRanking();
@@ -2576,6 +2616,13 @@ function etfShareLine(etf) {
   }</span></div>`;
 }
 
+function ovBreadthLine(b) {
+  if (!b || b.up == null || b.down == null) {
+    return '<div class="kv"><span>涨跌家数</span><span class="muted">还没有广度快照——量能页点「刷新」采集</span></div>';
+  }
+  return `<div class="kv"><span>涨跌家数</span><span><span class="up">${b.up} 涨</span> / <span class="down">${b.down} 跌</span> · 涨停 ${b.limit_up ?? "—"} · 跌停 ${b.limit_down ?? "—"}</span></div>`;
+}
+
 function renderOvMarket(volume, etf) {
   const note = $("ov-market-note");
   const target = $("ov-market");
@@ -2598,6 +2645,7 @@ function renderOvMarket(volume, etf) {
     <div class="kv"><span>当日涨跌</span><span>${m.change_pct > 0 ? "+" : ""}${m.change_pct}%</span></div>
     <div class="kv"><span>连放/连缩</span><span>${m.streak >= 2 ? m.streak + " 天" : "—"}</span></div>
     <div class="kv"><span>口径</span><span class="muted">${volume.market_source === "sample" ? "样本合计" : volume.market_source}</span></div>
+    ${ovBreadthLine(volume.breadth)}
     ${etfLine}
     <p class="muted" style="margin:8px 0 10px;line-height:1.7">${m.advice}</p>
     <div class="row" style="gap:6px">${ovGoto("volume", "看量能三层明细")}${ovGoto("etf", "看 ETF")}</div>`;

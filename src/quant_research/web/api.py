@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from openpyxl.utils import get_column_letter
 
 from quant_research import holdings as holdings_store
+from quant_research import market_breadth as breadth_mod
 from quant_research import overseas as overseas_mod
 from quant_research import playbook as playbook_mod
 from quant_research import position_plan as position_plan_mod
@@ -2382,6 +2383,21 @@ def sector_members(
     }
 
 
+@router.post("/market/breadth/refresh")
+def market_breadth_refresh() -> dict[str, Any]:
+    """抓今日涨跌家数 + 涨跌停家数并按日留档。
+
+    每日一份：断一天就有洞，洞是可见的——广度的价值在连续序列里
+    （连续缩圈/扩圈），单日数字只是快照。
+    """
+    settings = load_settings()
+    snapshot = breadth_mod.fetch()
+    if snapshot["missing"]:
+        raise HTTPException(status_code=502, detail="；".join(snapshot["missing"]))
+    breadth_mod.save(settings.data.directory, snapshot)
+    return snapshot
+
+
 @router.get("/volume/analysis")
 def volume_analysis(provider: str | None = None, adjust: str | None = None) -> dict[str, Any]:
     """量能分析：大盘 / 板块 / 个股三层，每层给量价状态与一句可执行的话。
@@ -2442,6 +2458,8 @@ def volume_analysis(provider: str | None = None, adjust: str | None = None) -> d
         "updated_at": stamp,
         "sector_table": bool(sector_map),
         "market": market_dict,
+        # 广度只读缓存：GET 不联网——口径与外围/资金流快照一致
+        "breadth": breadth_mod.load(settings.data.directory),
         "sectors": [row.to_dict() for row in volume_mod.sector(panel, sector_map, name_of, rules)]
         if sector_map
         else [],

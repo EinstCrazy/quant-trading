@@ -307,6 +307,7 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | DELETE | `/api/experiments/{id}` | 删除一条实验记录 |
 | GET | `/api/portfolio` | 持仓清单：成本/股数 + 现读报价与盈亏 |
 | PATCH | `/api/portfolio/{symbol}?account=` | 编辑一条持仓：股数/成本/备注/to_account（挪账户），一次原子落盘，added_at 保留 |
+| POST | `/api/market/breadth/refresh` | 抓今日涨跌家数 + 涨跌停家数（乐咕全市场口径）并按日留档 processed/market_breadth/；nightly 每日自动记 |
 | POST | `/api/portfolio/accounts` | 新建账户（可空户，note=券商备注）：先建户、后录入，录入时只选不打字；重名拒绝 |
 | POST | `/api/portfolio/accounts/rename` | 重命名账户：该账户全部持仓迁移（重叠持仓拒绝合并），复盘存档键同步迁移 |
 | DELETE | `/api/portfolio/accounts/{name}` | 删除账户：该账户全部持仓一并移除；复盘存档保留（历史结论不动） |
