@@ -318,6 +318,9 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | GET | `/api/overseas/analysis` | 外围快照分析：六组行情、情绪分、传导路径与建议（只读缓存，不联网） |
 | POST | `/api/overseas/refresh` | 联网抓取外围快照并落盘，返回同一份分析（部分接口失败也保存） |
 | GET | `/api/playbook` | 战法清单 + 今日环境标注（顺/慎/避），由量价四象限与外围情绪推出，缺数据照给战法 |
+| GET | `/api/strategies/custom/indicators` | 自定义指标清单 + 内置指标口径 + 算术语法说明 |
+| POST | `/api/strategies/custom/indicators` | 定义/重定义自定义指标：名称不撞内置、只许引用内置与更早定义，语法错 400 逐条 |
+| DELETE | `/api/strategies/custom/indicators/{name}` | 删除自定义指标（不做引用追踪——策略引用被删指标时回测语法检测如实点名） |
 | GET | `/api/strategies/custom/spec` | 自定义策略 DSL 语法说明：可用指标与口径、运算符、示例、边界——界面直接渲染 |
 | GET | `/api/volume/ranking` | 全样本量比排行（放量 Top15 / 缩量 10）：只读缓存，shift(1) 口径与量能页一致 |
 | GET | `/api/indexes` | 国内四指数对比（上证/沪深300/创业板指/深证成指）：只读缓存，没采过的进 missing |

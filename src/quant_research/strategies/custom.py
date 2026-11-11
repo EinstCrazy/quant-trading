@@ -220,20 +220,21 @@ class _Parser:
         return []
 
 
-def validate_expr(expr: str) -> list[_SyntaxError]:
-    """语法初步检测：逐条带字符位置。空表达式也如实报。"""
+def validate_expr(expr: str, available: dict[str, str] | None = None) -> list[_SyntaxError]:
+    """语法初步检测：逐条带字符位置。available 可注入自定义指标名。"""
+    usable = available if available is not None else METRIC_SPEC
     tokens, errors = _tokenize(expr or "")
     errors = list(errors)
     if not tokens and not errors:
         errors.append(_SyntaxError(0, "表达式是空的——写一个比较，如 close > ma20"))
         return errors
-    if any(token.kind != "metric" or token.text.lower() not in METRIC_SPEC for token in tokens):
+    if any(token.kind != "metric" or token.text.lower() not in usable for token in tokens):
         # 未知指标在解析前先点名——解析器只能看到「一个词」
         for token in tokens:
-            if token.kind == "metric" and token.text.lower() not in METRIC_SPEC:
+            if token.kind == "metric" and token.text.lower() not in usable:
                 errors.append(
                     _SyntaxError(
-                        token.pos, f"不认识指标「{token.text}」——可用：{', '.join(METRIC_SPEC)}"
+                        token.pos, f"不认识指标「{token.text}」——可用：{', '.join(sorted(usable))}"
                     )
                 )
     if errors:
@@ -318,7 +319,7 @@ def _parse_ast(expr: str) -> _Node:
 
 
 def _condition_frame(expr: str, metrics: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    errors = validate_expr(expr)
+    errors = validate_expr(expr, {name: "" for name in metrics})
     if errors:
         raise ValueError(f"表达式语法错误：{errors[0].message}")
     used = {token.text.lower() for token in _tokenize(expr)[0] if token.kind == "metric"}
@@ -337,15 +338,30 @@ def custom_signal(
     amount: pd.DataFrame | None = None,
     expr: str = "",
     exit_expr: str | None = None,
+    indicators: list[dict[str, str]] | None = None,
 ) -> pd.DataFrame:
     """用户自定义条件策略：进场条件触发持有，出场条件（可选）触发离场。
 
-    出场条件为空时持有到样本结束——如实标注在回测说明里，不假装
-    有出场。需要成交额而面板缺失时拒绝执行（vol_ratio 算不出来）。
+    indicators 是用户自定义指标（{name, expr, desc} 列表）——按定义
+    顺序求值后并入指标集，策略表达式即可引用。出场条件为空时持有到
+    样本结束——如实标注在回测说明里，不假装有出场。需要成交额而面板
+    缺失时拒绝执行（vol_ratio 算不出来）。
     """
     if not (expr or "").strip():
         raise ValueError("进场条件不能为空")
     metrics = _metrics_panel(close, amount)
+    if indicators:
+        from quant_research.strategies.indicators import IndicatorRegistry
+
+        registry = IndicatorRegistry(_null_path())
+        registry._items = list(indicators)  # 只求值不落盘：信号层不写存储
+        metrics = registry.evaluate_all(metrics)
     entry = _condition_frame(expr, metrics)
     leave = _condition_frame(exit_expr, metrics) if (exit_expr or "").strip() else None
     return _hold_state(entry, leave if leave is not None else entry * 0)
+
+
+def _null_path():
+    from pathlib import Path
+
+    return Path("/dev/null/.custom_indicators.json")

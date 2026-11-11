@@ -73,6 +73,7 @@ from quant_research.scoring import screen, to_target_weights
 from quant_research.scoring.ledger import ScreenLedger, review
 from quant_research.strategies import STRATEGY_REGISTRY, get_signal
 from quant_research.strategies import custom as custom_mod
+from quant_research.strategies import indicators as indicators_mod
 from quant_research.volume import VolumeRules
 
 from .experiments import ExperimentStore
@@ -2218,11 +2219,60 @@ TACTIC_STRATEGIES: dict[str, tuple[str, dict[str, float]]] = {
 }
 
 
+def _indicator_registry(settings) -> indicators_mod.IndicatorRegistry:
+    """用户自定义指标的持久注册表（data/custom_indicators.json）。"""
+    return indicators_mod.IndicatorRegistry(
+        Path(settings.data.directory) / "custom_indicators.json"
+    )
+
+
+@router.get("/strategies/custom/indicators")
+def custom_indicators_list() -> dict[str, Any]:
+    """自定义指标清单 + 内置指标口径：界面语法说明区直接渲染。"""
+    registry = _indicator_registry(load_settings())
+    return {
+        "custom": registry.list(),
+        "builtin": custom_mod.METRIC_SPEC,
+        "grammar": indicators_mod.ARITHMETIC_GRAMMAR_NOTE,
+    }
+
+
+@router.post("/strategies/custom/indicators")
+def custom_indicators_define(payload: dict[str, Any]) -> dict[str, Any]:
+    """新增或重定义自定义指标：先语法检测（只许引用内置与更早定义），
+    除零/窗口不足算出「不知道」不触发——口径写进说明展示。"""
+    registry = _indicator_registry(load_settings())
+    result = registry.define(
+        str(payload.get("name") or ""),
+        str(payload.get("expr") or ""),
+        str(payload.get("desc") or ""),
+    )
+    if not result["ok"]:
+        raise HTTPException(
+            status_code=400, detail="；".join(e["message"] for e in result["errors"])
+        )
+    return result
+
+
+@router.delete("/strategies/custom/indicators/{name}")
+def custom_indicators_delete(name: str) -> dict[str, Any]:
+    registry = _indicator_registry(load_settings())
+    if not registry.remove(name):
+        raise HTTPException(status_code=404, detail=f"没有叫「{name}」的自定义指标")
+    return {"removed": name, "indicators": registry.list()}
+
+
 @router.get("/strategies/custom/spec")
 def custom_strategy_spec() -> dict[str, Any]:
     """自定义策略 DSL 的语法说明：界面直接渲染给用户看。"""
+    registry = _indicator_registry(load_settings())
     return {
-        "metrics": custom_mod.METRIC_SPEC,
+        "metrics": {
+            **custom_mod.METRIC_SPEC,
+            **{item["name"].lower(): item["desc"] for item in registry.list()},
+        },
+        "custom_indicators": registry.list(),
+        "arithmetic_note": indicators_mod.ARITHMETIC_GRAMMAR_NOTE,
         "operators": {
             "compare": [">", ">=", "<", "<=", "=="],
             "logic": ["AND", "OR（不区分大小写）"],
@@ -2245,9 +2295,10 @@ def custom_strategy_spec() -> dict[str, Any]:
 def custom_strategy_validate(payload: dict[str, Any]) -> dict[str, Any]:
     """语法初步检测：逐条带字符位置。语法不挡语义——「close > ma20 AND
     vol_ratio > 2」语法对但可能从未触发，那是回测要回答的问题。"""
-    errors = custom_mod.validate_expr(str(payload.get("expr") or ""))
+    available = _indicator_registry(load_settings()).available()
+    errors = custom_mod.validate_expr(str(payload.get("expr") or ""), available)
     exit_errors = (
-        custom_mod.validate_expr(str(payload.get("exit_expr") or ""))
+        custom_mod.validate_expr(str(payload.get("exit_expr") or ""), available)
         if payload.get("exit_expr")
         else []
     )
@@ -2267,8 +2318,10 @@ def custom_strategy_backtest(payload: dict[str, Any]) -> dict[str, Any]:
     """
     expr = str(payload.get("expr") or "")
     exit_expr = str(payload.get("exit_expr") or "") or None
-    errors = custom_mod.validate_expr(expr) + (
-        custom_mod.validate_expr(exit_expr) if exit_expr else []
+    registry = _indicator_registry(load_settings())
+    available = registry.available()
+    errors = custom_mod.validate_expr(expr, available) + (
+        custom_mod.validate_expr(exit_expr, available) if exit_expr else []
     )
     if errors:
         raise HTTPException(
@@ -2283,7 +2336,11 @@ def custom_strategy_backtest(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"面板不可用：{exc.detail}") from None
 
     try:
-        kwargs: dict[str, Any] = {"expr": expr, "exit_expr": exit_expr}
+        kwargs: dict[str, Any] = {
+            "expr": expr,
+            "exit_expr": exit_expr,
+            "indicators": registry.list(),
+        }
         if panel.has_field("amount"):
             kwargs["amount"] = panel.field("amount")
         signal = get_signal("custom")(panel.prices, **kwargs)
