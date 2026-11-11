@@ -813,3 +813,43 @@ class TestEtfRefreshButtons:
     def test_failed_symbols_are_named_not_silently_skipped(self):
         html = self._html()
         assert "部分失败：" in html
+
+
+class TestAccountCrudUI:
+    """账户增删改查的界面：行内编辑 + 账户重命名/删除按钮。
+
+    编辑不能靠「删了重加」——界面上必须有点得着的「编辑」。
+    """
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_inline_edit_row_inputs(self):
+        html = self._html()
+        for input_id in ("pf-e-account", "pf-e-shares", "pf-e-cost", "pf-e-note"):
+            assert f'id="{input_id}"' in html
+        assert 'data-pf-edit="${p.symbol}"' in html
+        assert "data-pf-save" in html and "data-pf-cancel" in html
+
+    def test_edit_goes_through_the_patch_endpoint(self):
+        html = self._html()
+        assert '"PATCH"' in html
+        assert "to_account" in html  # 行内可挪账户
+
+    def test_account_rename_and_drop_buttons(self):
+        html = self._html()
+        assert 'id="pf-account-rename"' in html
+        assert 'id="pf-account-drop"' in html
+        assert "/portfolio/accounts/rename" in html
+        assert "/portfolio/accounts/" in html  # DELETE 路径
+        # 重命名说明「存档一并迁移」、删除说明「存档保留」——口径要明说
+        assert "复盘存档一并迁移" in html
+        assert "复盘存档保留" in html
+
+    def test_rename_and_drop_require_a_specific_account(self):
+        """「全部账户」不能当操作对象：点了要提示，不能静默乱来。"""
+        html = self._html()
+        assert html.count("「全部账户」不能") >= 2

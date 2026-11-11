@@ -306,6 +306,9 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | PATCH | `/api/experiments/{id}` | 给一条实验加标签或备注 |
 | DELETE | `/api/experiments/{id}` | 删除一条实验记录 |
 | GET | `/api/portfolio` | 持仓清单：成本/股数 + 现读报价与盈亏 |
+| PATCH | `/api/portfolio/{symbol}?account=` | 编辑一条持仓：股数/成本/备注/to_account（挪账户），一次原子落盘，added_at 保留 |
+| POST | `/api/portfolio/accounts/rename` | 重命名账户：该账户全部持仓迁移（重叠持仓拒绝合并），复盘存档键同步迁移 |
+| DELETE | `/api/portfolio/accounts/{name}` | 删除账户：该账户全部持仓一并移除；复盘存档保留（历史结论不动） |
 | POST | `/api/portfolio` | 录入或更新一条持仓（`shares`、`cost` 必须为正） |
 | DELETE | `/api/portfolio/{symbol}?account=` | 删除一条持仓；不指定账户且该票多账户都有时报 400 要求指定——一次点掉两笔是最贵的误操作 |
 | POST | `/api/portfolio` | 录入/更新一条持仓，`account` 可空（缺省「默认」）；同一（账户, 代码）一条，同票不同账户独立 | 移除一条持仓 |

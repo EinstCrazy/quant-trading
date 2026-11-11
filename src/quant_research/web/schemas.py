@@ -410,6 +410,25 @@ class WatchlistIn(BaseModel):
     note: str | None = None
 
 
+class PositionPatch(BaseModel):
+    """改一条持仓：全部可选——只传要改的字段；to_account 是挪账户。
+
+    编辑不能靠「删了重加」：added_at 会丢、两步之间会留半截状态。
+    """
+
+    shares: float | None = Field(default=None, gt=0, description="新股数")
+    cost: float | None = Field(default=None, gt=0, description="新成本价")
+    note: str | None = None
+    to_account: str | None = Field(default=None, max_length=24, description="挪到的账户名")
+
+
+class AccountRename(BaseModel):
+    """账户重命名：old 必须存在；new 与其有重叠持仓时服务端拒绝。"""
+
+    old: str = Field(min_length=1, max_length=24)
+    new: str = Field(min_length=1, max_length=24)
+
+
 class PositionIn(BaseModel):
     """Upsert one holding: shares and cost must both be positive.
 

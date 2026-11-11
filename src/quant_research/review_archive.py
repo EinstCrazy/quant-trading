@@ -35,11 +35,50 @@ from quant_research.review import STANCE_LABELS
 
 logger = get_logger("reviews")
 
-__all__ = ["compact", "directory", "latest", "load", "save"]
+__all__ = ["compact", "directory", "latest", "load", "rename_account", "save"]
 
 
 def directory(root: Path | str) -> Path:
     return Path(root).expanduser() / "reviews"
+
+
+def rename_account(root: Path | str, old: str, new: str) -> int:
+    """所有存档里的账户改名：键与条目内的 account 一起迁移。
+
+    重命名必须同步存档——存档键是「账户::代码」，对比时靠它对上当前
+    持仓；账本改了名存档不改，「和上次比什么变了」就永远比不上。删除
+    账户则不动存档：那是「那天我看到的结论」，持仓删了历史仍在，失去
+    匹配对象的条目自然不进对比。
+
+    返回改写的存档文件数。坏文件跳过并警告，不因一份损坏挡住其余。
+    """
+    folder = directory(root)
+    if not folder.is_dir():
+        return 0
+    changed = 0
+    for file in sorted(folder.glob("*.json")):
+        try:
+            data = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("跳过损坏的复盘存档 %s：%s", file.name, exc)
+            continue
+        positions = data.get("positions") or {}
+        touched = False
+        for key, entry in list(positions.items()):
+            account = str(entry.get("account") or "默认")
+            if account != old:
+                continue
+            symbol = str(entry.get("symbol") or key.split("::", 1)[-1])
+            positions.pop(key)
+            entry["account"] = new
+            positions[f"{new}::{symbol}"] = entry
+            touched = True
+        if touched:
+            tmp = file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp, file)
+            changed += 1
+    return changed
 
 
 def compact(payload: dict[str, Any]) -> dict[str, Any]:

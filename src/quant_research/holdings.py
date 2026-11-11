@@ -50,8 +50,11 @@ __all__ = [
     "load",
     "path",
     "remove",
+    "remove_account",
+    "rename_account",
     "save",
     "symbols",
+    "update",
     "upsert",
 ]
 
@@ -191,6 +194,114 @@ def remove(directory: Path | str, symbol: str, *, account: str | None = None) ->
             data["positions"].pop(key, None)
     else:
         data["positions"].pop(entry_key(_normalise_account(account), canonical), None)
+    save(directory, data)
+    return data
+
+
+def _locate(data: dict[str, Any], symbol: str, account: str | None) -> str:
+    """按代码（可选账户）定位唯一条目键；歧义时拒绝而不是猜。"""
+    canonical = normalize_symbol(symbol)
+    if account is not None:
+        key = entry_key(_normalise_account(account), canonical)
+        if key not in data["positions"]:
+            raise ValueError(f"{canonical} 在账户「{_normalise_account(account)}」里没有持仓")
+        return key
+    keys = [key for key, entry in data["positions"].items() if entry.get("symbol") == canonical]
+    if not keys:
+        raise ValueError(f"{canonical} 不在持仓里")
+    if len(keys) > 1:
+        holders = "、".join(str(data["positions"][key].get("account")) for key in keys)
+        raise ValueError(f"{canonical} 在多个账户里都有持仓（{holders}）——指定账户再改")
+    return keys[0]
+
+
+def update(
+    directory: Path | str,
+    symbol: str,
+    *,
+    account: str | None = None,
+    shares: float | None = None,
+    cost: float | None = None,
+    note: str | None = None,
+    to_account: str | None = None,
+) -> dict[str, Any]:
+    """改一条持仓：股数 / 成本 / 备注 / 挪账户，一次读写一次落盘。
+
+    编辑不能靠「删了重加」拼出来——两步之间崩溃会留下半截状态，而且
+    added_at 会被重置成「刚买的」。to_account 是把这条持仓挪到另一个
+    账户：目标键已存在时拒绝（同票已在那个账户，合并会丢口径）。
+    """
+    data = load(directory)
+    key = _locate(data, symbol, account)
+    entry = data["positions"][key]
+    if shares is not None:
+        if shares <= 0:
+            raise ValueError("股数必须为正")
+        entry["shares"] = float(shares)
+    if cost is not None:
+        if cost <= 0:
+            raise ValueError("成本价必须为正")
+        entry["cost"] = float(cost)
+    if note is not None:
+        entry["note"] = note
+    if to_account is not None:
+        who = _normalise_account(to_account)
+        target = entry_key(who, str(entry["symbol"]))
+        if target != key and target in data["positions"]:
+            raise ValueError(f"{entry['symbol']} 在账户「{who}」里已有持仓——先删那边再挪")
+        data["positions"].pop(key)
+        entry["account"] = who
+        data["positions"][target] = entry
+    save(directory, data)
+    return data
+
+
+def rename_account(directory: Path | str, old: str, new: str) -> dict[str, Any]:
+    """重命名账户：该账户下所有持仓整体迁移，added_at 与备注原样保留。
+
+    目标账户已存在且两边有同一只票时拒绝——合并会把「哪个账户该卖
+    多少」弄丢；没有重叠才允许迁移。重命名是账本操作，行情、复盘的
+    账户口径由调用方各自跟进（复盘存档键也带账户）。
+    """
+    who_old = _normalise_account(old)
+    who_new = _normalise_account(new)
+    if who_old == who_new:
+        return load(directory)
+    data = load(directory)
+    if who_old not in accounts(data):
+        raise ValueError(f"账户「{who_old}」不存在")
+    keys = [key for key, entry in data["positions"].items() if entry.get("account") == who_old]
+    symbols_old = {str(data["positions"][key]["symbol"]) for key in keys}
+    overlap = [
+        entry["symbol"]
+        for key, entry in data["positions"].items()
+        if entry.get("account") == who_new and entry["symbol"] in symbols_old
+    ]
+    if overlap:
+        raise ValueError(
+            f"账户「{who_new}」里已有同样的票（{'、'.join(sorted(overlap))}）——先处理重叠再重命名"
+        )
+    for key in keys:
+        entry = data["positions"].pop(key)
+        entry["account"] = who_new
+        data["positions"][entry_key(who_new, str(entry["symbol"]))] = entry
+    save(directory, data)
+    return data
+
+
+def remove_account(directory: Path | str, name: str) -> dict[str, Any]:
+    """删除账户：该账户下所有持仓一并移除。
+
+    这是「清空这个券商户头」——单只票的移除走 remove。账户不存在时
+    如实报错；默认账户同样可删（删光即空账本），不搞特殊豁免。
+    """
+    who = _normalise_account(name)
+    data = load(directory)
+    keys = [key for key, entry in data["positions"].items() if entry.get("account") == who]
+    if not keys:
+        raise ValueError(f"账户「{who}」不存在（或没有持仓）")
+    for key in keys:
+        data["positions"].pop(key)
     save(directory, data)
     return data
 

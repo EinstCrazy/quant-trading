@@ -561,6 +561,9 @@
         <div class="row" style="margin-bottom:8px">
           <label>账户</label>
           <select id="pf-account-filter" style="width:140px"><option value="">全部账户</option></select>
+          <button class="btn ghost" id="pf-account-rename" title="重命名选中账户：该账户所有持仓与复盘存档一并迁移；added_at 保留">重命名账户</button>
+          <button class="btn ghost" id="pf-account-drop" title="删除选中账户：该账户所有持仓一并移除；复盘存档保留（历史结论不动）">删除账户</button>
+          <span class="muted" id="pf-account-status"></span>
         </div>
         <div id="pf-table"></div>
       </div>
@@ -3740,8 +3743,26 @@ function renderHoldings() {
     const pnl = p.pnl == null ? "—" : `${p.pnl > 0 ? "+" : ""}${fmt(p.pnl, 2)}`;
     const pnlPct = p.pnl_pct == null ? "—" : `${p.pnl_pct > 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`;
     const pnlTone = p.pnl_pct > 0 ? "up" : p.pnl_pct < 0 ? "down" : "muted";
+    const who = p.account || "默认";
+    const editing = PF_EDIT && PF_EDIT.account === who && PF_EDIT.symbol === p.symbol;
+    if (editing) {
+      return [
+        `<input id="pf-e-account" list="pf-accounts" value="${who}" style="width:80px">`,
+        symbolCell(p.symbol),
+        p.name || "—",
+        `<input id="pf-e-shares" type="number" min="1" value="${p.shares}" style="width:90px">`,
+        `<input id="pf-e-cost" type="number" step="0.001" min="0.001" value="${p.cost}" style="width:90px">`,
+        p.last_close == null ? "—" : fmt(p.last_close, 2),
+        p.market_value == null ? "—" : fmt(p.market_value, 2),
+        `<span class="${pnlTone}">${pnl}</span>`,
+        `<span class="${pnlTone}">${pnlPct}</span>`,
+        `<span class="${tone}">${change}</span>`,
+        `<input id="pf-e-note" value="${(p.note || "").replace(/"/g, "&quot;")}" style="width:120px">`,
+        `<a data-pf-save class="sym-link" style="cursor:pointer">保存</a> <a data-pf-cancel class="muted" style="cursor:pointer">取消</a>`,
+      ];
+    }
     return [
-      p.account || "默认",
+      who,
       symbolCell(p.symbol),
       p.name || "—",
       fmt(p.shares, 0),
@@ -3752,7 +3773,7 @@ function renderHoldings() {
       `<span class="${pnlTone}">${pnlPct}</span>`,
       `<span class="${tone}">${change}</span>`,
       p.note || "",
-      `<a data-pf-del="${p.symbol}" data-pf-account="${p.account || "默认"}" class="muted" style="cursor:pointer">移除</a>`,
+      `<a data-pf-edit="${p.symbol}" data-pf-account="${who}" class="muted" style="cursor:pointer">编辑</a> <a data-pf-del="${p.symbol}" data-pf-account="${who}" class="muted" style="cursor:pointer">移除</a>`,
     ];
   });
   $("pf-table").innerHTML = rows.length
@@ -4020,6 +4041,90 @@ $("pf-refresh").addEventListener("click", async () => {
 });
 
 $("pf-account-filter").addEventListener("change", () => renderHoldings());
+
+/* 账户增删改查：录入持仓即建账户（增）、行内编辑可改可挪（改）、
+   删除账户是清空一个户头（删）、筛选与汇总就是查。 */
+let PF_EDIT = null;
+
+$("pf-table").addEventListener("click", async (event) => {
+  const editLink = event.target.closest("[data-pf-edit]");
+  if (editLink) {
+    PF_EDIT = { account: editLink.dataset.pfAccount, symbol: editLink.dataset.pfEdit };
+    renderHoldings();
+    const input = $("pf-e-shares");
+    if (input) input.focus();
+    return;
+  }
+  if (event.target.closest("[data-pf-cancel]")) {
+    PF_EDIT = null;
+    renderHoldings();
+    return;
+  }
+  const saveLink = event.target.closest("[data-pf-save]");
+  if (!saveLink) return;
+  if (!PF_EDIT) return;
+  const body = {
+    shares: parseFloat($("pf-e-shares").value),
+    cost: parseFloat($("pf-e-cost").value),
+    note: $("pf-e-note").value,
+    to_account: $("pf-e-account").value.trim() || null,
+  };
+  if (!Number.isFinite(body.shares) || !Number.isFinite(body.cost) || body.shares <= 0 || body.cost <= 0) {
+    toast("股数与成本必须是正数", "error");
+    return;
+  }
+  const suffix = PF_EDIT.account && PF_EDIT.account !== "默认" ? `?account=${encodeURIComponent(PF_EDIT.account)}` : "";
+  try {
+    HOLDINGS = await api(`/portfolio/${encodeURIComponent(PF_EDIT.symbol)}${suffix}`, body, "PATCH");
+    PF_EDIT = null;
+    renderHoldings();
+    loadReview();
+    toast("已保存");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+});
+
+$("pf-account-rename").addEventListener("click", () =>
+  withButton($("pf-account-rename"), async () => {
+    const current = $("pf-account-filter").value;
+    if (!current) {
+      toast("先在左侧选一个具体账户（「全部账户」不能重命名）");
+      return;
+    }
+    const next = prompt(`把账户「${current}」重命名为：`, current);
+    if (!next || next.trim() === current) return;
+    try {
+      HOLDINGS = await api("/portfolio/accounts/rename", { old: current, new: next.trim() }, "POST");
+      $("pf-account-filter").value = next.trim();
+      renderHoldings();
+      loadReview();
+      toast(`已重命名为「${next.trim()}」：持仓与复盘存档一并迁移`);
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }),
+);
+
+$("pf-account-drop").addEventListener("click", () =>
+  withButton($("pf-account-drop"), async () => {
+    const current = $("pf-account-filter").value;
+    if (!current) {
+      toast("先在左侧选一个具体账户（「全部账户」不能删）");
+      return;
+    }
+    if (!confirm(`删除账户「${current}」？该账户下所有持仓一并移除；复盘存档保留（历史结论不动）。`)) return;
+    try {
+      HOLDINGS = await api(`/portfolio/accounts/${encodeURIComponent(current)}`, null, "DELETE");
+      $("pf-account-filter").value = "";
+      renderHoldings();
+      loadReview();
+      toast(`账户「${current}」已删除`);
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }),
+);
 $("pf-chart-symbol").addEventListener("change", () => loadReviewChart());
 $("etf-hist-symbol").addEventListener("change", () => loadEtfHistory());
 $("etf-cmp-days").addEventListener("change", () => loadEtfCompare());

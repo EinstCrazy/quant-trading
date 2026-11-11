@@ -81,6 +81,7 @@ from .experiments import get_store as get_experiments
 from .grid import MAX_COMBINATIONS, expand, rank
 from .jobs import JobStore, Progress, get_store
 from .schemas import (
+    AccountRename,
     BacktestOut,
     BacktestRequest,
     CategoryIn,
@@ -100,6 +101,7 @@ from .schemas import (
     JobRef,
     PolicyIn,
     PositionIn,
+    PositionPatch,
     RebalanceIn,
     ScreenOut,
     ScreenPickOut,
@@ -1519,6 +1521,63 @@ def upsert_position(request: PositionIn) -> dict[str, Any]:
             note=request.note,
             account=request.account,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _portfolio_payload(settings)
+
+
+@router.patch("/portfolio/{symbol}")
+def patch_position(
+    symbol: str, request: PositionPatch, account: str | None = None
+) -> dict[str, Any]:
+    """改一条持仓：股数 / 成本 / 备注 / 挪账户，一次原子落盘。
+
+    account 是定位用的旧账户（该票多账户都有时必填）；to_account 是
+    挪过去的新账户。任何字段都不传等于没改，但也会走一次落盘——无害。
+    """
+    settings = load_settings()
+    try:
+        holdings_store.update(
+            settings.data.directory,
+            symbol,
+            account=account,
+            shares=request.shares,
+            cost=request.cost,
+            note=request.note,
+            to_account=request.to_account,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _portfolio_payload(settings)
+
+
+@router.post("/portfolio/accounts/rename")
+def rename_account(request: AccountRename) -> dict[str, Any]:
+    """重命名账户：持仓整体迁移（added_at 保留），复盘存档键同步迁移。
+
+    存档键带账户——账本改名存档不改，「和上次比什么变了」就比不上。
+    有重叠持仓时 400 列出重叠代码，拒绝合并。
+    """
+    settings = load_settings()
+    root = settings.data.directory
+    try:
+        holdings_store.rename_account(root, request.old, request.new)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    review_store.rename_account(root, request.old, request.new)
+    return _portfolio_payload(settings)
+
+
+@router.delete("/portfolio/accounts/{name}")
+def drop_account(name: str) -> dict[str, Any]:
+    """删除账户：该账户下所有持仓一并移除。
+
+    存档刻意保留：复盘存的是「那天我看到的结论」，不是持仓的附属——
+    账户删了，历史档位仍在，失去匹配对象的条目不进对比。
+    """
+    settings = load_settings()
+    try:
+        holdings_store.remove_account(settings.data.directory, name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return _portfolio_payload(settings)
