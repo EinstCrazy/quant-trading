@@ -36,6 +36,7 @@ __all__ = [
     "ETF_UNIVERSE",
     "fetch",
     "fetch_spot",
+    "history",
     "is_etf",
     "load",
     "load_spot",
@@ -160,6 +161,98 @@ def meta(root: Path, symbol: str) -> dict[str, Any] | None:
         return json.loads(target.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+
+
+def history(root: Path, symbol: str, days: int = 250) -> dict[str, Any]:
+    """一只 ETF 的历史切片：蜡烛、均线、成交额与区间统计。
+
+    只读缓存（``load``），不联网——和快照同一纪律。缺缓存抛 ValueError，
+    由 API 转成「先采集」而不是一个空图。
+
+    统计口径都写进 ``note``：区间涨跌=首尾收盘、年化波动=日收益标准差
+    ×√244、最大回撤=收盘对历史峰值的最大跌幅。份额只有两次快照之间的
+    变化，不是时间序列——如实给出「最新 / 上一份 / 变化」，不画假的曲线。
+    """
+    bare = to_bare_symbol(symbol)
+    frame = load(root, bare)
+    if frame is None:
+        raise ValueError(f"ETF {bare} 还没有落盘数据：先点「刷新（联网采集）」")
+    window = frame.iloc[-days:]
+    close = window["close"]
+    candles = [
+        [
+            str(index.date()),
+            float(row["open"]),
+            float(row["high"]),
+            float(row["low"]),
+            float(row["close"]),
+        ]
+        for index, row in window.iterrows()
+    ]
+    ma20 = close.rolling(20).mean()
+    ma60 = close.rolling(60).mean()
+
+    def series(values: pd.Series) -> list[list[Any]]:
+        return [
+            [str(index.date()), None if pd.isna(value) else round(float(value), 3)]
+            for index, value in values.items()
+        ]
+
+    amounts: list[list[Any]] = []
+    if "amount" in window.columns:
+        amounts = [
+            [str(index.date()), None if pd.isna(value) else round(float(value) / 1e8, 2)]
+            for index, value in window["amount"].items()
+        ]
+
+    first, last = float(close.iloc[0]), float(close.iloc[-1])
+    high_index = close.idxmax()
+    low_index = close.idxmin()
+    returns = close.pct_change().dropna()
+    drawdown = (close / close.cummax() - 1).min() if len(close) else None
+    amount_columns = window["amount"] if "amount" in window.columns else None
+    stats: dict[str, Any] = {
+        "rows": len(frame),
+        "window_rows": len(window),
+        "span": [str(frame.index[0].date()), str(frame.index[-1].date())],
+        "change": round(last / first - 1, 4) if first else None,
+        "last_close": round(last, 3),
+        "high": {"value": round(float(close.max()), 3), "date": str(high_index.date())},
+        "low": {"value": round(float(close.min()), 3), "date": str(low_index.date())},
+        "volatility": round(float(returns.std()) * (244**0.5), 4) if len(returns) > 1 else None,
+        "max_drawdown": None
+        if drawdown is None or pd.isna(drawdown)
+        else round(float(drawdown), 4),
+        "avg_amount_20": None
+        if amount_columns is None or len(amount_columns) < 20
+        else round(float(amount_columns.iloc[-20:].mean()) / 1e8, 2),
+        "avg_amount_window": None
+        if amount_columns is None or not len(amount_columns)
+        else round(float(amount_columns.mean()) / 1e8, 2),
+    }
+    share = share_delta(root).get(bare) or {}
+    return {
+        "symbol": bare,
+        "name": ETF_UNIVERSE.get(bare, ""),
+        "as_of": str(frame.index[-1].date()),
+        "days": len(window),
+        "candles": candles,
+        "ma20": series(ma20),
+        "ma60": series(ma60),
+        "amounts": amounts,
+        "stats": stats,
+        "share": {
+            "share": share.get("share"),
+            "mktcap": share.get("mktcap"),
+            "share_change": share.get("share_change"),
+            "spot_as_of": share.get("spot_as_of"),
+        },
+        "note": (
+            "区间涨跌=窗口首尾收盘；年化波动=日收益标准差×√244；"
+            "最大回撤=收盘对窗口内峰值的最大跌幅；均额单位亿元；"
+            "份额变化需要至少两次份额快照——只有最新值时如实留空"
+        ),
+    }
 
 
 def refresh(root: Path, symbol: str, adjust: str = "qfq") -> pd.DataFrame:

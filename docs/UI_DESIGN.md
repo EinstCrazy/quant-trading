@@ -328,6 +328,7 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | GET | `/api/volume/ranking` | 全样本量比排行（放量 Top15 / 缩量 10）：只读缓存，shift(1) 口径与量能页一致 |
 | GET | `/api/indexes` | 国内四指数对比（上证/沪深300/创业板指/深证成指）：只读缓存，没采过的进 missing |
 | GET | `/api/etf/snapshot` | 14 只 ETF（宽基+行业/跨境/商品）快照：量比/水位/MA20 偏离；独立落盘不进股票面板 |
+| GET | `/api/etf/{symbol}/history?days=` | 单只 ETF 历史：蜡烛、MA20/MA60（现算）、成交额序列、区间统计（涨跌/年化波动/最大回撤/高低点/均额）、份额（两次快照才有变化）；只读缓存，缺数据 404 指路 |
 | POST | `/api/etf/refresh` | 逐只联网采集 ETF 日线（fund_etf_hist_em），单只失败不拖垮整批 |
 | POST | `/api/playbook/verify` | 三条可编码战法（海龟/放量突破/MA20 回踩）在本样本上的回测轮廓：等权、含成本；从未触发如实说未触发 |
 | GET | `/api/fundamentals/risk` | 持仓 ∪ 自选的基本面红旗（季报缺失 400，未覆盖显示「未知」） |

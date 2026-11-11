@@ -2836,6 +2836,19 @@ def portfolio_import(payload: dict[str, Any]) -> dict[str, Any]:
     return {**result, "n_added": len(result["added"])}
 
 
+@router.get("/etf/{symbol}/history")
+def etf_history(symbol: str, days: int = Query(250, ge=20, le=1500)) -> dict[str, Any]:
+    """一只 ETF 的历史走势与区间统计（只读缓存，不联网）。
+
+    缺数据 404 并指路：ETF 是独立落盘，不在股票面板里——「没采」不是
+    「没有」，用户点一次刷新就有。
+    """
+    try:
+        return etf_mod.history(load_settings().data.directory, symbol, days=days)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
 @router.post("/etf/refresh")
 def etf_refresh(adjust: str = "qfq") -> dict[str, Any]:
     """逐只联网采集 ETF 日线（东财 fund_etf_hist_em）。"""

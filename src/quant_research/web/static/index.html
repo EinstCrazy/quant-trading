@@ -664,6 +664,17 @@
         独立清单的场内基金（宽基 + 主流行业/跨境/商品），不进股票面板——大盘「样本合计」口径不被污染。
         量比与量能页同口径；水位 = 现价 / 近 250 日最高（含当日，今日新高即 100%）；ETF 没有财报红旗，红旗核对自动豁免。
       </p>
+      <div class="card" style="margin-top:14px">
+        <h3>走势与历史 <span class="muted" id="etf-hist-note"></span></h3>
+        <div class="row" style="margin-bottom:8px">
+          <label>标的</label>
+          <select id="etf-hist-symbol" style="width:260px"></select>
+          <span class="muted" style="font-size:12px">日线蜡烛 + MA20 / MA60；下方为成交额（亿元）——只读缓存，不联网</span>
+        </div>
+        <div id="etf-hist-chart"></div>
+        <div id="etf-hist-facts" class="row" style="gap:16px;margin:8px 0;flex-wrap:wrap"></div>
+        <div id="etf-hist-amount"></div>
+      </div>
       <div class="card">
         <h3>清单快照 <span class="muted" id="etf-note"></span></h3>
         <div class="row" style="margin-bottom:10px">
@@ -2694,6 +2705,88 @@ function renderEtf() {
       ? `<p class="muted" style="margin:8px 0 0;font-size:12px">未采集：${ETF_DATA.missing.join("；")}——不是没数据，是没采过，点刷新补上。</p>`
       : ""}
     <p class="muted" style="margin:10px 0 0;line-height:1.7">${ETF_DATA.note}。清单写死在 data/etf.py，加减清单在 git 里留痕；水位高不是卖点、量比大不是买点——和战法页一样，这里给状态，决定权在你。</p>`;
+  renderEtfHistory();
+}
+
+/* ETF 走势：与股票不同，ETF 没有财报也没有指标 bundle——均线在
+   历史端点里现算（rolling），份额只有两次快照之间的变化，如实给。 */
+let ETF_HIST = null;
+
+function renderEtfHistory() {
+  const select = $("etf-hist-symbol");
+  if (!ETF_DATA) return;
+  const rows = (ETF_DATA.rows || []).filter((row) => row.last_close != null);
+  if (!rows.length) {
+    $("etf-hist-chart").innerHTML = '<div class="empty">还没有采集过任何 ETF 日线：点上面的「刷新（联网采集）」</div>';
+    select.innerHTML = "";
+    $("etf-hist-facts").innerHTML = "";
+    $("etf-hist-amount").innerHTML = "";
+    return;
+  }
+  const previous = select.value;
+  select.innerHTML = rows
+    .map((row) => `<option value="${row.symbol}">${row.symbol} ${row.name}</option>`)
+    .join("");
+  const values = [...select.options].map((option) => option.value);
+  select.value = values.includes(previous) ? previous : values[0];
+  loadEtfHistory();
+}
+
+async function loadEtfHistory() {
+  const symbol = $("etf-hist-symbol").value;
+  if (!symbol) return;
+  const target = $("etf-hist-chart");
+  const note = $("etf-hist-note");
+  target.innerHTML = '<div class="empty">取历史中…</div>';
+  $("etf-hist-facts").innerHTML = "";
+  $("etf-hist-amount").innerHTML = "";
+  try {
+    ETF_HIST = await api(`/etf/${encodeURIComponent(symbol)}/history?days=250`);
+  } catch (error) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${error.message}</div>`;
+    return;
+  }
+  const data = ETF_HIST;
+  note.textContent = `${data.name} · ${data.days} 个交易日 · 行情截至 ${data.as_of}`;
+  chart(target, [
+    { name: "MA20", points: data.ma20 || [] },
+    { name: "MA60", points: data.ma60 || [] },
+  ], { height: 300, digits: 3, candles: data.candles || [] });
+
+  const stats = data.stats || {};
+  const pctText = (value) =>
+    value == null ? "—" : `<span class="${value >= 0 ? "up" : "down"}">${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%</span>`;
+  const facts = [
+    ["区间涨跌", pctText(stats.change)],
+    ["年化波动", stats.volatility == null ? "—" : `${(stats.volatility * 100).toFixed(1)}%`],
+    ["最大回撤", pctText(stats.max_drawdown)],
+    ["区间最高", stats.high ? `${fmt(stats.high.value, 3)} <span class="muted">${stats.high.date}</span>` : "—"],
+    ["区间最低", stats.low ? `${fmt(stats.low.value, 3)} <span class="muted">${stats.low.date}</span>` : "—"],
+    ["20 日均额", stats.avg_amount_20 == null ? "—" : `${fmt(stats.avg_amount_20, 1)} 亿`],
+    ["全历史", stats.span ? `${stats.span[0]} 起 · ${stats.rows} 根` : "—"],
+  ];
+  const share = data.share || {};
+  if (share.share != null) {
+    facts.push([
+      "份额",
+      `${fmt(share.share / 1e8, 1)} 亿份${share.share_change == null ? ' <span class="muted" title="需要至少两次份额快照">（变化待下次采集）</span>' : ` · ${pctText(share.share_change)}`}`,
+    ]);
+  }
+  $("etf-hist-facts").innerHTML = facts
+    .map(([label, value]) => `<span class="muted">${label} <b>${value}</b></span>`)
+    .join("");
+
+  const amounts = (data.amounts || []).filter((point) => point[1] != null);
+  if (amounts.length > 1) {
+    $("etf-hist-amount").innerHTML =
+      '<div class="muted" style="margin-bottom:4px">成交额（亿元）——量能的水位，不是买卖点</div><div id="etf-hist-amount-chart"></div>';
+    chart($("etf-hist-amount-chart"), [{ name: "成交额（亿）", points: amounts, type: "bar" }], {
+      height: 140,
+      digits: 0,
+      zeroLine: true,
+    });
+  }
 }
 
 async function refreshEtf() {
@@ -3740,6 +3833,7 @@ $("pf-refresh").addEventListener("click", async () => {
 
 $("pf-account-filter").addEventListener("change", () => renderHoldings());
 $("pf-chart-symbol").addEventListener("change", () => loadReviewChart());
+$("etf-hist-symbol").addEventListener("change", () => loadEtfHistory());
 
 /* 一键补采：缺什么补什么——已有数据的不碰。结果逐只可见，
    失败的票（如已退市）如实留在 failed 里，不假装补齐了。 */
