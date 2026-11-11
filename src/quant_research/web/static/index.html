@@ -213,6 +213,7 @@
       <div class="nav-group"><span>市场环境</span>
         <button data-view="volume">量能分析</button>
         <button data-view="sectors">板块</button>
+        <button data-view="etf">ETF</button>
         <button data-view="overseas">外围盘</button>
       </div>
       <div class="nav-group"><span>研究与验证</span>
@@ -597,6 +598,23 @@
     </section>
 
     <!-- ⑪ 外围盘 -->
+    <!-- ⑩.5 ETF：清单写死透明，快照只读缓存 -->
+    <section id="view-etf" class="view">
+      <h2>ETF</h2>
+      <p class="muted" style="margin:-6px 0 14px;line-height:1.7">
+        独立清单的场内基金（宽基 + 主流行业/跨境/商品），不进股票面板——大盘「样本合计」口径不被污染。
+        量比与量能页同口径；水位 = 现价 / 近 250 日最高（含当日，今日新高即 100%）；ETF 没有财报红旗，红旗核对自动豁免。
+      </p>
+      <div class="card">
+        <h3>清单快照 <span class="muted" id="etf-note"></span></h3>
+        <div class="row" style="margin-bottom:10px">
+          <button class="btn" id="etf-refresh">刷新（联网采集）</button>
+          <button class="btn ghost" id="etf-reload">重读快照</button>
+        </div>
+        <div id="etf-body"></div>
+      </div>
+    </section>
+
     <section id="view-overseas" class="view">
       <h2>外围</h2>
       <div class="card">
@@ -884,6 +902,7 @@ function showView(name, push = true) {
   }
   if (name === "volume") loadVolume();
   if (name === "overseas") loadOverseas();
+  if (name === "etf") loadEtf();
   if (name === "playbook") loadPlaybook();
 }
 
@@ -2340,6 +2359,94 @@ async function loadOvRisk() {
 
 $("ov-go-collect").addEventListener("click", () => showView("collect"));
 
+/* ---------- ETF ---------- */
+/* 独立清单、独立落盘：宽基 + 主流行业/跨境/商品，代码序无排名含义。
+   快照 GET 只读缓存；采集 POST 才联网——与其他视图同一纪律。 */
+
+let ETF_DATA = null;
+
+async function loadEtf() {
+  const note = $("etf-note");
+  const target = $("etf-body");
+  if (ETF_DATA) {
+    renderEtf();
+    return;
+  }
+  skeleton(target, "table");
+  note.textContent = "加载中…";
+  try {
+    ETF_DATA = await api("/etf/snapshot");
+  } catch (error) {
+    renderError(target, error.message, () => {
+      ETF_DATA = null;
+      loadEtf();
+    });
+    note.textContent = "";
+    return;
+  }
+  renderEtf();
+}
+
+function renderEtf() {
+  const note = $("etf-note");
+  const target = $("etf-body");
+  if (!ETF_DATA) return;
+  note.textContent = `${ETF_DATA.n_tracked} 只清单 · 截至 ${ETF_DATA.as_of || "—"} · ${ETF_DATA.adjust}`;
+  const rows = ETF_DATA.rows || [];
+  if (!rows.length) {
+    target.innerHTML = `<div class="empty">清单里 ${ETF_DATA.n_tracked} 只 ETF 还一只都没采集过。点「刷新（联网采集）」补数——快照只读缓存，不会自己联网。</div>`;
+    return;
+  }
+  const pct = (value, digits = 1) =>
+    value == null ? '<span class="muted">—</span>'
+      : `<span class="${value >= 0 ? "up" : "down"}">${value >= 0 ? "+" : ""}${(value * 100).toFixed(digits)}%</span>`;
+  target.innerHTML = `
+    <table><thead><tr><th>名称</th><th>代码</th><th>收盘</th><th>当日</th><th>量比</th><th>水位</th><th>MA20 偏离</th><th>更新</th></tr></thead><tbody>
+    ${rows
+      .map((row) => `<tr>
+        <td>${row.name}</td>
+        <td class="muted">${row.symbol}</td>
+        <td>${row.last_close.toFixed(3)}</td>
+        <td>${pct(row.day_change)}</td>
+        <td>${row.vol_ratio == null ? '<span class="muted">—</span>' : row.vol_ratio.toFixed(2)}</td>
+        <td>${row.level == null ? '<span class="muted">—</span>' : (row.level * 100).toFixed(0) + "%"}</td>
+        <td>${pct(row.ma20_gap)}</td>
+        <td class="muted">${row.as_of}</td>
+      </tr>`)
+      .join("")}
+    </tbody></table>
+    ${ETF_DATA.missing.length
+      ? `<p class="muted" style="margin:8px 0 0;font-size:12px">未采集：${ETF_DATA.missing.join("；")}——不是没数据，是没采过，点刷新补上。</p>`
+      : ""}
+    <p class="muted" style="margin:10px 0 0;line-height:1.7">${ETF_DATA.note}。清单写死在 data/etf.py，加减清单在 git 里留痕；水位高不是卖点、量比大不是买点——和战法页一样，这里给状态，决定权在你。</p>`;
+}
+
+async function refreshEtf() {
+  const note = $("etf-note");
+  const target = $("etf-body");
+  skeleton(target, "table");
+  note.textContent = "逐只采集，14 只约半分钟…";
+  try {
+    ETF_DATA = await api("/etf/refresh", { method: "POST" });
+    if (ETF_DATA.failed?.length) {
+      toast(`采集完成：${ETF_DATA.fetched?.length || 0} 只成功，${ETF_DATA.failed.length} 只失败`, "error");
+    } else {
+      toast(`ETF 日线已更新（${ETF_DATA.fetched?.length || 0} 只）`, "success");
+    }
+  } catch (error) {
+    renderError(target, error.message, () => refreshEtf());
+    note.textContent = "";
+    return;
+  }
+  renderEtf();
+}
+
+$("etf-refresh").addEventListener("click", () => withButton($("etf-refresh"), refreshEtf));
+$("etf-reload").addEventListener("click", () => {
+  ETF_DATA = null;
+  loadEtf();
+});
+
 /* ---------- 战法回测验证 ---------- */
 /* 「胜率未知」到「本样本上的轮廓」：POST 本地计算，不联网、不写盘。
    数字里带成本（回测页默认 5bps 佣金 + 2bps 滑点）——换手率高的规则
@@ -2646,12 +2753,13 @@ function renderFundRisk() {
   const note = $("fr-note");
   const target = $("fr-body");
   if (!FUND_RISK) return;
+  const skipNote = FUND_RISK.etf_skipped ? `，另豁免 ETF ${FUND_RISK.etf_skipped} 只（没有财报）` : "";
   if (!FUND_RISK.available) {
-    note.textContent = "";
+    note.textContent = skipNote ? skipNote.slice(2) : "";
     target.innerHTML = `<div class="empty">${FUND_RISK.reason || FUND_RISK.error || "没有基本面数据"}</div>`;
     return;
   }
-  note.textContent = `${FUND_RISK.n_covered}/${FUND_RISK.n_symbols} 只已覆盖（未覆盖的显示「未知」）`;
+  note.textContent = `${FUND_RISK.n_covered}/${FUND_RISK.n_symbols} 只已覆盖（未覆盖的显示「未知」）${skipNote}`;
   target.innerHTML = FUND_RISK.risks
     .map((row) => {
       const cls = LEVEL_CLASS[row.level] || "muted";

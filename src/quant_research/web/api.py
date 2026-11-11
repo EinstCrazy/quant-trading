@@ -37,6 +37,7 @@ from quant_research.backtest.engine import BacktestResult, run_signal_backtest
 from quant_research.collector import collect_once
 from quant_research.config import Settings, load_settings
 from quant_research.data import PricePanel, describe_panel, load_price_panel, universe
+from quant_research.data import etf as etf_mod
 from quant_research.data import index as index_mod
 from quant_research.data.cache import build_panel_cache, cache_path, load_panel_cache
 from quant_research.data.calendar import TradingCalendar
@@ -1404,6 +1405,8 @@ def _watchlist_payload(settings: Settings) -> dict[str, Any]:
         panel = None  # no data yet: the list still works, quotes just stay blank
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     sector_map, _ = _sector_map(settings)
 
     stocks = []
@@ -1473,6 +1476,8 @@ def _watchlist_payload_set(settings: Settings, data: dict[str, Any]) -> dict[str
         panel = None
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     sector_map, _ = _sector_map(settings)
     stocks = [
         {
@@ -1594,6 +1599,8 @@ def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, An
 
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     sector_map, _ = _sector_map(settings)
     as_of = pd.Timestamp(panel.prices.index.max()).date().isoformat()
 
@@ -1748,6 +1755,8 @@ def _portfolio_payload(settings: Settings) -> dict[str, Any]:
         panel = None
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     sector_map, _ = _sector_map(settings)
     rows = []
     for symbol, entry in sorted(data["positions"].items()):
@@ -1844,6 +1853,8 @@ def watchlist_analysis() -> dict[str, Any]:
     rsi = bundle.frames.get("rsi_14")
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
 
     stocks: list[dict[str, Any]] = []
     watch_changes: list[float] = []
@@ -1996,6 +2007,8 @@ def sector_analysis(
     panel = _load_panel(source, basis)
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     snapshot = overseas_mod.load(settings.data.directory)
     try:
         rows = sectors_mod.analyze(panel, sector_map, name_of, days=days)
@@ -2045,6 +2058,8 @@ def sector_members(
     panel = _load_panel(source, basis)
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     try:
         rows = sectors_mod.members(panel, sector_map, sector, name_of, days=days)
     except ValueError as exc:
@@ -2093,6 +2108,8 @@ def volume_analysis(provider: str | None = None, adjust: str | None = None) -> d
     sector_map, stamp = _sector_map(settings)
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     market_dict, market_source = _market_volume(settings)
     if market_dict is None:
         return {
@@ -2199,6 +2216,18 @@ TACTIC_STRATEGIES: dict[str, tuple[str, dict[str, float]]] = {
 }
 
 
+@router.get("/etf/snapshot")
+def etf_snapshot(adjust: str = "qfq") -> dict[str, Any]:
+    """ETF 清单快照：只读缓存。没采集过的代码进 missing，绝不悄悄消失。"""
+    return _etf_snapshot_view(adjust)
+
+
+@router.post("/etf/refresh")
+def etf_refresh(adjust: str = "qfq") -> dict[str, Any]:
+    """逐只联网采集 ETF 日线（东财 fund_etf_hist_em）。"""
+    return _etf_refresh_view(adjust)
+
+
 @router.post("/playbook/verify")
 def playbook_verify() -> dict[str, Any]:
     """对可编码战法跑本样本回测，把「胜率未知」变成「本样本上的轮廓」。
@@ -2301,11 +2330,59 @@ def sector_flow_refresh() -> dict[str, Any]:
     return {**snapshot, "available": True, "saved": True}
 
 
-def _watch_symbols(settings: Any) -> list[str]:
-    """持仓 ∪ 自选：基本面核对只落在自己关心的票上。"""
+def _etf_watch_count(settings: Any) -> int:
+    """自选 ∪ 持仓里的 ETF 只数——红旗卡要如实标注「豁免 N 只」。"""
     watch = watchlist_store.load(settings.data.directory).get("stocks", {})
     book = holdings_store.load(settings.data.directory).get("positions", {})
-    return sorted(set(watch) | set(book))
+    symbols = set(watch) | set(book)
+    return sum(1 for symbol in symbols if etf_mod.is_etf(symbol))
+
+
+def _etf_snapshot_view(adjust: str) -> dict[str, Any]:
+    """ETF 快照（GET：只读缓存）。ETF 落盘在 processed/etf，独立于
+    股票面板——「样本合计」的大盘口径不被场内基金污染。"""
+    return etf_mod.snapshot(load_settings().data.directory, adjust=adjust)
+
+
+def _etf_refresh_view(adjust: str) -> dict[str, Any]:
+    """逐只联网采集 ETF 日线；一只失败不拖垮整批，结果逐条可见。"""
+    root = load_settings().data.directory
+    fetched: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    for bare in sorted(etf_mod.ETF_UNIVERSE):
+        try:
+            frame = etf_mod.refresh(root, bare, adjust=adjust)
+            fetched.append(
+                {
+                    "symbol": bare,
+                    "name": etf_mod.ETF_UNIVERSE[bare],
+                    "rows": len(frame),
+                    "as_of": str(frame.index[-1].date()),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - 单只失败逐条上报
+            failed.append({"symbol": bare, "error": str(exc)})
+    snapshot = etf_mod.snapshot(root, adjust=adjust)
+    return {
+        **snapshot,
+        "fetched": fetched,
+        "failed": failed,
+        "saved": bool(fetched),
+        "available": bool(fetched) or snapshot["available"],
+    }
+
+
+def _watch_symbols(settings: Any) -> list[str]:
+    """持仓 ∪ 自选中的股票：基本面核对只落在自己关心的票上。
+
+    ETF 被刻意排除——场内基金没有季报，「没查」和「豁免」必须分清：
+    送 ETF 去查财报只会失败，还把红旗卡的「未覆盖」变成噪音。前端
+    红旗卡会标注被豁免的 ETF 只数。
+    """
+    watch = watchlist_store.load(settings.data.directory).get("stocks", {})
+    book = holdings_store.load(settings.data.directory).get("positions", {})
+    symbols = sorted(set(watch) | set(book))
+    return [symbol for symbol in symbols if not etf_mod.is_etf(symbol)]
 
 
 def _risk_to_dict(risk: Any, name_of: dict[str, str]) -> dict[str, Any]:
@@ -2341,7 +2418,13 @@ def fundamentals_risk_view() -> dict[str, Any]:
     """
     settings = load_settings()
     symbols = _watch_symbols(settings)
+    etf_count = _etf_watch_count(settings)
     if not symbols:
+        if etf_count:
+            return {
+                "available": False,
+                "reason": f"自选/持仓只有 {etf_count} 只 ETF——它们没有财报红旗，股票红旗核对轮不到它们；先加一只股票",
+            }
         return {"available": False, "reason": "持仓与自选都是空的：先加一只票再核对基本面"}
     panel = fundamentals_fetch.load(settings.data.directory)
     if panel.frame.empty:
@@ -2351,12 +2434,15 @@ def fundamentals_risk_view() -> dict[str, Any]:
         )
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     risks = fundamentals_risk.assess_many(panel, symbols)
     covered = {row.symbol for row in risks if row.level != fundamentals_risk.LEVEL_UNKNOWN}
     return {
         "available": True,
         "n_symbols": len(symbols),
         "n_covered": len(covered),
+        "etf_skipped": etf_count,  # 豁免而不是缺失：前端如实标注
         "risks": [_risk_to_dict(row, name_of) for row in risks],
     }
 
@@ -2378,6 +2464,8 @@ def fundamentals_refresh() -> dict[str, Any]:
     risks = fundamentals_risk.assess_many(merged, symbols)
     names = universe.load(settings.data.directory)
     name_of = dict(zip(names["symbol"], names["name"])) if not names.empty else {}
+    # ETF 不在股票 universe 里：名称来自写死的清单，透明且无需联网
+    name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     return {
         "available": True,
         "saved": str(path),
