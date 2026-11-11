@@ -309,6 +309,7 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | POST | `/api/portfolio` | 录入或更新一条持仓（`shares`、`cost` 必须为正） |
 | DELETE | `/api/portfolio/{symbol}` | 移除一条持仓 |
 | GET | `/api/portfolio/review` | 复盘：每只一档结论 + 情景预案 + 明日关注价位 + 纪律检查 + 与上次存档的差异 |
+| POST | `/api/portfolio/backfill` | 一键补齐持仓 ∪ 自选里缺数据的票：股票增量采集进面板、ETF 走 ETF 采集；已有数据不碰，逐只报告成功/失败/跳过 |
 | POST | `/api/portfolio/review/save` | 把当前复盘存为今日存档，返回档位变化 |
 | GET | `/api/sectors/analysis` | 板块汇总：等权/中位涨幅、上涨占比、分化度、成交额、领涨领跌、外围关联（只读快照，不联网） |
 | GET | `/api/sectors/members` | 单板块成分股明细：超额、RSI、MA20、量比、成交额 |

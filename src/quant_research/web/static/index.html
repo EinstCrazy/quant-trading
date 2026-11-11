@@ -518,6 +518,7 @@
           <input id="pf-memo" placeholder="备注（可选）" style="width:140px">
           <button class="btn" id="pf-add">加入 / 更新</button>
           <button class="btn ghost" id="pf-refresh">重新复盘</button>
+          <button class="btn ghost" id="pf-backfill" title="把持仓与自选里缺面板数据的票一次性补齐：股票增量采集，ETF 走 ETF 采集；已有数据的不碰">一键补采缺失数据</button>
           <button class="btn ghost" id="pf-import-toggle">批量导入</button>
           <span class="muted" id="pf-status"></span>
         </div>
@@ -3538,6 +3539,31 @@ $("pf-add").addEventListener("click", async () => {
 $("pf-refresh").addEventListener("click", async () => {
   await loadPortfolio();
 });
+
+/* 一键补采：缺什么补什么——已有数据的不碰。结果逐只可见，
+   失败的票（如已退市）如实留在 failed 里，不假装补齐了。 */
+$("pf-backfill").addEventListener("click", () =>
+  withButton($("pf-backfill"), async () => {
+    try {
+      const result = await api("/portfolio/backfill", null, "POST");
+      const updated = Object.keys(result.updated || {});
+      const failed = Object.keys(result.failed || {});
+      if (updated.length) {
+        toast(
+          `${result.note}${failed.length ? `——失败：${failed.join("、")}` : ""}`,
+          failed.length ? "error" : "success",
+        );
+        await loadPortfolio();
+      } else if (failed.length) {
+        toast(`补采失败：${failed.map((s) => `${s}（${result.failed[s].slice(0, 40)}）`).join("；")}`, "error");
+      } else {
+        toast(result.note || "数据都齐了，没有要补的", "success");
+      }
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  })
+);
 
 $("pf-save").addEventListener("click", async () => {
   try {

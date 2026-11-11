@@ -345,3 +345,45 @@ def test_akshare_keeps_the_explicit_window_when_qfq_goes_negative(monkeypatch):
         provider.fetch_daily(["000559.SH"], start=start)
 
     assert calls == ["20200101"]  # 没有第二次调用：显式窗口不许被改写
+
+
+def test_akshare_falls_back_to_unadjusted_when_qfq_is_negative_anywhere(monkeypatch):
+    """600519 实测：2015 起 qfq 收盘最小值 -143.5（不复权 169.64）——负价
+    不是「早期历史」专有，任何窗口都可能。最后一层回退不复权：真实成交
+    价能直接用（持仓现价/盈亏），分红除权跳空如实存在，口径写进 source。"""
+    calls: list[tuple[str, str]] = []
+
+    class FakeAkshare:
+        @staticmethod
+        def stock_zh_a_hist(**kwargs: object) -> pd.DataFrame:
+            calls.append((str(kwargs.get("start_date")), str(kwargs.get("adjust"))))
+            frame = _good_hist()
+            if kwargs.get("adjust"):  # 任何复权窗口都给负数
+                frame.loc[0, "收盘"] = -0.09
+            return frame
+
+    monkeypatch.setitem(sys.modules, "akshare", FakeAkshare)
+    provider = AkshareProvider(adjust="qfq")
+
+    frames = provider.fetch_daily(["600519.SH"])
+
+    assert len(frames["600519.SH"]) == 30
+    assert frames["600519.SH"]["close"].min() > 0  # 不复权数据为正
+    assert calls == [("19900101", "qfq"), ("20150101", "qfq"), ("19900101", "")]
+
+
+def test_akshare_unadjusted_fallback_marks_the_adjustment_basis(monkeypatch):
+    """会追口径的人要能追到：落盘 meta 标明这只票不是 qfq。"""
+
+    class FakeAkshare:
+        @staticmethod
+        def stock_zh_a_hist(**kwargs: object) -> pd.DataFrame:
+            frame = _good_hist()
+            if kwargs.get("adjust"):
+                frame.loc[0, "收盘"] = -0.09
+            return frame
+
+    monkeypatch.setitem(sys.modules, "akshare", FakeAkshare)
+    frames = AkshareProvider(adjust="qfq").fetch_daily(["600519.SH"])
+
+    assert "unadjusted" in frames["600519.SH"].attrs.get("source", "")

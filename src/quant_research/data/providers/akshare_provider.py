@@ -166,10 +166,35 @@ class AkshareProvider(MarketDataProvider):
                 )
                 if retried is None or retried.empty:
                     raise
-                frames[normalised] = normalise_bars(
-                    retried.rename(columns=_COLUMN_MAP).set_index("date"),
-                    source=f"{self.name}:{normalised}",
-                )
+                try:
+                    frames[normalised] = normalise_bars(
+                        retried.rename(columns=_COLUMN_MAP).set_index("date"),
+                        source=f"{self.name}:{normalised}",
+                    )
+                except ProviderError as retried_exc:
+                    # 前复权的负价不是「早期历史」专有：600519 实测 2015 年
+                    # 起 qfq 收盘最小值 -143.5（不复权 169.64）——任何窗口
+                    # 都可能负。最后一层回退不复权：真实成交价可直接用于
+                    # 持仓现价与盈亏，分红除权日会有跳空（质量检查可查）。
+                    # 口径写进 source，落盘后能追到这只票不是 qfq。
+                    if "non-positive" not in str(retried_exc):
+                        raise
+                    raw_unadjusted = akshare.stock_zh_a_hist(
+                        symbol=to_bare_symbol(normalised),
+                        period="daily",
+                        start_date=start_text,
+                        end_date=end_text,
+                        adjust="",
+                    )
+                    if raw_unadjusted is None or raw_unadjusted.empty:
+                        raise retried_exc from None
+                    basis = f"{self.name}:{normalised}:unadjusted（qfq 负价回退）"
+                    bars = normalise_bars(
+                        raw_unadjusted.rename(columns=_COLUMN_MAP).set_index("date"),
+                        source=basis,
+                    )
+                    bars.attrs["source"] = basis  # 口径留痕：落盘后能追到不是 qfq
+                    frames[normalised] = bars
         return frames
 
 

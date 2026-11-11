@@ -1527,6 +1527,75 @@ def drop_position(symbol: str) -> dict[str, Any]:
     return _portfolio_payload(settings)
 
 
+@router.post("/portfolio/backfill")
+def portfolio_backfill() -> dict[str, Any]:
+    """一键补齐持仓 ∪ 自选里缺数据的票。
+
+    缺什么补什么：股票缺面板数据走增量采集（落盘后进面板），ETF 缺
+    落盘走 ETF 采集（ETF 独立于股票面板，不拿面板判缺）。已有数据的
+    不碰；单只失败不拖垮整批，逐只报告——「补齐了什么」和「还差什么」
+    都看得见。
+    """
+    settings = load_settings()
+    root = settings.data.directory
+    watch = watchlist_store.load(root).get("stocks", {})
+    book = sorted({*holdings_store.load(root).get("positions", {}), *watch})
+    if not book:
+        raise HTTPException(status_code=400, detail="持仓与自选都是空的——先录入再补采")
+
+    panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+
+    def is_missing(symbol: str) -> bool:
+        if etf_mod.is_etf(symbol):
+            return etf_mod.load(root, symbol) is None
+        return symbol not in panel.prices.columns
+
+    todo = [symbol for symbol in book if is_missing(symbol)]
+    skipped = [symbol for symbol in book if not is_missing(symbol)]
+    if not todo:
+        return {
+            "requested": book,
+            "updated": [],
+            "failed": [],
+            "skipped": skipped,
+            "note": "持仓与自选的数据都齐了，没有要补的",
+        }
+
+    updated: dict[str, int] = {}
+    failed: dict[str, str] = {}
+    stocks = [symbol for symbol in todo if not etf_mod.is_etf(symbol)]
+    etfs = [symbol for symbol in todo if etf_mod.is_etf(symbol)]
+    if stocks:
+        try:
+            report = _collect_report(
+                CollectRequest(provider=settings.collection.provider, symbols=stocks)
+            )
+            updated.update(report.get("updated") or {})
+            failed.update(report.get("failed") or {})
+        except HTTPException as exc:
+            # 整批都失败（如 provider 挂了）：如实整批报告
+            failed.update({symbol: exc.detail for symbol in stocks})
+    for bare in etfs:
+        try:
+            frame = etf_mod.refresh(root, bare, adjust=settings.collection.adjust)
+            updated[bare] = len(frame)
+        except Exception as exc:  # noqa: BLE001 - 单只失败逐条上报
+            failed[bare] = str(exc)
+
+    note = (
+        f"补采完成：成功 {len(updated)}、失败 {len(failed)}"
+        if failed
+        else f"补采完成：{len(updated)} 只入库"
+    )
+    return {
+        "requested": book,
+        "updated": updated,
+        "failed": failed,
+        "skipped": skipped,
+        "note": note,
+    }
+
+
 @router.get("/portfolio/review")
 def portfolio_review(provider: str | None = None, adjust: str | None = None) -> dict[str, Any]:
     """持仓复盘：每只票一档结论 + 情景预案 + 明日关注价位，外加纪律检查。
