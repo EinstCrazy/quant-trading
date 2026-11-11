@@ -2212,14 +2212,15 @@ function ovGoto(view, label) {
 
 async function loadDashboard() {
   ["ov-market", "ov-overseas", "ov-flow", "ov-book", "ov-data"].forEach((id) => skeleton($(id), "rows"));
-  const [volume, overseas, flow, datasets, book] = await Promise.all([
+  const [volume, overseas, flow, datasets, book, etf] = await Promise.all([
     api("/volume/analysis").catch((e) => ({ error: e.message })),
     api("/overseas/analysis").catch((e) => ({ available: false, reason: e.message })),
     api("/sector-flow").catch((e) => ({ available: false, reason: e.message })),
     api("/datasets").catch(() => []),
     Promise.all([api("/portfolio").catch(() => ({ positions: [] })), api("/watchlist").catch(() => ({ stocks: [] }))]),
+    api("/etf/snapshot").catch(() => null),
   ]);
-  renderOvMarket(volume);
+  renderOvMarket(volume, etf);
   renderOvOverseas(overseas);
   renderOvFlow(flow);
   renderOvData(datasets);
@@ -2228,9 +2229,25 @@ async function loadDashboard() {
   renderJobs(await api("/jobs?limit=8").catch(() => []));
 }
 
-function renderOvMarket(volume) {
+/* 宽基 ETF 份额是「钱在不在场」的另一面：量能看成交、份额看申赎。 */
+function etfShareLine(etf) {
+  if (!etf || !etf.rows || !etf.rows.some((row) => row.share_change != null)) {
+    return "";
+  }
+  const moved = etf.rows.filter((row) => row.share_change != null);
+  const inflow = moved.filter((row) => row.share_change > 0.001).length;
+  const outflow = moved.filter((row) => row.share_change < -0.001).length;
+  const tone = inflow > outflow ? "up" : inflow < outflow ? "down" : "muted";
+  const top = moved.slice().sort((a, b) => b.share_change - a.share_change)[0];
+  return `<div class="kv"><span>宽基份额（较上次）</span><span class="${tone}">${inflow} 流入 / ${outflow} 流出${
+    top && Math.abs(top.share_change) > 0.001 ? ` · ${top.name} ${top.share_change > 0 ? "+" : ""}${(top.share_change * 100).toFixed(1)}%` : ""
+  }</span></div>`;
+}
+
+function renderOvMarket(volume, etf) {
   const note = $("ov-market-note");
   const target = $("ov-market");
+  const etfLine = etfShareLine(etf);
   const m = volume?.market;
   if (!m) {
     renderError(target, volume?.error || volume?.unavailable || "没有量能数据", () => loadDashboard());
@@ -2249,8 +2266,9 @@ function renderOvMarket(volume) {
     <div class="kv"><span>当日涨跌</span><span>${m.change_pct > 0 ? "+" : ""}${m.change_pct}%</span></div>
     <div class="kv"><span>连放/连缩</span><span>${m.streak >= 2 ? m.streak + " 天" : "—"}</span></div>
     <div class="kv"><span>口径</span><span class="muted">${volume.market_source === "sample" ? "样本合计" : volume.market_source}</span></div>
+    ${etfLine}
     <p class="muted" style="margin:8px 0 10px;line-height:1.7">${m.advice}</p>
-    ${ovGoto("volume", "看量能三层明细")}`;
+    <div class="row" style="gap:6px">${ovGoto("volume", "看量能三层明细")}${ovGoto("etf", "看 ETF")}</div>`;
   bindOvGoto();
 }
 
