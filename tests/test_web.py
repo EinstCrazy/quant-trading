@@ -634,3 +634,78 @@ class TestApiHelperContract:
             'options = { method: method || (body != null ? "POST" : "GET"), ...jsonBody }'
             in self._html()
         )
+
+
+class TestReviewCharts:
+    """复盘图表：走势图只画决策线，浮盈横条按绝对值缩放。
+
+    事故预防：图上线一多，读者只会看见一片虚线——BOLL 三轨 + 四条 MA
+    一起上，成本线与止损线就找不到了。这里钉住「只留 MA20/MA60」。
+    """
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_review_card_has_chart_containers(self):
+        html = self._html()
+        for element_id in ("pf-chart-symbol", "pf-chart", "pf-chart-facts", "pf-pnl-bars"):
+            assert f'id="{element_id}"' in html
+
+    def test_chart_reuses_the_indicator_series_endpoint(self):
+        """走势图复用 /indicators/{symbol}/series——不新增后端端点，
+        口径与指标页一致（同一份面板、同一份 MA）。"""
+        html = self._html()
+        assert "/indicators/${encodeURIComponent(row.symbol)}/series?days=120" in html
+
+    def test_only_decision_overlays_are_drawn(self):
+        html = self._html()
+        assert '["ma_20", "ma_60"].includes(line.field)' in html
+        assert (
+            "boll_mid"
+            not in html.split("async function loadReviewChart()")[1].split(
+                "function renderReview("
+            )[0]
+        )
+
+    def test_reference_lines_are_cost_and_atr_stop(self):
+        """图上两条虚线只能是成本与 ATR 止损：其余价位留在文字区。"""
+        html = self._html()
+        assert "[row.cost, row.levels?.atr_stop]" in html
+
+    def test_chart_can_draw_candles_without_lines(self, tmp_path):
+        """指标没算完时只有蜡烛：图仍要画出来，不能整块空白。"""
+        import shutil
+        import subprocess
+
+        if shutil.which("node") is None:
+            pytest.skip("没有 node，跳过前端沙盒验证")
+        html = self._html()
+        start = html.index("function chart(target, series, options = {})")
+        end = html.index("function table(columns, rows)")
+        chart_src = html[start:end]
+        fmt = re.search(r"function fmt\([^)]*\)\s*\{.*?\n\}", html, re.DOTALL)
+        colors = re.search(r"const COLORS\s*=\s*\[[^\]]*\];", html)
+        assert fmt and colors
+        script = tmp_path / "chart.js"
+        script.write_text(
+            colors.group(0)
+            + "\n"
+            + fmt.group(0)
+            + "\n"
+            + chart_src
+            + """
+const target = { innerHTML: "" };
+chart(target, [], { height: 200, reference: [10.51, 12.95], candles: [
+  ["2024-01-02", 10, 11, 9.5, 10.5],
+  ["2024-01-03", 10.5, 11.5, 10.2, 11.2],
+] });
+if (!target.innerHTML.includes("<svg")) { console.error("NO_SVG"); process.exit(1); }
+if ((target.innerHTML.match(/<rect/g) || []).length < 2) { console.error("NO_CANDLES"); process.exit(1); }
+""",
+            encoding="utf-8",
+        )
+        result = subprocess.run(["node", str(script)], capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stderr

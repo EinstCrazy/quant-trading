@@ -166,6 +166,13 @@
   .pf-group { margin-top: 12px; }
   .pf-group h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
   .pf-item { border-left: 3px solid var(--line); padding: 4px 10px; margin: 6px 0; }
+  .pf-bar { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; }
+  .pf-bar-label { width: 150px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pf-bar-track { flex: 1; height: 10px; background: #f1f3f6; border-radius: 5px; overflow: hidden; }
+  .pf-bar-track i { display: block; height: 100%; border-radius: 5px; }
+  .pf-bar-track i.up { background: var(--bad); }
+  .pf-bar-track i.down { background: var(--good); }
+  .pf-bar-value { width: 76px; flex: none; text-align: right; }
   .pf-item.stop { border-left-color: var(--bad); }
   .pf-item.reduce { border-left-color: var(--warn); }
   .pf-item.take { border-left-color: var(--good); }
@@ -558,6 +565,19 @@
         <div id="pf-summary"></div>
         <div id="pf-discipline"></div>
         <div id="pf-advice"></div>
+        <div id="pf-charts" style="margin-top:16px;border-top:1px solid #eceff3;padding-top:12px">
+          <div class="row" style="margin-bottom:8px">
+            <b>图表分析</b>
+            <select id="pf-chart-symbol" style="width:260px"></select>
+            <span class="muted" style="font-size:12px">日线蜡烛 + MA20 / MA60；虚线 = 成本线与 ATR 止损参考</span>
+          </div>
+          <div id="pf-chart"></div>
+          <div id="pf-chart-facts" class="row" style="gap:16px;margin-top:8px;flex-wrap:wrap"></div>
+          <div style="margin-top:12px">
+            <div class="muted" style="margin-bottom:4px">浮盈对比（按绝对值满格缩放，看谁最疼、谁最稳）</div>
+            <div id="pf-pnl-bars"></div>
+          </div>
+        </div>
       </div>
       <div class="card">
         <h3>基本面红旗 <span class="muted" id="fr-note"></span></h3>
@@ -1024,7 +1044,8 @@ function chart(target, series, options = {}) {
   const height = options.height || 280;
   const pad = { left: 62, right: 14, top: 12, bottom: 26 };
   const usable = series.filter((s) => s.points && s.points.length > 1);
-  if (!usable.length) {
+  const candleRows = options.candles || [];
+  if (!usable.length && !candleRows.length) {
     target.innerHTML = '<div class="empty">没有可绘制的数据</div>';
     return;
   }
@@ -1055,7 +1076,7 @@ function chart(target, series, options = {}) {
   }
   if (min === max) { min -= 1; max += 1; }
   const span = max - min;
-  const nPoints = Math.max(...usable.map((s) => s.points.length));
+  const nPoints = Math.max(candleRows.length, ...usable.map((s) => s.points.length));
   const x = (i) => pad.left + (nPoints <= 1 ? 0 : (i / (nPoints - 1)) * (width - pad.left - pad.right));
   const y = (v) => pad.top + (1 - (v - min) / span) * (height - pad.top - pad.bottom);
   const barWidth = Math.max(1, ((width - pad.left - pad.right) / Math.max(nPoints, 1)) * 0.6);
@@ -1137,7 +1158,7 @@ function chart(target, series, options = {}) {
             <text x="${width - pad.right}" y="${yy}" dy="-3" text-anchor="end" font-size="10" fill="#9aa1ab">${level}</text>`;
   }).join("");
 
-  const first = usable[0].points;
+  const first = usable.length ? usable[0].points : candleRows.map((c) => [c[0], c[4]]);
   const lastDate = first[first.length - 1][0];
   const legend = usable.map((s, index) => {
     const color = s.color || COLORS[index % COLORS.length];
@@ -3411,6 +3432,7 @@ async function loadReview() {
   try {
     REVIEW = await api("/portfolio/review");
     renderReview();
+    renderReviewCharts();
     $("pf-status").textContent = "";
   } catch (error) {
     REVIEW = null;
@@ -3467,6 +3489,95 @@ function renderHoldings() {
       loadReview();
     });
   });
+}
+
+/* 复盘图表：走势图回答「它现在在什么位置」，浮盈横条回答「谁最疼」。
+   数据全部现读（series 走面板 + 指标 bundle），不缓存——复盘看的就是
+   当下的位置。 */
+let REVIEW_CHART_KEY = "";
+
+function reviewRowKey(row) {
+  return `${row.account || "默认"}::${row.symbol}`;
+}
+
+function renderReviewCharts() {
+  const target = $("pf-chart-symbol");
+  if (!REVIEW || !REVIEW.positions || !REVIEW.positions.length) {
+    $("pf-charts").style.display = "none";
+    return;
+  }
+  $("pf-charts").style.display = "";
+  const accounts = new Set(REVIEW.positions.map((row) => row.account || "默认"));
+  const previous = target.value;
+  target.innerHTML = REVIEW.positions
+    .map((row) => {
+      const key = reviewRowKey(row);
+      const label = accounts.size > 1 ? `${row.account} · ${row.symbol}${row.name ? ` ${row.name}` : ""}` : `${row.symbol}${row.name ? ` ${row.name}` : ""}`;
+      return `<option value="${key}">${label}</option>`;
+    })
+    .join("");
+  const keys = [...target.options].map((o) => o.value);
+  target.value = keys.includes(previous) ? previous : keys[0];
+  REVIEW_CHART_KEY = target.value;
+
+  reviewPnlBars(accounts.size > 1);
+  loadReviewChart();
+}
+
+function reviewPnlBars(withAccount) {
+  const rows = REVIEW.positions.filter((row) => row.pnl_pct != null);
+  if (!rows.length) {
+    $("pf-pnl-bars").innerHTML = '<div class="empty">没有可比的浮盈率（缺现价）</div>';
+    return;
+  }
+  const peak = Math.max(...rows.map((row) => Math.abs(row.pnl_pct)), 1);
+  $("pf-pnl-bars").innerHTML = rows
+    .map((row) => {
+      const width = Math.max(2, (Math.abs(row.pnl_pct) / peak) * 100);
+      const tone = row.pnl_pct > 0 ? "up" : "down";
+      const label = withAccount ? `${row.account} · ${row.symbol}` : row.symbol;
+      return `<div class="pf-bar"><span class="pf-bar-label" title="${label}">${label}</span>
+        <span class="pf-bar-track"><i class="${tone}" style="width:${width.toFixed(1)}%"></i></span>
+        <span class="pf-bar-value ${tone}">${pct(row.pnl_pct)}</span></div>`;
+    })
+    .join("");
+}
+
+async function loadReviewChart() {
+  const key = $("pf-chart-symbol").value;
+  REVIEW_CHART_KEY = key;
+  const row = (REVIEW.positions || []).find((item) => reviewRowKey(item) === key);
+  const target = $("pf-chart");
+  if (!row) return;
+  target.innerHTML = '<div class="empty">取日线中…</div>';
+  $("pf-chart-facts").innerHTML = "";
+  try {
+    const data = await api(`/indicators/${encodeURIComponent(row.symbol)}/series?days=120`);
+    const panel = (data.panels || []).find((item) => item.key === "price");
+    if (!panel) throw new Error("这只票还没有价格面板");
+    /* 只画决策用的两条线：成本（我在哪）与 ATR 止损（纪律在哪）。
+       止盈与 20 日高低留给文字区——图上线太多，读者只会看见一片虚线。 */
+    const reference = [row.cost, row.levels?.atr_stop].filter((value) => typeof value === "number");
+    const overlays = (panel.lines || []).filter((line) => ["ma_20", "ma_60"].includes(line.field));
+    chart(
+      target,
+      overlays.map((line) => ({ name: line.label, points: line.points, type: line.kind })),
+      { height: 300, digits: 2, reference, candles: panel.candles || [] },
+    );
+    const stop = row.levels?.atr_stop;
+    const facts = [
+      ["成本", row.cost == null ? "—" : fmt(row.cost, 2)],
+      ["现价", row.close == null ? "—" : fmt(row.close, 2)],
+      ["浮盈", pct(row.pnl_pct)],
+      ["距止损", stop && row.close != null ? pct(((row.close - stop) / stop) * 100) : "—"],
+      ["仓位", row.market_value == null ? "—" : `${fmt(row.market_value / 1e4, 2)} 万`],
+    ];
+    $("pf-chart-facts").innerHTML = facts
+      .map(([label, value]) => `<span class="muted">${label} <b>${value}</b></span>`)
+      .join("");
+  } catch (error) {
+    target.innerHTML = `<div class="empty">${error.message}${row.stance === "nodata" ? "——这只票还没有日线，先用上面的「补采这只票」" : ""}</div>`;
+  }
 }
 
 function renderReview() {
@@ -3628,6 +3739,7 @@ $("pf-refresh").addEventListener("click", async () => {
 });
 
 $("pf-account-filter").addEventListener("change", () => renderHoldings());
+$("pf-chart-symbol").addEventListener("change", () => loadReviewChart());
 
 /* 一键补采：缺什么补什么——已有数据的不碰。结果逐只可见，
    失败的票（如已退市）如实留在 failed 里，不假装补齐了。 */
