@@ -170,6 +170,9 @@
   #etf-hist-chart { scroll-margin-top: 76px; }
   /* 名单卡置顶 + 高亮：选完股第一眼就该看到今天选了什么 */
   #scr-latest.scr-hot { border-left: 4px solid #e6b800; background: #fdf6e3; }
+  .pf-plan-title { font-size: 13px; font-weight: 700; margin: 10px 0 4px; }
+  .pf-plan-row { display: grid; grid-template-columns: 46px 1fr; gap: 8px; font-size: 12.5px; margin: 2px 0; }
+  .pf-plan-tag { font-weight: 700; color: var(--muted); }
   .scr-headline { font-size: 17px; font-weight: 700; margin: 4px 0 8px; }
   .chip { padding: 2px 10px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; font-size: 12px; user-select: none; }
   .chip:hover { border-color: #9db4d8; }
@@ -581,6 +584,7 @@
         <div id="pf-summary"></div>
         <div id="pf-discipline"></div>
         <div id="pf-advice"></div>
+        <div id="pf-plan" style="margin-top:14px;border-top:1px solid #eceff3;padding-top:12px"></div>
         <div id="pf-charts" style="margin-top:16px;border-top:1px solid #eceff3;padding-top:12px">
           <div class="row" style="margin-bottom:8px">
             <b>图表分析</b>
@@ -3753,7 +3757,7 @@ async function loadReview() {
   try {
     REVIEW = await api("/portfolio/review");
     renderReview();
-    renderReviewCharts();
+    renderReviewPlan(REVIEW.position_plan);
     $("pf-status").textContent = "";
   } catch (error) {
     REVIEW = null;
@@ -3932,6 +3936,45 @@ async function loadReviewChart() {
   }
 }
 
+
+/* 明日仓位预案：开盘位置 × 量能 → 仓位动作。
+   预案是条件表不是预测——价位全是今天的数（ATR 止损 / MA20 / 成本 /
+   20 日高），明天的量能只在条件里出现，不假装知道。 */
+function renderReviewPlan(plan) {
+  const target = $("pf-plan");
+  const esc = (text) => String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  if (!plan || !plan.positions || !plan.positions.length) {
+    target.innerHTML = "";
+    return;
+  }
+  const blocks = plan.positions.map((p) => {
+    const tags = [
+      ["高开", p.branches.gap_up],
+      ["平开", p.branches.flat],
+      ["低开", p.branches.gap_down],
+    ];
+    const head = [
+      `<div class="pf-plan-title">${esc(p.name || p.symbol)}（${esc(p.label)}）${p.near_stop ? ' <span class="down">· 贴着止损</span>' : ""}</div>`,
+      `<div class="muted" style="font-size:12px">${esc(p.volume_note)}</div>`,
+    ].join("");
+    const body = tags
+      .map(
+        ([tag, text]) =>
+          `<div class="pf-plan-row"><span class="pf-plan-tag">${esc(tag)}</span><span>${esc(text)}</span></div>`,
+      )
+      .join("");
+    return head + body;
+  }).join("<div style='border-top:1px dashed #eceff3;margin:10px 0'></div>");
+  const o = plan.overall || {};
+  const overall = o.current_value
+    ? `<p class="muted" style="font-size:12px">整体：若谨慎情景全部触发，持仓市值 ${fmt(o.current_value, 0)} → ${fmt(o.worst_value, 0)}（${o.worst_drawdown_pct}%）；${o.n_near_stop} 只贴着止损，明天一个普通低开就会碰到纪律线。</p><p class="muted" style="font-size:12px">${plan.note}</p>`
+    : `<p class="muted" style="font-size:12px">${plan.note}</p>`;
+  target.innerHTML = `
+    <div class="row" style="margin-bottom:6px"><b>明日仓位预案</b>
+      <span class="muted" style="font-size:12px">开盘位置 × 量能 → 动作；价位都是今天的数</span></div>
+    ${blocks}${overall}`;
+}
+
 function renderReview() {
   const note = $("pf-review-note");
   const sum = $("pf-summary");
@@ -3943,6 +3986,7 @@ function renderReview() {
     $("pf-discipline").innerHTML = "";
     $("pf-compare").textContent = "";
     target.innerHTML = "";
+    renderReviewPlan(null);
     return;
   }
   if (!REVIEW.positions.length) {
@@ -3951,6 +3995,7 @@ function renderReview() {
     $("pf-discipline").innerHTML = "";
     $("pf-compare").textContent = "";
     target.innerHTML = "";
+    renderReviewPlan(null);
     return;
   }
   const s = REVIEW.summary;

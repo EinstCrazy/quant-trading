@@ -316,7 +316,7 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | POST | `/api/portfolio/review/save` | 存今日复盘（显式动作）；可选 note=用户手写备注（≤500 字，与系统结论分字段存）；同日重存省略 note=继承旧备注，显式空串=清除 |
 | GET | `/api/portfolio/review/history` | 历次存档清单（新到旧）：日期、用户备注、系统结论、档位数、需盯数；只读目录不联网 |
 | GET | `/api/portfolio/review/archive/{date}` | 单日存档详情：档位逐条 + 备注框 + 与再上一次的档位变化；缺日期 404 指路 |
-| GET | `/api/portfolio/review` | 复盘卡内「图表分析」：走势图复用 `/api/indicators/{symbol}/series?days=120` 的 price 面板（蜡烛 + MA20/MA60），叠加成本线与 ATR 止损两条参考虚线；浮盈横条按绝对值缩放对比 | 复盘：每只一档结论 + 情景预案 + 明日关注价位 + 纪律检查 + 与上次存档的差异 |
+| GET | `/api/portfolio/review` | 响应含 `position_plan`（明日仓位预案：每票三情景动作 + 整体市值区间；价位来自今日盘面，量能只在条件里） 复盘卡内「图表分析」：走势图复用 `/api/indicators/{symbol}/series?days=120` 的 price 面板（蜡烛 + MA20/MA60），叠加成本线与 ATR 止损两条参考虚线；浮盈横条按绝对值缩放对比 | 复盘：每只一档结论 + 情景预案 + 明日关注价位 + 纪律检查 + 与上次存档的差异 |
 | GET | `/api/import/excel/spec` | Excel 导入格式说明：必填/可选列、表头别名、读取规则、示例表——别名与 `_EXCEL_HEADER_ALIASES` 同源，说明不会漂移 |
 | POST | `/api/portfolio/backfill` | 一键补齐持仓 ∪ 自选里缺数据的票：股票增量采集进面板、ETF 走 ETF 采集；已有数据不碰，逐只报告成功/失败/跳过 |
 | POST | `/api/portfolio/review/save` | 把当前复盘存为今日存档，返回档位变化 |

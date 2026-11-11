@@ -22,6 +22,7 @@ from openpyxl.utils import get_column_letter
 from quant_research import holdings as holdings_store
 from quant_research import overseas as overseas_mod
 from quant_research import playbook as playbook_mod
+from quant_research import position_plan as position_plan_mod
 from quant_research import review_archive as review_store
 from quant_research import sector_flow as sector_flow_mod
 from quant_research import sectors as sectors_mod
@@ -1817,6 +1818,7 @@ def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, An
             "positions": [],
             "discipline": [],
             "unavailable": None,
+            "position_plan": None,
         }
 
     try:
@@ -1829,6 +1831,7 @@ def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, An
             "positions": [],
             "discipline": [],
             "unavailable": str(exc.detail),
+            "position_plan": None,
         }
 
     names = universe.load(settings.data.directory)
@@ -1897,6 +1900,7 @@ def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, An
         for row in rows
     ]
     summary = summarize(scoped, rules)
+    plan = position_plan_mod.plan_positions(rows)
     return {
         "as_of": as_of,
         "provider": source,
@@ -1904,6 +1908,7 @@ def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, An
         "discipline": discipline(scoped, summary, rules),
         "positions": rows,
         "unavailable": None,
+        "position_plan": plan,
     }
 
 

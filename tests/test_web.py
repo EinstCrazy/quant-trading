@@ -966,3 +966,39 @@ class TestScreenProminent:
         """跑完自动滚到名单——不用自己找。"""
         html = self._html()
         assert "scrollToScreenLatest();" in html[html.index("async function runScreen()") :]
+
+
+class TestPositionPlanUI:
+    """复盘卡的「明日仓位预案」：开盘位置 × 量能 → 动作，文案必须转义。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_plan_block_exists_and_is_wired(self):
+        html = self._html()
+        assert 'id="pf-plan"' in html
+        assert "function renderReviewPlan(plan)" in html
+        assert "renderReviewPlan(REVIEW.position_plan)" in html
+        # 提前 return 的分支也要清空，不然上次的数据残留
+        assert html.count("renderReviewPlan(null)") >= 2
+
+    def test_branch_text_is_escaped(self):
+        """预案文案进 innerHTML 前必须过转义——纪律和防注入同一条线。"""
+        html = self._html()
+        render = html[html.index("function renderReviewPlan(plan)") :]
+        render = render[: render.index("\nfunction renderReview()")]
+        assert "const esc = (text)" in render
+        assert "${esc(text)}" in render
+
+    def test_payload_carries_the_plan(self):
+        """/portfolio/review 响应里必须带 position_plan（不可用时为 null）。"""
+        from pathlib import Path as _P
+
+        api = (_P(__file__).parents[1] / "src/quant_research/web/api.py").read_text(
+            encoding="utf-8"
+        )
+        assert '"position_plan": plan' in api
+        assert api.count('"position_plan": None') >= 2
