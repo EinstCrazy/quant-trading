@@ -7,31 +7,39 @@
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2024; --muted: #6b7280;
-    --line: #e3e6ea; --accent: #2563eb; --good: #15803d; --bad: #b91c1c;
-    --warn: #a16207;
+    --line: #e3e6ea; --accent: #2563eb; --accent-weak: #eff6ff;
+    --good: #15803d; --bad: #b91c1c; --warn: #a16207;
+    --shadow: 0 1px 3px rgba(15, 23, 42, .06), 0 4px 14px rgba(15, 23, 42, .05);
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
          font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
   .app { display: flex; min-height: 100vh; }
-  aside { width: 210px; background: var(--panel); border-right: 1px solid var(--line);
-          padding: 18px 14px; flex: none; }
-  aside h1 { font-size: 15px; margin: 0 0 16px; letter-spacing: .5px; }
-  nav button { display: block; width: 100%; text-align: left; padding: 8px 10px;
-               margin-bottom: 4px; border: 0; border-radius: 6px; background: transparent;
-               color: var(--ink); cursor: pointer; font-size: 14px; }
+  aside { width: 216px; background: var(--panel); border-right: 1px solid var(--line);
+          padding: 16px 12px; flex: none; position: sticky; top: 0;
+          height: 100vh; overflow-y: auto; scrollbar-width: thin; }
+  aside h1 { font-size: 15px; margin: 0 0 4px; letter-spacing: .5px; }
+  aside .tagline { font-size: 11px; color: var(--muted); margin: 0 0 14px; }
+  .nav-group { margin-bottom: 12px; }
+  .nav-group > span { display: block; font-size: 11px; color: var(--muted);
+                      letter-spacing: 1px; padding: 0 10px 4px; }
+  nav button { display: flex; width: 100%; justify-content: space-between; align-items: center;
+               text-align: left; padding: 7px 10px; margin-bottom: 2px; border: 0;
+               border-radius: 6px; background: transparent; color: var(--ink);
+               cursor: pointer; font-size: 13.5px; }
   nav button:hover { background: var(--bg); }
-  nav button.active { background: var(--accent); color: #fff; }
-  .side-block { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+  nav button.active { background: var(--accent); color: #fff; font-weight: 600; }
+  .side-block { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
   label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   select, input { width: 100%; padding: 6px 8px; border: 1px solid var(--line);
                   border-radius: 6px; background: #fff; color: var(--ink); font-size: 13px; }
-  main { flex: 1; padding: 20px 24px 60px; overflow-x: hidden; }
+  main { flex: 1; padding: 20px 24px 60px; min-width: 0; }
   h2 { font-size: 17px; margin: 0 0 14px; }
   .view { display: none; }
   .view.active { display: block; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-          padding: 14px 16px; margin-bottom: 14px; }
+          padding: 14px 16px; margin-bottom: 14px; box-shadow: var(--shadow);
+          overflow-x: auto; }
   .card h3 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
   .grid { display: grid; gap: 12px; }
   .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -53,7 +61,22 @@
   .grid2 h4 { margin: 12px 0 6px; font-size: 13px; color: var(--ink); }
   .grid2 ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
   .grid2 li::marker { color: var(--muted); }
-  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) {
+    .grid2 { grid-template-columns: 1fr; }
+    .grid.g3, .grid.g4 { grid-template-columns: 1fr; }
+  }
+  /* 小屏：侧栏折叠成顶部横向滚动条，工作区占满宽度 */
+  @media (max-width: 760px) {
+    .app { flex-direction: column; }
+    aside { width: 100%; height: auto; position: static; border-right: 0;
+            border-bottom: 1px solid var(--line); overflow-x: auto; }
+    nav { display: flex; gap: 6px; }
+    nav button { width: auto; white-space: nowrap; }
+    .nav-group { display: contents; }
+    .nav-group > span { display: none; }
+    .side-block { border-top: 0; padding-top: 8px; margin-top: 8px; }
+    main { padding: 14px 12px 40px; }
+  }
   .volbars { display: flex; align-items: flex-end; gap: 4px; height: 64px; margin-top: 10px; }
   .volbars span { flex: 1; background: var(--line); border-radius: 2px 2px 0 0; min-height: 2px; }
   .volbars span.hot { background: var(--accent, #2563eb); }
@@ -69,9 +92,13 @@
   th { color: var(--muted); font-weight: 600; }
   tbody tr:hover { background: #fafbfc; }
   .btn { padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent);
-         color: #fff; cursor: pointer; font-size: 14px; }
+         color: #fff; cursor: pointer; font-size: 14px; transition: filter .15s; }
+  .btn:hover:not([disabled]) { filter: brightness(1.08); }
   .btn[disabled] { opacity: .5; cursor: default; }
   .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  .btn.ghost:hover:not([disabled]) { background: var(--accent-weak); filter: none; }
+  .btn.small { padding: 4px 10px; font-size: 12px; }
+  .badge.info { background: var(--accent-weak); color: var(--accent); }
   .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
   .field { min-width: 110px; flex: 1; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
@@ -84,6 +111,28 @@
            padding: 10px 14px; border-radius: 8px; font-size: 13px; opacity: 0;
            transition: opacity .2s; pointer-events: none; max-width: 60ch; }
   #toast.show { opacity: 1; }
+  #toast.error { background: var(--bad); }
+  #toast.success { background: var(--good); }
+  /* 全局加载条：api 请求在途时顶部细条流动 */
+  #loading-bar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 100;
+                 display: none; }
+  #loading-bar.busy { display: block; }
+  #loading-bar i { display: block; height: 100%; width: 40%;
+                   background: linear-gradient(90deg, transparent, var(--accent), transparent);
+                   animation: slide 1s linear infinite; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(350%); } }
+  /* 骨架屏：数据未到时给布局占位，避免内容突然跳动 */
+  .skeleton { border-radius: 4px; background: linear-gradient(90deg, #eef0f3 25%, #f7f8fa 50%, #eef0f3 75%);
+              background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+  @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .sk-row { height: 13px; margin: 10px 0; }
+  .sk-table { height: 120px; }
+  /* 错误框：带重试按钮，比只弹一条 toast 可靠 */
+  .error-box { border: 1px solid #fecaca; background: #fef2f2; color: var(--bad);
+               border-radius: 8px; padding: 12px 14px; font-size: 13px; }
+  .error-box b { display: block; margin-bottom: 6px; }
+  .error-box button { border: 1px solid #fecaca; background: #fff; color: var(--bad);
+                      border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
   /* 代码补全：菜单挂在 body 上（fixed），不挤动表单布局 */
   .ac-menu { position: fixed; z-index: 50; background: var(--panel); border: 1px solid var(--line);
              border-radius: 6px; box-shadow: 0 8px 24px rgba(15, 23, 42, .12);
@@ -153,19 +202,28 @@
 <div class="app">
   <aside>
     <h1>量化研究工作台</h1>
+    <p class="tagline">状态与价位，决定权在自己</p>
     <nav>
-      <button data-view="data" class="active">数据</button>
-      <button data-view="backtest">回测</button>
-      <button data-view="compare">对比</button>
-      <button data-view="collect">采集</button>
-      <button data-view="screen">建议</button>
-      <button data-view="indicators">指标</button>
-      <button data-view="watchlist">自选</button>
-      <button data-view="portfolio">持仓</button>
-      <button data-view="sectors">板块</button>
-      <button data-view="volume">量能</button>
-      <button data-view="overseas">外围</button>
-      <button data-view="playbook">战法</button>
+      <div class="nav-group"><span>每日工作台</span>
+        <button data-view="playbook" class="active">战法环境</button>
+        <button data-view="portfolio">持仓复盘</button>
+        <button data-view="screen">今日建议</button>
+      </div>
+      <div class="nav-group"><span>市场环境</span>
+        <button data-view="volume">量能分析</button>
+        <button data-view="sectors">板块</button>
+        <button data-view="overseas">外围盘</button>
+      </div>
+      <div class="nav-group"><span>研究与验证</span>
+        <button data-view="indicators">技术指标</button>
+        <button data-view="watchlist">自选股</button>
+        <button data-view="backtest">回测</button>
+        <button data-view="compare">对比</button>
+      </div>
+      <div class="nav-group"><span>数据基础</span>
+        <button data-view="data">数据质量</button>
+        <button data-view="collect">采集</button>
+      </div>
     </nav>
     <div class="side-block">
       <label>数据集</label>
@@ -180,7 +238,7 @@
 
   <main>
     <!-- ① 数据 -->
-    <section id="view-data" class="view active">
+    <section id="view-data" class="view">
       <h2>数据</h2>
       <div class="card" id="data-meta"></div>
       <div class="card">
@@ -539,7 +597,7 @@
     </section>
 
     <!-- ⑫ 战法 -->
-    <section id="view-playbook" class="view">
+    <section id="view-playbook" class="view active">
       <h2>战法</h2>
       <div class="card">
         <h3>今日环境 <span class="muted" id="pb-note"></span></h3>
@@ -549,9 +607,10 @@
       <p class="muted" id="pb-disclaimer" style="font-size:12px;line-height:1.7;margin-top:12px"></p>
     </section>
 
-    <div id="toast"></div>
   </main>
 </div>
+<div id="loading-bar"><i></i></div>
+<div id="toast"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -573,12 +632,54 @@ const STRATEGY_PARAMS = {
 const COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2",
   "#4b5563", "#ca8a04"];
 
-function toast(message) {
+/* toast 分级：error 红、success 绿、info 黑。消息类型不同，重要性不同。 */
+function toast(message, kind = "info") {
   const el = $("toast");
   el.textContent = message;
+  el.classList.remove("error", "success");
+  if (kind !== "info") el.classList.add(kind);
   el.classList.add("show");
   clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.classList.remove("show"), 4000);
+  el._timer = setTimeout(() => el.classList.remove("show"), kind === "error" ? 6000 : 4000);
+}
+
+/* 全局加载条：任何 api 请求在途时顶部细条流动——慢接口不再「点了没反应」 */
+let _inflight = 0;
+function _busy(delta) {
+  _inflight = Math.max(0, _inflight + delta);
+  $("loading-bar").classList.toggle("busy", _inflight > 0);
+}
+
+/* 骨架屏：数据未到时先占位 */
+function skeleton(target, mode = "table") {
+  if (!target) return;
+  target.innerHTML = mode === "table"
+    ? `<div class="skeleton sk-table"></div><div class="skeleton sk-row" style="width:80%"></div><div class="skeleton sk-row" style="width:60%"></div>`
+    : Array.from({ length: 4 }, (_, i) =>
+        `<div class="skeleton sk-row" style="width:${95 - i * 18}%"></div>`).join("");
+}
+
+/* 错误框：带重试按钮——比只弹 toast 可靠，用户不用记住刚才点了什么 */
+function renderError(target, message, retry) {
+  if (!target) return;
+  const id = `retry-${Math.random().toString(36).slice(2, 8)}`;
+  target.innerHTML = `<div class="error-box"><b>加载失败</b>${message}
+    ${retry ? `<button id="${id}">重试</button>` : ""}</div>`;
+  if (retry) $(id).addEventListener("click", () => retry());
+}
+
+/* 按钮 loading 态：统一禁用 + 恢复文案 */
+async function withButton(button, action) {
+  if (!button) return action();
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "处理中…";
+  try {
+    return await action();
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
 }
 
 async function api(path, body, method) {
@@ -587,10 +688,15 @@ async function api(path, body, method) {
     : body
       ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
       : {};
-  const response = await fetch("/api" + path, options);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.detail || response.statusText || "请求失败");
-  return payload;
+  _busy(1);
+  try {
+    const response = await fetch("/api" + path, options);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || response.statusText || "请求失败");
+    return payload;
+  } finally {
+    _busy(-1);
+  }
 }
 
 function fmt(value, digits = 2) {
@@ -752,9 +858,9 @@ function showView(name, push = true) {
    还原位置，详情页的代码链接变成可复制的真链接。视图已激活时不重复加载。 */
 function applyHash() {
   const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
-  const name = view || "data";
+  const name = view || "playbook";
   if (!document.getElementById(`view-${name}`)) {
-    location.hash = "#/data";
+    location.hash = "#/playbook";
     return;
   }
   if (name === "indicators" && arg) {
@@ -1754,6 +1860,7 @@ const QUAD_TONE = (quadrant) =>
 
 async function loadVolume() {
   const provider = $("vol-provider").value;
+  skeleton($("vol-market"));
   $("vol-note").textContent = "加载中…";
   VOLUME = await api(`/volume/analysis?provider=${provider}`).catch((error) => ({ error: error.message }));
   renderVolume();
@@ -1765,7 +1872,7 @@ function renderVolume() {
   if (!VOLUME) return;
   if (VOLUME.error || VOLUME.unavailable) {
     note.textContent = "";
-    target.innerHTML = `<div class="empty">${VOLUME.error || VOLUME.unavailable}</div>`;
+    renderError(target, VOLUME.error || VOLUME.unavailable, () => loadVolume());
     $("vol-sectors").innerHTML = "";
     $("vol-stocks").innerHTML = "";
     return;
@@ -1878,20 +1985,17 @@ async function loadOverseas() {
   renderOverseas();
 }
 
+
 async function refreshOverseas() {
-  const button = $("os-refresh");
-  button.disabled = true;
-  button.textContent = "抓取中…";
-  try {
-    OVERSEAS = await api("/overseas/refresh", { method: "POST" });
-    toast("外围快照已更新");
-  } catch (error) {
-    toast(`抓取失败：${error.message}`);
-  } finally {
-    button.disabled = false;
-    button.textContent = "刷新（联网抓取）";
-    renderOverseas();
-  }
+  await withButton($("os-refresh"), async () => {
+    try {
+      OVERSEAS = await api("/overseas/refresh", { method: "POST" });
+      toast("外围快照已更新", "success");
+    } catch (error) {
+      toast(`抓取失败：${error.message}`, "error");
+    }
+  });
+  renderOverseas();
 }
 
 function renderOverseas() {
@@ -1902,7 +2006,11 @@ function renderOverseas() {
   if (!OVERSEAS) return;
   if (!OVERSEAS.available) {
     note.textContent = "";
-    summary.innerHTML = `<div class="empty">${OVERSEAS.reason || OVERSEAS.error || "没有外围数据"}</div>`;
+    const reason = OVERSEAS.reason || OVERSEAS.error || "没有外围数据";
+    summary.innerHTML = reason.includes("还没有")
+      ? `<div class="empty">${reason}</div>`  /* 没抓过快照：这不是故障，按钮就在旁边 */
+      : `<div class="error-box"><b>加载失败</b>${reason}<button id="os-retry">重试</button></div>`;
+    if (!reason.includes("还没有")) $("os-retry").addEventListener("click", loadOverseas);
     groupsBox.innerHTML = "";
     signalsBox.innerHTML = "";
     return;
@@ -1968,6 +2076,7 @@ const STATUS_META = {
 };
 
 async function loadPlaybook() {
+  skeleton($("pb-plays"));
   $("pb-note").textContent = "加载中…";
   PLAYBOOK = await api("/playbook").catch((error) => ({ error: error.message }));
   renderPlaybook();
@@ -1984,7 +2093,7 @@ function renderPlaybook() {
   if (!PLAYBOOK) return;
   if (PLAYBOOK.error) {
     note.textContent = "";
-    envBox.innerHTML = `<div class="empty">${PLAYBOOK.error}</div>`;
+    renderError(envBox, PLAYBOOK.error, () => loadPlaybook());
     target.innerHTML = "";
     return;
   }
@@ -2033,19 +2142,15 @@ async function loadSectorFlow() {
 }
 
 async function refreshSectorFlow() {
-  const button = $("flow-refresh");
-  button.disabled = true;
-  button.textContent = "抓取中…";
-  try {
-    SECTOR_FLOW = await api("/sector-flow/refresh", { method: "POST" });
-    toast("资金流快照已更新");
-  } catch (error) {
-    toast(`抓取失败：${error.message}`);
-  } finally {
-    button.disabled = false;
-    button.textContent = "刷新（联网抓取）";
-    renderSectorFlow();
-  }
+  await withButton($("flow-refresh"), async () => {
+    try {
+      SECTOR_FLOW = await api("/sector-flow/refresh", { method: "POST" });
+      toast("资金流快照已更新", "success");
+    } catch (error) {
+      toast(`抓取失败：${error.message}`, "error");
+    }
+  });
+  renderSectorFlow();
 }
 
 function flowTable(rows, positive) {
@@ -2095,6 +2200,7 @@ let SECTOR_PICKED = null;
 async function loadSectors() {
   const days = $("sec-days").value;
   const provider = $("sec-provider").value;
+  skeleton($("sec-table"));
   $("sec-note").textContent = "加载中…";
   SECTORS = await api(`/sectors/analysis?days=${days}&provider=${provider}`).catch((error) => ({
     error: error.message,
@@ -2131,7 +2237,7 @@ function renderSectors() {
   }
   if (SECTORS.error) {
     note.textContent = "";
-    target.innerHTML = `<div class="empty">${SECTORS.error}</div>`;
+    renderError(target, SECTORS.error, () => loadSectors());
     return;
   }
   note.textContent = `近 ${SECTORS.days} 日 · ${SECTORS.as_of} · ${SECTORS.provider} · ${SECTORS.n_sectors} 个板块 · 覆盖 ${SECTORS.n_covered}/${SECTORS.n_symbols} 只${
@@ -2256,24 +2362,21 @@ const LEVEL_CLASS = {
 };
 
 async function loadFundRisk() {
+  skeleton($("fr-body"));
   FUND_RISK = await api("/fundamentals/risk").catch((error) => ({ available: false, reason: error.message }));
   renderFundRisk();
 }
 
 async function refreshFundRisk() {
-  const button = $("fr-refresh");
-  button.disabled = true;
-  button.textContent = "采集中…";
-  try {
-    FUND_RISK = await api("/fundamentals/refresh", { method: "POST" });
-    toast("季报已更新并核对");
-  } catch (error) {
-    toast(`采集失败：${error.message}`);
-  } finally {
-    button.disabled = false;
-    button.textContent = "采集季报并核对";
-    renderFundRisk();
-  }
+  await withButton($("fr-refresh"), async () => {
+    try {
+      FUND_RISK = await api("/fundamentals/refresh", { method: "POST" });
+      toast("季报已更新并核对", "success");
+    } catch (error) {
+      toast(`采集失败：${error.message}`, "error");
+    }
+  });
+  renderFundRisk();
 }
 
 function renderFundRisk() {
@@ -2343,11 +2446,12 @@ const LEVEL_LABELS = {
 };
 
 async function loadPortfolio() {
+  skeleton($("pf-table"));
   try {
     HOLDINGS = await api("/portfolio");
     renderHoldings();
   } catch (error) {
-    $("pf-table").innerHTML = `<div class="empty">${error.message}</div>`;
+    renderError($("pf-table"), error.message, () => loadPortfolio());
   }
   await loadReview();
 }
@@ -2551,6 +2655,7 @@ let MOVERS = null;
 let EVENTS = null;
 
 async function loadWatchlist() {
+  skeleton($("wl-table"));
   const [list, analysis, movers, events] = await Promise.all([
     api("/watchlist").catch(() => ({ categories: [], stocks: [] })),
     api("/watchlist/analysis").catch(() => null),
@@ -2895,13 +3000,25 @@ async function loadDatasets() {
   try {
     const health = await api("/health");
     state.strategies = health.strategies || ["ma_cross"];
-    $("health").textContent = `策略：${state.strategies.join(", ")}`;
     const datasets = await api("/datasets");
     state.datasets = datasets;
-    $("dataset").innerHTML = datasets
-      .map((d) => `<option value="${d.key}">${d.label}</option>`).join("");
-    if (!state.dataset && datasets.length) state.dataset = datasets[0].key;
-    $("dataset").value = state.dataset;
+    const current = datasets.find((d) => d.key === state.dataset) || datasets[0];
+    const when = current?.updated_at
+      ? new Date(current.updated_at).toLocaleString("zh-CN", { hour12: false })
+      : "—";
+    const ageDays = current?.updated_at
+      ? Math.floor((Date.now() - new Date(current.updated_at).getTime()) / 86400000)
+      : null;
+    const stale = ageDays !== null && ageDays >= 3;
+    $("health").innerHTML =
+      `<div style="margin-bottom:6px">策略：${state.strategies.join(", ")}</div>` +
+      (current
+        ? `<div style="margin-bottom:6px">样本：${current.n_symbols ?? "—"} 只</div>` +
+          `<div>更新：${when}${stale ? ' <span class="badge warn">已停更</span>' : ""}</div>` +
+          (stale
+            ? `<div style="margin-top:6px;color:var(--warn)">数据已 ${ageDays} 天没更新——先去「采集」补数，再读分析。</div>`
+            : "")
+        : "");
   } catch (error) {
     toast(error.message);
   }
