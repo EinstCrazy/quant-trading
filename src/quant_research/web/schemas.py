@@ -410,6 +410,17 @@ class WatchlistIn(BaseModel):
     note: str | None = None
 
 
+class AccountCreate(BaseModel):
+    """先建户、后录入：账户是显式创建的，录入时只做选择。
+
+    note 放券商备注——「华泰」「国泰」这种名字够短，但三个月后谁知道
+    「测试户」是哪家。
+    """
+
+    name: str = Field(min_length=1, max_length=24)
+    note: str | None = Field(default=None, max_length=100)
+
+
 class ReviewSaveIn(BaseModel):
     """存今日复盘时顺手写的备注：用户手写的注解，与系统结论分开存。
 

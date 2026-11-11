@@ -531,8 +531,8 @@
           <label>股数</label>
           <input id="pf-shares" type="number" step="100" min="0" style="width:100px" placeholder="100">
           <label>账户</label>
-          <input id="pf-account" list="pf-accounts" placeholder="默认" style="width:110px">
-          <datalist id="pf-accounts"></datalist>
+          <select id="pf-account" style="width:130px"><option value="默认">默认</option></select>
+          <button class="btn ghost" id="pf-account-new" title="先建户、后录入：账户在录入时只做选择，不手打名字">新建账户</button>
           <input id="pf-memo" placeholder="备注（可选）" style="width:140px">
           <button class="btn" id="pf-add">加入 / 更新</button>
           <button class="btn ghost" id="pf-refresh">重新复盘</button>
@@ -3747,14 +3747,25 @@ async function loadReview() {
 
 function renderHoldings() {
   const names = HOLDINGS.account_names || [];
-  $("pf-accounts").innerHTML = names.map((name) => `<option value="${name}">`).join("");
+  const details = HOLDINGS.account_details || [];
+  const noteOf = (n) => (details.find((d) => d.name === n) || {}).note || "";
+  const options = names
+    .map((n) => {
+      const note = noteOf(n);
+      return `<option value="${n}">${n}${note ? `（${note}）` : ""}</option>`;
+    })
+    .join("");
+  const picked = $("pf-account").value || "默认";
+  $("pf-account").innerHTML = options;
+  if (names.includes(picked)) $("pf-account").value = picked;
+  $("pf-accounts-note").textContent = details
+    .map((d) => `${d.name}${d.note ? `（${d.note}）` : ""}·${d.n_positions} 只`)
+    .join("  ");
   const filter = $("pf-account-filter");
   const active = filter.value;
   filter.innerHTML =
     '<option value="">全部账户</option>' +
     names.map((name) => `<option value="${name}"${name === active ? " selected" : ""}>${name}</option>`).join("");
-  $("pf-accounts-note").textContent = names.length > 1 ? `${names.length} 个账户` : "";
-
   const visible = HOLDINGS.positions.filter((p) => !active || (p.account || "默认") === active);
   const rows = visible.map((p) => {
     const change = p.change_pct == null ? "—" : `${p.change_pct > 0 ? "+" : ""}${p.change_pct.toFixed(2)}%`;
@@ -3766,7 +3777,9 @@ function renderHoldings() {
     const editing = PF_EDIT && PF_EDIT.account === who && PF_EDIT.symbol === p.symbol;
     if (editing) {
       return [
-        `<input id="pf-e-account" list="pf-accounts" value="${who}" style="width:80px">`,
+        `<select id="pf-e-account" style="width:110px">${names
+          .map((n) => `<option value="${n}"${n === who ? " selected" : ""}>${n}</option>`)
+          .join("")}</select>`,
         symbolCell(p.symbol),
         p.name || "—",
         `<input id="pf-e-shares" type="number" min="1" value="${p.shares}" style="width:90px">`,
@@ -4103,6 +4116,22 @@ $("pf-table").addEventListener("click", async (event) => {
     toast(error.message, "error");
   }
 });
+
+$("pf-account-new").addEventListener("click", () =>
+  withButton($("pf-account-new"), async () => {
+    const name = prompt("新账户名（不同券商分开记，≤24 字）：");
+    if (!name || !name.trim()) return;
+    const note = prompt("备注（可选，比如这家券商是干什么的）：");
+    try {
+      HOLDINGS = await api("/portfolio/accounts", { name: name.trim(), note: note || null }, "POST");
+      $("pf-account").value = name.trim();
+      renderHoldings();
+      toast(`账户「${name.trim()}」已创建：录入持仓时直接在下拉里选`);
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }),
+);
 
 $("pf-account-rename").addEventListener("click", () =>
   withButton($("pf-account-rename"), async () => {

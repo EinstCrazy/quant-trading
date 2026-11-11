@@ -45,7 +45,9 @@ logger = get_logger("holdings")
 
 __all__ = [
     "DEFAULT_ACCOUNT",
+    "account_details",
     "accounts",
+    "create_account",
     "empty",
     "load",
     "path",
@@ -64,7 +66,7 @@ DEFAULT_ACCOUNT = "默认"
 
 
 def empty() -> dict[str, Any]:
-    return {"positions": {}}
+    return {"positions": {}, "accounts": []}
 
 
 def path(directory: Path | str) -> Path:
@@ -113,11 +115,34 @@ def load(directory: Path | str) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("持仓文件读不出来（%s），按空表处理", exc)
         return empty()
-    return {"positions": _migrate(dict(data.get("positions") or {}))}
+    raw_accounts = data.get("accounts")
+    accounts: list[dict[str, Any]] = []
+    for item in raw_accounts or []:
+        if isinstance(item, dict) and item.get("name"):
+            accounts.append({"name": str(item["name"]), "note": str(item.get("note") or "")})
+        elif isinstance(item, str) and item:
+            accounts.append({"name": item, "note": ""})
+    return {
+        "positions": _migrate(dict(data.get("positions") or {})),
+        "accounts": accounts,
+    }
 
 
 def save(directory: Path | str, data: dict[str, Any]) -> Path:
-    """Atomic replacement: a half-written book must never be readable."""
+    """Atomic replacement: a half-written book must never be readable.
+
+    data 缺 "accounts" 键时从现有文件继承：只动持仓的旧调用不该悄悄
+    清空显式账户列表。
+    """
+    if "accounts" not in data:
+        file_probe = path(directory)
+        try:
+            prior = (
+                json.loads(file_probe.read_text(encoding="utf-8")) if file_probe.is_file() else {}
+            )
+        except (OSError, json.JSONDecodeError):
+            prior = {}
+        data = {**data, "accounts": prior.get("accounts") or []}
     file = path(directory)
     file.parent.mkdir(parents=True, exist_ok=True)
     tmp = file.with_suffix(".tmp")
@@ -133,12 +158,53 @@ def symbols(data: dict[str, Any]) -> list[str]:
 
 
 def accounts(data: dict[str, Any]) -> list[str]:
-    """账本里出现过的账户名（排序，默认账户在前）。"""
+    """全部可选账户：显式创建的 ∪ 持仓里出现过的（排序，默认账户在前）。
+
+    显式列表支持「先建户、后录入」；历史持仓的账户照样可选——旧数据
+    不因换了录入方式而消失。
+    """
     names = {
         str(entry.get("account") or DEFAULT_ACCOUNT)
         for entry in (data.get("positions") or {}).values()
     }
+    names |= {str(a.get("name")) for a in data.get("accounts") or [] if a.get("name")}
     return sorted(names, key=lambda name: (name != DEFAULT_ACCOUNT, name))
+
+
+def create_account(directory: Path | str, name: str, *, note: str | None = None) -> dict[str, Any]:
+    """先建户、后录入：账户是显式管理的，不是打字打出来的。
+
+    重名拒绝（含与已有持仓的账户重名）——两个「华泰」比一个报错贵得多。
+    空账户合法：建了还没录持仓，录入时的下拉里就该看得见。
+    """
+    who = _normalise_account(name)
+    data = load(directory)
+    if who in accounts(data):
+        raise ValueError(f"账户「{who}」已存在")
+    data["accounts"].append({"name": who, "note": (note or "").strip()})
+    save(directory, data)
+    return data
+
+
+def account_details(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """账户明细（默认账户在前）：名字、备注、持仓数——下拉与汇总共用。"""
+    counts: dict[str, int] = {}
+    for entry in (data.get("positions") or {}).values():
+        who = str(entry.get("account") or DEFAULT_ACCOUNT)
+        counts[who] = counts.get(who, 0) + 1
+    notes = {
+        str(a.get("name")): str(a.get("note") or "")
+        for a in data.get("accounts") or []
+        if a.get("name")
+    }
+    return [
+        {
+            "name": name,
+            "note": notes.get(name, ""),
+            "n_positions": counts.get(name, 0),
+        }
+        for name in accounts(data)
+    ]
 
 
 def upsert(
@@ -285,6 +351,10 @@ def rename_account(directory: Path | str, old: str, new: str) -> dict[str, Any]:
         entry = data["positions"].pop(key)
         entry["account"] = who_new
         data["positions"][entry_key(who_new, str(entry["symbol"]))] = entry
+    data["accounts"] = [
+        ({**a, "name": who_new} if a.get("name") == who_old else a)
+        for a in data.get("accounts") or []
+    ]
     save(directory, data)
     return data
 
@@ -298,10 +368,12 @@ def remove_account(directory: Path | str, name: str) -> dict[str, Any]:
     who = _normalise_account(name)
     data = load(directory)
     keys = [key for key, entry in data["positions"].items() if entry.get("account") == who]
-    if not keys:
-        raise ValueError(f"账户「{who}」不存在（或没有持仓）")
+    explicit = [a for a in data.get("accounts") or [] if a.get("name") == who]
+    if not keys and not explicit:
+        raise ValueError(f"账户「{who}」不存在")
     for key in keys:
         data["positions"].pop(key)
+    data["accounts"] = [a for a in data.get("accounts") or [] if a.get("name") != who]
     save(directory, data)
     return data
 

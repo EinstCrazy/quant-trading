@@ -899,3 +899,26 @@ class TestScreenFormResilience:
         assert "catch (error)" in start
         # 表单构建必须在 steps 列表里（而不是独立裸调用）
         assert "buildScreenForm," in start
+
+
+class TestAccountFirstUI:
+    """录入时账户只选不打字：select + 显式「新建账户」入口。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_entry_account_is_a_select_not_free_text(self):
+        """录入时的账户不许手打名字——手打是「华泰」和「华泰证券 」分裂的来源。"""
+        html = self._html()
+        assert '<select id="pf-account"' in html
+        assert 'input id="pf-account"' not in html
+        assert 'id="pf-e-account" list=' not in html  # 行内编辑挪账户同样只选
+
+    def test_explicit_create_button_exists(self):
+        html = self._html()
+        assert 'id="pf-account-new"' in html
+        assert '"/portfolio/accounts"' in html  # POST 创建
+        assert "先建户、后录入" in html

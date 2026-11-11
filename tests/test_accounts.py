@@ -227,3 +227,108 @@ class TestPortfolioAPI:
 
         assert payload["n_added"] == 2
         assert sorted(row["account"] for row in payload["added"]) == ["中信", "华泰"]
+
+
+class TestExplicitAccounts:
+    """先建户、后录入：账户是显式实体，录入时只选不打字。
+
+    三条边界：空账户合法（建了没录持仓，下拉里要看得见）；save 缺
+    accounts 键时继承现有文件（只动持仓的旧调用不清空账户）；重名
+    拒绝——两个「华泰」会让「卖哪个户的货」变成猜谜。
+    """
+
+    def test_create_then_appear_in_dropdown_list(self, tmp_path):
+        holdings.create_account(tmp_path, "国泰君安", note="备用户")
+
+        data = holdings.load(tmp_path)
+        names = holdings.accounts(data)
+        details = holdings.account_details(data)
+
+        assert "国泰君安" in names
+        detail = next(d for d in details if d["name"] == "国泰君安")
+        assert detail["note"] == "备用户"
+        assert detail["n_positions"] == 0  # 空户合法
+
+    def test_duplicate_name_refused_including_derived(self, tmp_path):
+        holdings.upsert(tmp_path, "600519.SH", shares=100, cost=1500, account="中信")
+
+        with pytest.raises(ValueError, match="已存在"):
+            holdings.create_account(tmp_path, "中信")
+
+    def test_position_entry_selects_from_explicit_list(self, tmp_path):
+        """录入走显式列表：建户后录入，计数进明细。"""
+        holdings.create_account(tmp_path, "中信")
+        holdings.upsert(tmp_path, "600519.SH", shares=100, cost=1500, account="中信")
+
+        detail = next(
+            d for d in holdings.account_details(holdings.load(tmp_path)) if d["name"] == "中信"
+        )
+        assert detail["n_positions"] == 1
+
+    def test_save_without_accounts_key_keeps_the_list(self, tmp_path):
+        """旧调用手工构造 {"positions": ...} 落盘不清空显式账户。"""
+        holdings.create_account(tmp_path, "国泰君安")
+
+        holdings.save(tmp_path, {"positions": {}})
+
+        assert "国泰君安" in holdings.accounts(holdings.load(tmp_path))
+
+    def test_rename_moves_the_explicit_entry_too(self, tmp_path):
+        holdings.create_account(tmp_path, "中信", note="主户")
+
+        holdings.rename_account(tmp_path, "中信", "中信证券")
+
+        details = holdings.account_details(holdings.load(tmp_path))
+        assert [d["name"] for d in details if d["note"]] == ["中信证券"]
+
+    def test_drop_account_removes_empty_entry_from_list(self, tmp_path):
+        holdings.create_account(tmp_path, "国泰君安")
+        holdings.remove_account(tmp_path, "国泰君安")
+
+        assert "国泰君安" not in holdings.accounts(holdings.load(tmp_path))
+
+    def test_drop_unknown_account_still_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="不存在"):
+            holdings.remove_account(tmp_path, "不存在")
+
+
+class TestExplicitAccountAPI:
+    """端到端：建户 → 录入选户 → payload 带明细。"""
+
+    @pytest.fixture()
+    def client(self, tmp_path, monkeypatch):
+        from quant_research.web import api as api_module
+        from quant_research.web import create_app
+
+        class _Settings:
+            class data:
+                directory = tmp_path
+
+            class collection:
+                provider = "baostock"
+                adjust = "qfq"
+                provider_options: dict = {}  # noqa: RUF012
+
+            class review:
+                pass
+
+        monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _Settings())
+        return TestClient(create_app())
+
+    def test_create_account_then_payload_carries_details(self, client):
+        response = client.post("/api/portfolio/accounts", json={"name": "国泰", "note": "备用"})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert "国泰" in payload["account_names"]
+        detail = next(d for d in payload["account_details"] if d["name"] == "国泰")
+        assert detail["note"] == "备用"
+        assert detail["n_positions"] == 0
+
+    def test_duplicate_is_400(self, client):
+        client.post("/api/portfolio/accounts", json={"name": "国泰"})
+
+        response = client.post("/api/portfolio/accounts", json={"name": "国泰"})
+
+        assert response.status_code == 400
+        assert "已存在" in response.json()["detail"]

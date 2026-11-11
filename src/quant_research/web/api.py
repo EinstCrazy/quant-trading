@@ -81,6 +81,7 @@ from .experiments import get_store as get_experiments
 from .grid import MAX_COMBINATIONS, expand, rank
 from .jobs import JobStore, Progress, get_store
 from .schemas import (
+    AccountCreate,
     AccountRename,
     BacktestOut,
     BacktestRequest,
@@ -1552,6 +1553,20 @@ def patch_position(
     return _portfolio_payload(settings)
 
 
+@router.post("/portfolio/accounts")
+def add_account(request: AccountCreate) -> dict[str, Any]:
+    """新建账户（可空户）：先建户、后录入，录入时只选不打字。
+
+    重名拒绝——两个「华泰」会让「卖哪个户的货」变成猜谜。
+    """
+    settings = load_settings()
+    try:
+        holdings_store.create_account(settings.data.directory, request.name, note=request.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _portfolio_payload(settings)
+
+
 @router.post("/portfolio/accounts/rename")
 def rename_account(request: AccountRename) -> dict[str, Any]:
     """重命名账户：持仓整体迁移（added_at 保留），复盘存档键同步迁移。
@@ -2063,6 +2078,7 @@ def _portfolio_payload(settings: Settings) -> dict[str, Any]:
         "positions": rows,
         "accounts": list(summary.values()),
         "account_names": holdings_store.accounts(data),
+        "account_details": holdings_store.account_details(data),
     }
 
 
