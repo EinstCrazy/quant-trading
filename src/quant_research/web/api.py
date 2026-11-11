@@ -2222,6 +2222,58 @@ def etf_snapshot(adjust: str = "qfq") -> dict[str, Any]:
     return _etf_snapshot_view(adjust)
 
 
+def _parse_watchlist_lines(text: str) -> list[dict[str, Any]]:
+    """每行 `代码 [名称] [#分类...]`：600519 贵州茅台 #白酒 #消费。
+
+    只认空格分隔的第一段为代码，其余自由文本里抓 # 开头的分类；
+    名称是第二段去掉 # 后的剩余部分（可空）。
+    """
+    entries: list[dict[str, Any]] = []
+    for line in (text or "").splitlines():
+        tokens = line.split()
+        if not tokens:
+            continue
+        categories = [token[1:] for token in tokens if token.startswith("#") and len(token) > 1]
+        rest = [token for token in tokens if not token.startswith("#")]
+        name = " ".join(rest[1:]) if len(rest) > 1 else ""
+        entries.append({"symbol": rest[0], "name": name, "categories": categories})
+    return entries
+
+
+def _parse_position_lines(text: str) -> list[dict[str, Any]]:
+    """每行 `代码 股数 成本`：600519 1000 1500.5。"""
+    entries: list[dict[str, Any]] = []
+    for line in (text or "").splitlines():
+        tokens = line.split()
+        if not tokens:
+            continue
+        if len(tokens) < 3:
+            entries.append({"symbol": tokens[0], "shares": None, "cost": None})
+            continue
+        entries.append({"symbol": tokens[0], "shares": tokens[1], "cost": tokens[2]})
+    return entries
+
+
+@router.post("/watchlist/import")
+def watchlist_import(payload: dict[str, Any]) -> dict[str, Any]:
+    """批量加入自选：幂等（已在表里的不动）、逐条报告成败。"""
+    text = str(payload.get("text") or "")
+    result = watchlist_store.import_stocks(
+        load_settings().data.directory, _parse_watchlist_lines(text)
+    )
+    return {**result, "n_added": len(result["added"])}
+
+
+@router.post("/portfolio/import")
+def portfolio_import(payload: dict[str, Any]) -> dict[str, Any]:
+    """批量录入持仓：默认跳过已有持仓，不覆盖真实成本。"""
+    text = str(payload.get("text") or "")
+    result = holdings_store.import_positions(
+        load_settings().data.directory, _parse_position_lines(text)
+    )
+    return {**result, "n_added": len(result["added"])}
+
+
 @router.post("/etf/refresh")
 def etf_refresh(adjust: str = "qfq") -> dict[str, Any]:
     """逐只联网采集 ETF 日线（东财 fund_etf_hist_em）。"""

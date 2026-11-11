@@ -416,6 +416,16 @@
           <label>备注</label>
           <input id="wl-note" style="flex:1" placeholder="可选">
           <button class="btn" id="wl-add">加入</button>
+          <button class="btn ghost" id="wl-import-toggle">批量导入</button>
+        </div>
+        <div id="wl-import" style="display:none;margin-top:10px">
+          <textarea id="wl-import-text" rows="5" style="width:100%;font-family:inherit" placeholder="每行一只：代码 [名称] [#分类]&#10;600519 贵州茅台 #白酒 #核心&#10;300750 宁德时代&#10;510300 沪深300ETF"></textarea>
+          <p class="muted" style="margin:6px 0">已在自选里的票不动（不覆盖你的分类备注）；无法识别的代码逐条报告，不会悄悄丢。</p>
+          <div class="row">
+            <button class="btn" id="wl-import-run">导入</button>
+            <span class="muted" id="wl-import-status"></span>
+          </div>
+          <div id="wl-import-result" style="margin-top:8px"></div>
         </div>
         <span class="muted" id="wl-status"></span>
       </div>
@@ -506,7 +516,17 @@
           <input id="pf-memo" placeholder="备注（可选）" style="width:140px">
           <button class="btn" id="pf-add">加入 / 更新</button>
           <button class="btn ghost" id="pf-refresh">重新复盘</button>
+          <button class="btn ghost" id="pf-import-toggle">批量导入</button>
           <span class="muted" id="pf-status"></span>
+        </div>
+        <div id="pf-import" style="display:none;margin-top:10px">
+          <textarea id="pf-import-text" rows="5" style="width:100%;font-family:inherit" placeholder="每行一条：代码 股数 成本价&#10;600519 1000 1500.50&#10;000333 20000 55.20"></textarea>
+          <p class="muted" style="margin:6px 0">已有持仓的票默认跳过——批量粘贴的旧表格不该覆盖真实成本；要改单条就用上面的「加入 / 更新」。</p>
+          <div class="row">
+            <button class="btn" id="pf-import-run">导入</button>
+            <span class="muted" id="pf-import-status"></span>
+          </div>
+          <div id="pf-import-result" style="margin-top:8px"></div>
         </div>
         <p class="muted" style="margin-top:6px">
           同一只票只留一条：分次买入请合并成加权成本。这里只存成本与股数——
@@ -2520,6 +2540,64 @@ function renderPlayVerify() {
 }
 
 $("pv-run").addEventListener("click", () => withButton($("pv-run"), runPlayVerify));
+
+/* ---------- 批量导入（自选 / 持仓） ---------- */
+/* 粘贴一整批进来：幂等、逐条报告——成功几条、重复几条、失败几条
+   为什么失败，全都摆在明面上，不悄悄丢行。 */
+
+function renderImportResult(target, result, kind) {
+  const parts = [];
+  if (result.n_added) parts.push(`<span class="up">新增 ${result.n_added}</span>`);
+  if (result.duplicates?.length) parts.push(`<span class="muted">重复跳过 ${result.duplicates.length}（${result.duplicates.join("、")}）</span>`);
+  if (result.invalid?.length) {
+    parts.push(`<span class="down">失败 ${result.invalid.length}</span>`);
+    parts.push(
+      `<ul style="margin:6px 0 0;padding-left:18px">${result.invalid
+        .map((row) => `<li class="muted">第 ${row.line} 行：${row.reason}</li>`)
+        .join("")}</ul>`
+    );
+  }
+  target.innerHTML = parts.length ? parts.join(" ") : '<span class="muted">没有可导入的行</span>';
+}
+
+function wireImport(prefix, endpoint, reload) {
+  const toggle = $(`${prefix}-import-toggle`);
+  const panel = $(`${prefix}-import`);
+  toggle.addEventListener("click", () => {
+    panel.style.display = panel.style.display === "none" ? "block" : "none";
+  });
+  $(`${prefix}-import-run`).addEventListener("click", async () => {
+    const text = $(`${prefix}-import-text`).value;
+    if (!text.trim()) {
+      toast("先粘贴几行代码", "error");
+      return;
+    }
+    const run = $(`${prefix}-import-run`);
+    run.disabled = true;
+    try {
+      const result = await api(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      renderImportResult($(`${prefix}-import-result`), result);
+      if (result.n_added) {
+        toast(`导入完成：新增 ${result.n_added}${result.invalid?.length ? `，失败 ${result.invalid.length}` : ""}`, result.invalid?.length ? "error" : "success");
+        await reload();
+      } else {
+        toast("没有新增（全部重复或失败）", "error");
+      }
+    } catch (error) {
+      renderError($(`${prefix}-import-result`), error.message, () => {});
+      toast("导入失败", "error");
+    } finally {
+      run.disabled = false;
+    }
+  });
+}
+
+wireImport("wl", "/api/watchlist/import", loadWatchlist);
+wireImport("pf", "/api/portfolio/import", loadPortfolio);
 
 /* ---------- 行业资金流 ---------- */
 /* 东财口径与板块表的证监会分类对不上，所以独立成卡：宁缺毋配。 */

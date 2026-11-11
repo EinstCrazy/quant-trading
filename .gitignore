@@ -18,6 +18,9 @@ data/processed/**
 data/cache/**
 data/indicators/**
 data/fundamentals/**
+# 用户个人数据：自选/持仓不入库（批量导入或手工录入的本机状态）
+data/watchlist.json
+data/portfolio.json
 data/regulatory/**
 data/universe/**
 # 每日复盘归档：派生结论，每天增长，留本地对比即可

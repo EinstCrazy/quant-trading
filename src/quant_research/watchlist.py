@@ -130,3 +130,48 @@ def remove_stock(directory: Path | str, symbol: str) -> dict[str, Any]:
     data["stocks"].pop(canonical, None)
     save(directory, data)
     return data
+
+
+def import_stocks(
+    directory: Path | str,
+    entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """批量加入自选：一次读写，逐条报告，幂等不重复。
+
+    「已在自选里」的票不重复改动——批量粘贴最常见的翻车是把自己
+    已有的分类备注覆盖掉。invalid 逐条带原因（行号 + 错误），成功的
+    不用猜哪条进来了。
+    """
+    data = load(directory)
+    added: list[dict[str, Any]] = []
+    duplicates: list[str] = []
+    invalid: list[dict[str, str]] = []
+    seen_in_batch: set[str] = set()
+    for index, entry in enumerate(entries, start=1):
+        raw = str(entry.get("symbol", "")).strip()
+        if not raw:
+            invalid.append({"line": str(index), "reason": "代码为空"})
+            continue
+        try:
+            canonical = normalize_symbol(raw)
+        except ValueError as exc:
+            invalid.append({"line": str(index), "reason": f"{raw}: {exc}"})
+            continue
+        if canonical in data["stocks"] or canonical in seen_in_batch:
+            duplicates.append(canonical)
+            continue
+        seen_in_batch.add(canonical)
+        name = str(entry.get("name") or "").strip()
+        categories = [c.strip() for c in (entry.get("categories") or []) if str(c).strip()]
+        for category in categories:
+            if category not in data["categories"]:
+                data["categories"].append(category)
+        data["stocks"][canonical] = {
+            "name": name,
+            "categories": categories,
+            "note": "",
+            "added_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        added.append({"symbol": canonical, "name": name})
+    save(directory, data)
+    return {"added": added, "duplicates": duplicates, "invalid": invalid}

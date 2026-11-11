@@ -106,3 +106,48 @@ def remove(directory: Path | str, symbol: str) -> dict[str, Any]:
     data["positions"].pop(canonical, None)
     save(directory, data)
     return data
+
+
+def import_positions(
+    directory: Path | str,
+    entries: list[dict[str, Any]],
+    *,
+    skip_existing: bool = True,
+) -> dict[str, Any]:
+    """批量录入持仓：一次读写，逐条报告。
+
+    默认跳过已有持仓——批量粘贴的旧表格覆盖真实持仓是最贵的错误；
+    想覆盖就用单条 upsert（那是明确的「我要改这只」）。skip_existing=False
+    表示「这些行就是当前真相」，才允许替换。
+    """
+    data = load(directory)
+    added: list[dict[str, Any]] = []
+    duplicates: list[str] = []
+    invalid: list[dict[str, str]] = []
+    for index, entry in enumerate(entries, start=1):
+        raw = str(entry.get("symbol", "")).strip()
+        if not raw:
+            invalid.append({"line": str(index), "reason": "代码为空"})
+            continue
+        try:
+            canonical = normalize_symbol(raw)
+            shares = float(entry.get("shares"))
+            cost = float(entry.get("cost"))
+        except (ValueError, TypeError) as exc:  # None/空串交给同一处报告
+            invalid.append({"line": str(index), "reason": f"{raw or '—'}: {exc}"})
+            continue
+        if shares <= 0 or cost <= 0:
+            invalid.append({"line": str(index), "reason": f"{canonical}: 股数与成本必须为正"})
+            continue
+        if canonical in data["positions"] and skip_existing:
+            duplicates.append(canonical)
+            continue
+        data["positions"][canonical] = {
+            "shares": shares,
+            "cost": cost,
+            "note": "",
+            "added_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        added.append({"symbol": canonical, "shares": shares, "cost": cost})
+    save(directory, data)
+    return {"added": added, "duplicates": duplicates, "invalid": invalid}
