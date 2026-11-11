@@ -4182,8 +4182,21 @@ $("pf-advice").addEventListener("click", async (event) => {
       const result = await api("/etf/refresh", null, "POST");
       toast(`ETF 日线已更新（${result.fetched?.length || 0} 只成功）`, result.failed?.length ? "error" : "success");
     } else {
-      await api("/collection/collect", { symbols: [symbol] });
-      toast(`${symbol} 日线已补进样本面板`, "success");
+      const result = await api("/collection/collect", { symbols: [symbol] });
+      /* 采集端点失败也返回 HTTP 200，失败详情在 payload.failed 里——
+         不看它，「被限流」就会被报成「已补进样本面板」。 */
+      const reason = (result.failed || {})[symbol];
+      if (reason) {
+        button.disabled = false;
+        button.textContent = "补采这只票";
+        toast(`${symbol} 补采失败：${String(reason).split(String.fromCharCode(10))[0].slice(0, 100)}`, "error");
+        return;
+      }
+      const rows = ((result.summary || {}).rows_added ?? 0);
+      toast(
+        rows ? `${symbol} 日线已补进样本面板（${rows} 行）` : `${symbol} 无新增数据：可能已存在，或上游没有它的日线`,
+        rows ? "success" : "error",
+      );
     }
   } catch (error) {
     button.disabled = false;
