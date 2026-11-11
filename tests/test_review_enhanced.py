@@ -168,8 +168,8 @@ class TestArchive:
 
         stored = latest(tmp_path)
         assert stored["date"] == "2024-02-23"
-        assert stored["positions"]["600000.SH"]["stance"] == "hold"
-        assert stored["positions"]["600000.SH"]["label"] == "持有"
+        assert stored["positions"]["默认::600000.SH"]["stance"] == "hold"
+        assert stored["positions"]["默认::600000.SH"]["label"] == "持有"
 
     def test_latest_can_skip_today(self, tmp_path):
         from quant_research.review_archive import latest, save
@@ -186,7 +186,7 @@ class TestArchive:
         save(tmp_path, _payload("2024-02-23", stance="hold"))
         save(tmp_path, _payload("2024-02-23", stance="stop"))
 
-        assert load(tmp_path, "2024-02-23")["positions"]["600000.SH"]["stance"] == "stop"
+        assert load(tmp_path, "2024-02-23")["positions"]["默认::600000.SH"]["stance"] == "stop"
 
     def test_a_broken_archive_is_skipped_not_fatal(self, tmp_path):
         from quant_research.review_archive import directory, latest, save

@@ -13,25 +13,25 @@ import pytest
 
 class TestStore:
     def test_upsert_normalises_the_symbol(self, tmp_path):
-        from quant_research.holdings import load, path, upsert
+        from quant_research.holdings import entry_key, load, path, upsert
 
         upsert(tmp_path, "600519", shares=100, cost=1500.0)
 
         data = load(tmp_path)
-        assert "600519.SH" in data["positions"]
-        assert data["positions"]["600519.SH"]["shares"] == 100
-        assert data["positions"]["600519.SH"]["cost"] == 1500.0
+        assert entry_key("默认", "600519.SH") in data["positions"]
+        assert data["positions"][entry_key("默认", "600519.SH")]["shares"] == 100
+        assert data["positions"][entry_key("默认", "600519.SH")]["cost"] == 1500.0
         assert path(tmp_path).name == "holdings.json"
 
     def test_upsert_keeps_added_at_and_note(self, tmp_path):
-        from quant_research.holdings import load, upsert
+        from quant_research.holdings import entry_key, load, upsert
 
         upsert(tmp_path, "600519.SH", shares=100, cost=1500.0, note="底仓")
-        first = load(tmp_path)["positions"]["600519.SH"]
+        first = load(tmp_path)["positions"][entry_key("默认", "600519.SH")]
 
         upsert(tmp_path, "600519.SH", shares=200, cost=1450.0)
 
-        updated = load(tmp_path)["positions"]["600519.SH"]
+        updated = load(tmp_path)["positions"][entry_key("默认", "600519.SH")]
         assert (updated["shares"], updated["cost"]) == (200, 1450.0)
         assert updated["note"] == "底仓"  # 没给就沿用，不是清空
         assert updated["added_at"] == first["added_at"]

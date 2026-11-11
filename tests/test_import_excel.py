@@ -153,7 +153,9 @@ class TestPortfolioExcel:
 
         assert payload["n_added"] == 1
         data = holdings_store.load(tmp_path)
-        assert data["positions"]["600519.SH"]["cost"] == pytest.approx(1500.5)
+        assert data["positions"][holdings_store.entry_key("默认", "600519.SH")][
+            "cost"
+        ] == pytest.approx(1500.5)
 
     def test_missing_cost_column_is_refused(self, pf_client):
         """缺成本列：拒绝并列出实际表头——把成本填进股数比拒绝贵得多。"""

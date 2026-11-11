@@ -515,6 +515,9 @@
           <input id="pf-cost" type="number" step="0.01" min="0" style="width:100px" placeholder="1500.00">
           <label>股数</label>
           <input id="pf-shares" type="number" step="100" min="0" style="width:100px" placeholder="100">
+          <label>账户</label>
+          <input id="pf-account" list="pf-accounts" placeholder="默认" style="width:110px">
+          <datalist id="pf-accounts"></datalist>
           <input id="pf-memo" placeholder="备注（可选）" style="width:140px">
           <button class="btn" id="pf-add">加入 / 更新</button>
           <button class="btn ghost" id="pf-refresh">重新复盘</button>
@@ -538,7 +541,14 @@
           现价、盈亏、技术状态每次从面板现读，存下来的价格永远是过期的价格。
         </p>
       </div>
-      <div class="card"><h3>持仓清单</h3><div id="pf-table"></div></div>
+      <div class="card">
+        <h3>持仓清单 <span class="muted" id="pf-accounts-note"></span></h3>
+        <div class="row" style="margin-bottom:8px">
+          <label>账户</label>
+          <select id="pf-account-filter" style="width:140px"><option value="">全部账户</option></select>
+        </div>
+        <div id="pf-table"></div>
+      </div>
       <div class="card">
         <h3>复盘与明日关注 <span class="muted" id="pf-review-note"></span></h3>
         <div class="row" style="margin-bottom:8px">
@@ -2531,9 +2541,22 @@ function renderOvBook(holdings, watchlist) {
     const totalPct = totalCost ? (totalPnl / totalCost) * 100 : null;
     const w = (v) => (v == null ? "—" : Math.abs(v) >= 1e4 ? `${(v / 1e4).toFixed(2)} 万` : `${v.toFixed(0)} 元`);
     const pct = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
+    const accounts = holdings?.accounts || [];
+    const multi = accounts.length > 1;
+    /* 多账户：先给每账户一行小计（钱的分布在哪个户里），再给总计；
+       单账户不重复两遍同样的数字。 */
+    const accountLines = multi
+      ? accounts
+          .map((a) => {
+            const tone = a.pnl > 0 ? "up" : a.pnl < 0 ? "down" : "muted";
+            return `<div class="kv"><span>${a.account} · ${a.n_positions} 只${a.n_unpriced ? `（${a.n_unpriced} 只无现价）` : ""}</span><span class="${tone}">${w(a.market_value)} / ${a.pnl > 0 ? "+" : ""}${w(a.pnl)}（${pct(a.pnl_pct)}）</span></div>`;
+          })
+          .join("")
+      : "";
     const rows = positions.map((p) => {
       const tone = p.pnl > 0 ? "up" : p.pnl < 0 ? "down" : "muted";
       return `<tr>
+        ${multi ? `<td>${p.account || "默认"}</td>` : ""}
         <td>${symbolCell(p.symbol)}${p.name ? ` <span class="muted">${p.name}</span>` : ""}</td>
         <td>${p.shares}</td>
         <td>${fmt(p.cost, 2)}</td>
@@ -2543,13 +2566,14 @@ function renderOvBook(holdings, watchlist) {
     });
     book = `
       <div class="row" style="gap:14px;flex-wrap:wrap;margin-bottom:8px">
-        <span class="muted">持仓 <b>${positions.length}</b> 只</span>
+        <span class="muted">持仓 <b>${positions.length}</b> 只${multi ? ` · ${accounts.length} 个账户` : ""}</span>
         <span class="muted">总市值 <b>${w(priced.length ? totalValue : null)}</b></span>
         <span class="${totalPnl > 0 ? "up" : totalPnl < 0 ? "down" : "muted"}">浮动盈亏 <b>${totalPnl > 0 ? "+" : ""}${w(totalPnl)}（${pct(totalPct)}）</b></span>
       </div>
-      <table><thead><tr><th>标的</th><th>股数</th><th>成本</th><th>现价</th><th>浮动盈亏</th></tr></thead><tbody>${rows.join("")}</tbody></table>
+      ${accountLines}
+      <table><thead><tr>${multi ? "<th>账户</th>" : ""}<th>标的</th><th>股数</th><th>成本</th><th>现价</th><th>浮动盈亏</th></tr></thead><tbody>${rows.join("")}</tbody></table>
       ${unpriced.length ? `<p class="muted" style="margin:6px 0 0">${unpriced.map((p) => p.symbol).join("、")} 无现价（不在面板里）——未计入市值，去持仓页补采。</p>` : ""}
-      <p class="muted" style="margin:6px 0 0">浮盈口径：市值 − 成本，不含已卖出部分与分红。</p>`;
+      <p class="muted" style="margin:6px 0 0">浮盈口径：市值 − 成本，不含已卖出部分与分红。账户只是分组标签——券商现金余额不在这里。</p>`;
   } else {
     book = '<div class="kv"><span>持仓</span><span>0 只</span></div>';
   }
@@ -3397,13 +3421,24 @@ async function loadReview() {
 }
 
 function renderHoldings() {
-  const rows = HOLDINGS.positions.map((p) => {
+  const names = HOLDINGS.account_names || [];
+  $("pf-accounts").innerHTML = names.map((name) => `<option value="${name}">`).join("");
+  const filter = $("pf-account-filter");
+  const active = filter.value;
+  filter.innerHTML =
+    '<option value="">全部账户</option>' +
+    names.map((name) => `<option value="${name}"${name === active ? " selected" : ""}>${name}</option>`).join("");
+  $("pf-accounts-note").textContent = names.length > 1 ? `${names.length} 个账户` : "";
+
+  const visible = HOLDINGS.positions.filter((p) => !active || (p.account || "默认") === active);
+  const rows = visible.map((p) => {
     const change = p.change_pct == null ? "—" : `${p.change_pct > 0 ? "+" : ""}${p.change_pct.toFixed(2)}%`;
     const tone = p.change_pct > 0 ? "up" : p.change_pct < 0 ? "down" : "muted";
     const pnl = p.pnl == null ? "—" : `${p.pnl > 0 ? "+" : ""}${fmt(p.pnl, 2)}`;
     const pnlPct = p.pnl_pct == null ? "—" : `${p.pnl_pct > 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`;
     const pnlTone = p.pnl_pct > 0 ? "up" : p.pnl_pct < 0 ? "down" : "muted";
     return [
+      p.account || "默认",
       symbolCell(p.symbol),
       p.name || "—",
       fmt(p.shares, 0),
@@ -3414,18 +3449,20 @@ function renderHoldings() {
       `<span class="${pnlTone}">${pnlPct}</span>`,
       `<span class="${tone}">${change}</span>`,
       p.note || "",
-      `<a data-pf-del="${p.symbol}" class="muted" style="cursor:pointer">移除</a>`,
+      `<a data-pf-del="${p.symbol}" data-pf-account="${p.account || "默认"}" class="muted" style="cursor:pointer">移除</a>`,
     ];
   });
   $("pf-table").innerHTML = rows.length
     ? table(
-        ["代码", "名称", "股数", "成本", "现价", "市值", "浮动盈亏", "盈亏率", "日涨跌", "备注", ""],
+        ["账户", "代码", "名称", "股数", "成本", "现价", "市值", "浮动盈亏", "盈亏率", "日涨跌", "备注", ""],
         rows,
       )
     : '<div class="empty">还没有持仓：填代码、成本价、股数，加入即可开始复盘</div>';
   $("pf-table").querySelectorAll("[data-pf-del]").forEach((el) => {
     el.addEventListener("click", async () => {
-      HOLDINGS = await api(`/portfolio/${encodeURIComponent(el.dataset.pfDel)}`, null, "DELETE");
+      const account = el.dataset.pfAccount;
+      const suffix = account && account !== "默认" ? `?account=${encodeURIComponent(account)}` : "";
+      HOLDINGS = await api(`/portfolio/${encodeURIComponent(el.dataset.pfDel)}${suffix}`, null, "DELETE");
       renderHoldings();
       loadReview();
     });
@@ -3468,7 +3505,8 @@ function renderReview() {
     </div>
     <p class="muted" style="margin:0">${s.note}</p>`;
 
-  const changed = new Map((REVIEW.changes || []).map((c) => [c.symbol, c]));
+  const rowKey = (row) => `${row.account || "默认"}::${row.symbol}`;
+  const changed = new Map((REVIEW.changes || []).map((c) => [`${c.account || "默认"}::${c.symbol}`, c]));
   const compare = $("pf-compare");
   if (REVIEW.previous) {
     const n = (REVIEW.changes || []).length;
@@ -3507,13 +3545,13 @@ function renderReview() {
             .filter(([key]) => LEVEL_LABELS[key])
             .map(([key, value]) => `<b>${LEVEL_LABELS[key]}</b> ${fmt(value, 2)}`)
             .join(" · ");
-          const shift = changed.get(row.symbol);
+          const shift = changed.get(rowKey(row));
           const plans = (row.plans || [])
             .map((plan) => `<div class="pf-plan"><b>若</b> ${plan.when}<b> → </b>${plan.then}</div>`)
             .join("");
           return `
           <div class="pf-item ${stance}">
-            <div class="pf-head">${symbolCell(row.symbol)} ${row.name || ""}
+            <div class="pf-head">${row.account && row.account !== "默认" ? `<span class="badge">${row.account}</span> ` : ""}${symbolCell(row.symbol)} ${row.name || ""}
               <span class="${row.pnl_pct > 0 ? "up" : row.pnl_pct < 0 ? "down" : "muted"}">${pct(row.pnl_pct)}</span>
               <span class="muted">· ${row.shares} 股 · 成本 ${fmt(row.cost, 2)}</span>
               ${shift ? `<span class="pf-changed">上次${shift.from_label} → 现在${shift.to_label}</span>` : ""}</div>
@@ -3567,7 +3605,13 @@ $("pf-add").addEventListener("click", async () => {
   try {
     HOLDINGS = await api(
       "/portfolio",
-      { symbol, shares, cost, note: $("pf-memo").value.trim() || null },
+      {
+        symbol,
+        shares,
+        cost,
+        note: $("pf-memo").value.trim() || null,
+        account: $("pf-account").value.trim() || null,
+      },
       "POST",
     );
     renderHoldings();
@@ -3582,6 +3626,8 @@ $("pf-add").addEventListener("click", async () => {
 $("pf-refresh").addEventListener("click", async () => {
   await loadPortfolio();
 });
+
+$("pf-account-filter").addEventListener("change", () => renderHoldings());
 
 /* 一键补采：缺什么补什么——已有数据的不碰。结果逐只可见，
    失败的票（如已退市）如实留在 failed 里，不假装补齐了。 */

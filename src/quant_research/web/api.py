@@ -1510,20 +1510,28 @@ def get_portfolio() -> dict[str, Any]:
 @router.post("/portfolio")
 def upsert_position(request: PositionIn) -> dict[str, Any]:
     settings = load_settings()
-    holdings_store.upsert(
-        settings.data.directory,
-        request.symbol,
-        shares=request.shares,
-        cost=request.cost,
-        note=request.note,
-    )
+    try:
+        holdings_store.upsert(
+            settings.data.directory,
+            request.symbol,
+            shares=request.shares,
+            cost=request.cost,
+            note=request.note,
+            account=request.account,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     return _portfolio_payload(settings)
 
 
 @router.delete("/portfolio/{symbol}")
-def drop_position(symbol: str) -> dict[str, Any]:
+def drop_position(symbol: str, account: str | None = None) -> dict[str, Any]:
     settings = load_settings()
-    holdings_store.remove(settings.data.directory, symbol)
+    try:
+        holdings_store.remove(settings.data.directory, symbol, account=account)
+    except ValueError as exc:
+        # 同一票多账户都有：要求指定账户，不一次删两笔
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     return _portfolio_payload(settings)
 
 
@@ -1539,7 +1547,7 @@ def portfolio_backfill() -> dict[str, Any]:
     settings = load_settings()
     root = settings.data.directory
     watch = watchlist_store.load(root).get("stocks", {})
-    book = sorted({*holdings_store.load(root).get("positions", {}), *watch})
+    book = sorted({*holdings_store.symbols(holdings_store.load(root)), *watch})
     if not book:
         raise HTTPException(status_code=400, detail="持仓与自选都是空的——先录入再补采")
 
@@ -1677,7 +1685,9 @@ def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, An
     as_of = pd.Timestamp(panel.prices.index.max()).date().isoformat()
 
     rows: list[dict[str, Any]] = []
-    for symbol, entry in sorted(data["positions"].items()):
+    for entry in data["positions"].values():
+        symbol = str(entry.get("symbol"))
+        account = str(entry.get("account") or holdings_store.DEFAULT_ACCOUNT)
         shares = float(entry.get("shares") or 0)
         cost = float(entry.get("cost") or 0)
         state = _position_state(panel, symbol)
@@ -1697,6 +1707,7 @@ def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, An
         rows.append(
             {
                 "symbol": symbol,
+                "account": account,
                 "name": name_of.get(symbol, ""),
                 "sector": sector_map.get(symbol),
                 "shares": shares,
@@ -1712,10 +1723,18 @@ def _review_payload(settings: Settings, source: str, basis: str) -> dict[str, An
             }
         )
 
-    rows.sort(key=lambda row: (STANCE_ORDER.get(row["stance"], 9), row["symbol"]))
+    rows.sort(
+        key=lambda row: (
+            STANCE_ORDER.get(row["stance"], 9),
+            row["account"] != holdings_store.DEFAULT_ACCOUNT,
+            row["account"],
+            row["symbol"],
+        )
+    )
     scoped = [
         {
             "symbol": row["symbol"],
+            "account": row["account"],
             "stance": row["stance"],
             "shares": row["shares"],
             "cost": row["cost"],
@@ -1750,12 +1769,17 @@ def _changes(rows: list[dict[str, Any]], previous: dict[str, Any] | None) -> lis
     archived = (previous or {}).get("positions") or {}
     changes = []
     for row in rows:
-        old = archived.get(row["symbol"])
+        account = str(row.get("account") or holdings_store.DEFAULT_ACCOUNT)
+        # 新存档键是「账户::代码」；旧存档只有代码——两级回退，历史可比
+        old = archived.get(holdings_store.entry_key(account, row["symbol"])) or archived.get(
+            row["symbol"]
+        )
         if not old or old.get("stance") == row["stance"]:
             continue
         changes.append(
             {
                 "symbol": row["symbol"],
+                "account": account,
                 "from": old.get("stance"),
                 "from_label": STANCE_LABELS.get(old.get("stance"), old.get("stance")),
                 "to": row["stance"],
@@ -1831,7 +1855,9 @@ def _portfolio_payload(settings: Settings) -> dict[str, Any]:
     name_of.update({normalize_symbol(k): v for k, v in etf_mod.ETF_UNIVERSE.items()})
     sector_map, _ = _sector_map(settings)
     rows = []
-    for symbol, entry in sorted(data["positions"].items()):
+    for entry in data["positions"].values():
+        symbol = str(entry.get("symbol"))
+        account = str(entry.get("account") or holdings_store.DEFAULT_ACCOUNT)
         shares = float(entry.get("shares") or 0)
         cost = float(entry.get("cost") or 0)
         quote = _quote(panel, symbol)
@@ -1840,6 +1866,7 @@ def _portfolio_payload(settings: Settings) -> dict[str, Any]:
         rows.append(
             {
                 "symbol": symbol,
+                "account": account,
                 "name": name_of.get(symbol, ""),
                 "sector": sector_map.get(symbol),
                 "shares": shares,
@@ -1854,7 +1881,50 @@ def _portfolio_payload(settings: Settings) -> dict[str, Any]:
                 else round(pnl / (shares * cost) * 100, 2),
             }
         )
-    return {"positions": rows}
+    rows.sort(
+        key=lambda row: (
+            row["account"] != holdings_store.DEFAULT_ACCOUNT,
+            row["account"],
+            row["symbol"],
+        )
+    )
+
+    # 每账户汇总：合计只算有现价的部分，缺现价的票单列——与逐票口径一致
+    summary: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        bucket = summary.setdefault(
+            row["account"],
+            {
+                "account": row["account"],
+                "n_positions": 0,
+                "market_value": 0.0,
+                "cost": 0.0,
+                "pnl": 0.0,
+                "n_unpriced": 0,
+            },
+        )
+        bucket["n_positions"] += 1
+        bucket["cost"] += row["shares"] * row["cost"]
+        if row["market_value"] is None:
+            bucket["n_unpriced"] += 1
+            continue
+        bucket["market_value"] += row["market_value"]
+        bucket["pnl"] += row["pnl"] or 0
+    for bucket in summary.values():
+        # 有票缺现价时百分比会失真（成本含全部、市值只含部分）：不给,
+        # 前端按 n_unpriced 提示补采——不给错的比率强过给一个像样的错数
+        if bucket["n_unpriced"] or not bucket["cost"]:
+            bucket["pnl_pct"] = None
+        else:
+            bucket["pnl_pct"] = round(bucket["pnl"] / bucket["cost"] * 100, 2)
+        for key in ("market_value", "cost", "pnl"):
+            bucket[key] = round(bucket[key], 2)
+
+    return {
+        "positions": rows,
+        "accounts": list(summary.values()),
+        "account_names": holdings_store.accounts(data),
+    }
 
 
 @router.get("/watchlist/analysis")
@@ -2194,7 +2264,7 @@ def volume_analysis(provider: str | None = None, adjust: str | None = None) -> d
         }
 
     watch = watchlist_store.load(settings.data.directory).get("stocks", {})
-    book = holdings_store.load(settings.data.directory).get("positions", {})
+    book = holdings_store.symbols(holdings_store.load(settings.data.directory))
     symbols = sorted(set(watch) | set(book))
     origin = "持仓 + 自选"
     if not symbols:
@@ -2558,6 +2628,7 @@ _EXCEL_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "categories": ("分类", "分组", "标签", "板块", "备注分类"),
     "shares": ("股数", "数量", "持仓数量", "持股数", "shares", "数量/股"),
     "cost": ("成本", "成本价", "买入价", "成本单价", "持仓成本", "cost"),
+    "account": ("账户", "账号", "券商账户", "account"),
 }
 
 
@@ -2572,7 +2643,7 @@ def excel_import_spec() -> dict[str, Any]:
     return {
         "required": {"portfolio": ["symbol", "shares", "cost"], "watchlist": ["symbol"]},
         "optional": {
-            "portfolio": ["name"],
+            "portfolio": ["name", "account"],
             "watchlist": ["name", "categories"],
         },
         "aliases": {field: list(aliases) for field, aliases in _EXCEL_HEADER_ALIASES.items()},
@@ -2584,13 +2655,14 @@ def excel_import_spec() -> dict[str, Any]:
             "持仓：股数与成本必须是正数；已在持仓里的票默认跳过，不覆盖真实成本",
             "自选：已在自选里的票跳过，不覆盖已有分类与备注",
             "分类列用逗号或顿号分隔多个（如「白酒, 核心」）",
+            "持仓可加「账户」列分开记不同券商；留空进默认账户，同一票不同账户是两条独立持仓",
             "支持 .xlsx；老 .xls 请先另存为 .xlsx。公式单元格读缓存值——在 Excel 里打开保存过一次即可",
         ],
         "examples": {
             "portfolio": [
-                ["代码", "股数", "成本价"],
-                ["600519", 100, 1500.5],
-                ["000333", 20000, 55.2],
+                ["代码", "股数", "成本价", "账户"],
+                ["600519", 100, 1500.5, "默认"],
+                ["000333", 20000, 55.2, ""],
             ],
             "watchlist": [
                 ["代码", "名称", "分类"],
@@ -2659,7 +2731,11 @@ def _map_excel_headers(headers: list[str]) -> dict[str, str]:
 
 
 def _excel_field(row: dict[str, object], mapping: dict[str, str], field: str) -> object:
-    value = row.get(mapping[field])
+    """取一个（可能是可选的）字段：表里没有这一列就是 None，不是 KeyError。"""
+    column = mapping.get(field)
+    if column is None:
+        return None
+    value = row.get(column)
     return value if value is not None else None
 
 
@@ -2732,6 +2808,7 @@ async def portfolio_import_excel(file: UploadFile) -> dict[str, Any]:
                 "symbol": str(symbol).strip(),
                 "shares": _excel_field(row, mapping, "shares"),
                 "cost": _excel_field(row, mapping, "cost"),
+                "account": str(_excel_field(row, mapping, "account") or "").strip() or None,
             }
         )
     result = holdings_store.import_positions(load_settings().data.directory, entries)
@@ -2875,7 +2952,7 @@ def sector_flow_refresh() -> dict[str, Any]:
 def _etf_watch_count(settings: Any) -> int:
     """自选 ∪ 持仓里的 ETF 只数——红旗卡要如实标注「豁免 N 只」。"""
     watch = watchlist_store.load(settings.data.directory).get("stocks", {})
-    book = holdings_store.load(settings.data.directory).get("positions", {})
+    book = holdings_store.symbols(holdings_store.load(settings.data.directory))
     symbols = set(watch) | set(book)
     return sum(1 for symbol in symbols if etf_mod.is_etf(symbol))
 
@@ -2928,7 +3005,7 @@ def _watch_symbols(settings: Any) -> list[str]:
     红旗卡会标注被豁免的 ETF 只数。
     """
     watch = watchlist_store.load(settings.data.directory).get("stocks", {})
-    book = holdings_store.load(settings.data.directory).get("positions", {})
+    book = holdings_store.symbols(holdings_store.load(settings.data.directory))
     symbols = sorted(set(watch) | set(book))
     return [symbol for symbol in symbols if not etf_mod.is_etf(symbol)]
 

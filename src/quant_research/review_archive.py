@@ -46,7 +46,11 @@ def compact(payload: dict[str, Any]) -> dict[str, Any]:
     """裁剪成「那天的结论」：档位、收盘、盈亏率，不留冗余。"""
     positions: dict[str, dict[str, Any]] = {}
     for row in payload.get("positions") or []:
-        positions[row["symbol"]] = {
+        account = str(row.get("account") or "默认")
+        # 键带账户：同一票在两个账户各有一条档位，不能互相覆盖
+        positions[f"{account}::{row['symbol']}"] = {
+            "symbol": row["symbol"],
+            "account": account,
             "stance": row["stance"],
             "label": STANCE_LABELS.get(row["stance"], row["stance"]),
             "close": row.get("close"),

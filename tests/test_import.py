@@ -103,8 +103,8 @@ class TestPositionImport:
 
         assert len(result["added"]) == 2
         data = holdings_store.load(tmp_path)
-        assert data["positions"]["600519.SH"]["shares"] == 1000.0
-        assert data["positions"]["600519.SH"]["cost"] == 1500.5
+        assert data["positions"][holdings_store.entry_key("默认", "600519.SH")]["shares"] == 1000.0
+        assert data["positions"][holdings_store.entry_key("默认", "600519.SH")]["cost"] == 1500.5
 
     def test_existing_positions_are_skipped_not_overwritten(self, tmp_path):
         """旧表格不能覆盖真实成本：默认跳过，想覆盖走单条 upsert。"""
@@ -114,10 +114,12 @@ class TestPositionImport:
             tmp_path, [{"symbol": "600519", "shares": 1000, "cost": 1500.5}]
         )
 
-        assert result["duplicates"] == ["600519.SH"]
+        assert result["duplicates"] == ["600519.SH（默认）"]
         assert result["added"] == []
         data = holdings_store.load(tmp_path)
-        assert data["positions"]["600519.SH"]["cost"] == 1900.0  # 真实成本没被动
+        assert (
+            data["positions"][holdings_store.entry_key("默认", "600519.SH")]["cost"] == 1900.0
+        )  # 真实成本没被动
 
     def test_skip_existing_false_means_these_lines_are_the_truth(self, tmp_path):
         holdings_store.upsert(tmp_path, "600519", shares=500, cost=1900.0)
@@ -129,7 +131,12 @@ class TestPositionImport:
         )
 
         assert len(result["added"]) == 1
-        assert holdings_store.load(tmp_path)["positions"]["600519.SH"]["shares"] == 1000.0
+        assert (
+            holdings_store.load(tmp_path)["positions"][
+                holdings_store.entry_key("默认", "600519.SH")
+            ]["shares"]
+            == 1000.0
+        )
 
     def test_non_positive_or_unparsable_rows_are_reported(self, tmp_path):
         result = holdings_store.import_positions(
@@ -182,7 +189,7 @@ class TestImportAPI:
         ).json()
 
         assert payload["n_added"] == 1  # 只有 000333 进来
-        assert payload["duplicates"] == ["600519.SH"]
+        assert payload["duplicates"] == ["600519.SH（默认）"]
         assert (
             payload["invalid"][0]["reason"].endswith("float() argument")
             or "600519" in payload["invalid"][0]["reason"]

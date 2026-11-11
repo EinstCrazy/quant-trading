@@ -307,7 +307,8 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | DELETE | `/api/experiments/{id}` | 删除一条实验记录 |
 | GET | `/api/portfolio` | 持仓清单：成本/股数 + 现读报价与盈亏 |
 | POST | `/api/portfolio` | 录入或更新一条持仓（`shares`、`cost` 必须为正） |
-| DELETE | `/api/portfolio/{symbol}` | 移除一条持仓 |
+| DELETE | `/api/portfolio/{symbol}?account=` | 删除一条持仓；不指定账户且该票多账户都有时报 400 要求指定——一次点掉两笔是最贵的误操作 |
+| POST | `/api/portfolio` | 录入/更新一条持仓，`account` 可空（缺省「默认」）；同一（账户, 代码）一条，同票不同账户独立 | 移除一条持仓 |
 | GET | `/api/portfolio/review` | 复盘：每只一档结论 + 情景预案 + 明日关注价位 + 纪律检查 + 与上次存档的差异 |
 | GET | `/api/import/excel/spec` | Excel 导入格式说明：必填/可选列、表头别名、读取规则、示例表——别名与 `_EXCEL_HEADER_ALIASES` 同源，说明不会漂移 |
 | POST | `/api/portfolio/backfill` | 一键补齐持仓 ∪ 自选里缺数据的票：股票增量采集进面板、ETF 走 ETF 采集；已有数据不碰，逐只报告成功/失败/跳过 |

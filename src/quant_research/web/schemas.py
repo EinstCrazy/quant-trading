@@ -420,6 +420,11 @@ class PositionIn(BaseModel):
     shares: float = Field(gt=0, description="持股数（股）")
     cost: float = Field(gt=0, description="成本价（元）")
     note: str | None = None
+    account: str | None = Field(
+        default=None,
+        description="账户名（不同券商分开记）；缺省为「默认」账户",
+        max_length=24,
+    )
 
 
 class CategoryIn(BaseModel):
