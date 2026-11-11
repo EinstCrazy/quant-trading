@@ -50,26 +50,40 @@ def fetch() -> dict[str, Any]:
     单接口一次给全，失败就整份 missing——广度没有「半份」可言，
     给一半再补另一半只会让两个数字的时点对不上。
     """
+    import time
+
     import akshare as ak
 
     missing: list[str] = []
     counts: dict[str, int] = {}
     activity_pct: float | None = None
     trade_date: str | None = None
-    try:
-        frame = ak.stock_market_activity_legu()
-        for _, row in frame.iterrows():
-            label = str(row.iloc[0]).strip()
-            if label == "活跃度":
-                raw = str(row.iloc[1]).replace("%", "")
-                activity_pct = float(raw) if raw.replace(".", "").isdigit() else None
-            elif label == "统计日期":
-                trade_date = str(row.iloc[1]) or None
-            elif label in _LABEL_MAP:
-                number = _int(row.iloc[1])
-                counts[_LABEL_MAP[label]] = number if number is not None else 0
-    except Exception as exc:  # noqa: BLE001 - 单接口失败按缺数据处理
-        missing.append(f"涨跌家数：{type(exc).__name__}: {str(exc)[:80]}")
+    frame = None
+    # 乐咕接口间歇性「No tables found」——网页表格偶尔加载不出，
+    # 重试两次比把抖动当失败诚实（数据源是真波动，不是我们的错）
+    for attempt in range(3):
+        try:
+            frame = ak.stock_market_activity_legu()
+            break
+        except Exception as exc:  # noqa: BLE001 - 网络抖动重试，最后一次仍败才记缺
+            if attempt == 2:
+                missing.append(f"涨跌家数：{type(exc).__name__}: {str(exc)[:80]}")
+            else:
+                time.sleep(2)
+    if frame is not None:
+        try:
+            for _, row in frame.iterrows():
+                label = str(row.iloc[0]).strip()
+                if label == "活跃度":
+                    raw = str(row.iloc[1]).replace("%", "")
+                    activity_pct = float(raw) if raw.replace(".", "").isdigit() else None
+                elif label == "统计日期":
+                    trade_date = str(row.iloc[1]) or None
+                elif label in _LABEL_MAP:
+                    number = _int(row.iloc[1])
+                    counts[_LABEL_MAP[label]] = number if number is not None else 0
+        except Exception as exc:  # noqa: BLE001
+            missing.append(f"涨跌家数解析：{type(exc).__name__}: {str(exc)[:80]}")
 
     up = counts.get("up")
     down = counts.get("down")
