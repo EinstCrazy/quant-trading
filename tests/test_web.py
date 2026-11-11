@@ -853,3 +853,49 @@ class TestAccountCrudUI:
         """「全部账户」不能当操作对象：点了要提示，不能静默乱来。"""
         html = self._html()
         assert html.count("「全部账户」不能") >= 2
+
+
+class TestScreenFormResilience:
+    """「跑一次选股」不再 null 报错：表单缺失时自愈，启动失败不拖死全页。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_provider_access_goes_through_the_healing_helper(self):
+        """直接取 $("scr-provider").value 在表单缺失时就是 null 报错——
+        三处一律走 screenProvider()：缺失时先重建，再兜底 baostock。"""
+        html = self._html()
+        assert "function screenProvider()" in html
+        assert 'if (!$("scr-provider")) buildScreenForm();' in html
+        assert 'return $("scr-provider") ? $("scr-provider").value : "baostock";' in html
+        body = html[
+            html.index("function screenProvider()") : html.index("function buildScreenForm")
+        ]
+        # 三元保护里的合法取值排除后，其余裸取值不许回来
+        assert '$("scr-provider").value' not in body.replace(
+            'return $("scr-provider") ? $("scr-provider").value : "baostock";', ""
+        )
+
+    def test_call_sites_use_the_helper(self):
+        """runScreen / loadScreenLatest / loadScreenReview 全走 helper。"""
+        html = self._html()
+        assert "provider: screenProvider()" in html
+        assert '"/screen/latest?provider=" + screenProvider()' in html
+        assert "const provider = screenProvider();" in html
+        # 帮助函数之外不允许再裸取 scr-provider 的 value
+        protected = html[html.index("function buildScreenForm") :]
+        assert '$("scr-provider").value' not in protected.replace(
+            'return $("scr-provider") ? $("scr-provider").value : "baostock";', ""
+        )
+
+    def test_start_isolates_each_step(self):
+        """启动逐步隔离：一步失败只在控制台留痕，表单构建照常执行。"""
+        html = self._html()
+        start = html[html.index("(async function start()") :]
+        assert "for (const step of steps)" in start
+        assert "catch (error)" in start
+        # 表单构建必须在 steps 列表里（而不是独立裸调用）
+        assert "buildScreenForm," in start

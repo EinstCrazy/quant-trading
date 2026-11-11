@@ -1822,6 +1822,12 @@ const pct = (value) =>
     ? "—"
     : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
 
+function screenProvider() {
+  /* 表单缺失时现场重建：start() 半途失败过也不至于让按钮变成 null 报错。 */
+  if (!$("scr-provider")) buildScreenForm();
+  return $("scr-provider") ? $("scr-provider").value : "baostock";
+}
+
 function buildScreenForm() {
   $("scr-form").innerHTML = `
     <label>数据源</label>
@@ -1862,7 +1868,7 @@ function renderScreen(data) {
 
 async function loadScreenLatest() {
   try {
-    renderScreen(await api("/screen/latest?provider=" + $("scr-provider").value));
+    renderScreen(await api("/screen/latest?provider=" + screenProvider()));
   } catch (error) {
     $("scr-latest").innerHTML =
       "<h3>名单</h3><p class='muted'>还没有选股记录——先跑一次，或等收盘后自动跑。</p>";
@@ -1870,7 +1876,7 @@ async function loadScreenLatest() {
 }
 
 async function loadScreenReview() {
-  const provider = $("scr-provider").value;
+  const provider = screenProvider();
   const horizon = Number($("scr-horizon").value) || 5;
   try {
     const payload = await api(`/screen/review?horizon=${horizon}&provider=${provider}`);
@@ -1898,7 +1904,7 @@ async function runScreen() {
   $("scr-run").disabled = true;
   try {
     const result = await submitJob("/jobs/screen", {
-      provider: $("scr-provider").value,
+      provider: screenProvider(),
       top_n: Number($("scr-topn").value),
       min_history: Number($("scr-history").value),
       as_of: $("scr-asof").value || null,
@@ -4843,18 +4849,30 @@ new MutationObserver(enhanceSymbolInputs).observe(document.body, { childList: tr
 enhanceSymbolInputs();
 
 (async function start() {
-  await loadDatasets();
-  await refreshJobs();
-  buildBacktestForm();
-  buildCollectForm();
-  buildGridForm();
-  buildScreenForm();
-  renderVariants();
-  await loadOverview();
-  await loadDashboard();
-  await loadScreenLatest();
-  await loadScreenReview();
-  await loadWatchlist();
+  /* 逐步隔离：一步失败（网络抖动、单个接口异常）不该拖死整个启动——
+     否则表单没建出来，用户点按钮就是 "null is not an object"。失败步骤
+     只在控制台留痕，页面其余部分照常工作。 */
+  const steps = [
+    loadDatasets,
+    refreshJobs,
+    buildBacktestForm,
+    buildCollectForm,
+    buildGridForm,
+    buildScreenForm,
+    renderVariants,
+    loadOverview,
+    loadDashboard,
+    loadScreenLatest,
+    loadScreenReview,
+    loadWatchlist,
+  ];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      console.warn(`启动步骤 ${step.name} 失败（不影响其余视图）:`, error);
+    }
+  }
   applyHash(); // 启动时按 hash 还原位置（无 hash 则停在默认视图）
 })();
 </script>
