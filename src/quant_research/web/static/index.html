@@ -205,7 +205,8 @@
     <p class="tagline">状态与价位，决定权在自己</p>
     <nav>
       <div class="nav-group"><span>每日工作台</span>
-        <button data-view="playbook" class="active">战法环境</button>
+        <button data-view="overview" class="active">概览</button>
+        <button data-view="playbook">战法环境</button>
         <button data-view="portfolio">持仓复盘</button>
         <button data-view="screen">今日建议</button>
       </div>
@@ -230,13 +231,33 @@
       <select id="dataset"></select>
     </div>
     <div class="side-block muted" id="health"></div>
-    <div class="side-block">
-      <label>最近任务</label>
-      <div id="jobs"></div>
-    </div>
   </aside>
 
   <main>
+    <!-- ⓪ 概览：只聚合各视图的现成分析，不产生新结论 -->
+    <section id="view-overview" class="view active">
+      <h2>概览</h2>
+      <p class="muted" style="margin:-6px 0 14px;line-height:1.7">
+        今天能不能动手，先看这里：环境、仓位、数据、任务。所有数字来自各视图的现成分析，这里只聚合、不产生新结论。
+      </p>
+      <div class="grid g3">
+        <div class="card"><h3>大盘量能 <span class="muted" id="ov-market-note"></span></h3><div id="ov-market"></div></div>
+        <div class="card"><h3>外围情绪 <span class="muted" id="ov-overseas-note"></span></h3><div id="ov-overseas"></div></div>
+        <div class="card"><h3>行业资金流 <span class="muted" id="ov-flow-note"></span></h3><div id="ov-flow"></div></div>
+      </div>
+      <div class="grid g2">
+        <div class="card"><h3>持仓与自选</h3><div id="ov-book"></div></div>
+        <div class="card"><h3>数据基础</h3><div id="ov-data"></div></div>
+      </div>
+      <div class="card">
+        <h3>最近任务 <span class="muted">采集、回测、扫描都显示在这里，点一条看详情</span></h3>
+        <div id="jobs"></div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn ghost small" id="ov-go-collect">去采集</button>
+        </div>
+      </div>
+    </section>
+
     <!-- ① 数据 -->
     <section id="view-data" class="view">
       <h2>数据</h2>
@@ -597,7 +618,7 @@
     </section>
 
     <!-- ⑫ 战法 -->
-    <section id="view-playbook" class="view active">
+    <section id="view-playbook" class="view">
       <h2>战法</h2>
       <div class="card">
         <h3>今日环境 <span class="muted" id="pb-note"></span></h3>
@@ -837,6 +858,7 @@ function showView(name, push = true) {
     v.classList.toggle("active", v.id === `view-${name}`);
   });
   if (push && location.hash !== `#/${name}`) location.hash = `#/${name}`;
+  if (name === "overview") loadDashboard();
   if (name === "collect") loadCollection();
   if (name === "compare") loadExperiments();
   if (name === "indicators") loadIndicators();
@@ -858,9 +880,9 @@ function showView(name, push = true) {
    还原位置，详情页的代码链接变成可复制的真链接。视图已激活时不重复加载。 */
 function applyHash() {
   const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
-  const name = view || "playbook";
+  const name = view || "overview";
   if (!document.getElementById(`view-${name}`)) {
-    location.hash = "#/playbook";
+    location.hash = "#/overview";
     return;
   }
   if (name === "indicators" && arg) {
@@ -2131,6 +2153,169 @@ function renderPlaybook() {
   $("pb-disclaimer").textContent = PLAYBOOK.disclaimer;
 }
 
+/* ---------- 概览 ---------- */
+/* 聚合各视图的现成分析：环境三件（量能/外围/资金流）+ 仓位 + 数据 + 任务。
+   这里不产生新结论——每一块都能点进对应视图看完整依据。 */
+
+function bindOvGoto() {
+  document.querySelectorAll("#view-overview [data-goto]").forEach((el) => {
+    el.addEventListener("click", () => showView(el.dataset.goto));
+  });
+}
+
+function ovGoto(view, label) {
+  return `<button class="btn ghost small" data-goto="${view}">${label}</button>`;
+}
+
+async function loadDashboard() {
+  ["ov-market", "ov-overseas", "ov-flow", "ov-book", "ov-data"].forEach((id) => skeleton($(id), "rows"));
+  const [volume, overseas, flow, datasets, book] = await Promise.all([
+    api("/volume/analysis").catch((e) => ({ error: e.message })),
+    api("/overseas/analysis").catch((e) => ({ available: false, reason: e.message })),
+    api("/sector-flow").catch((e) => ({ available: false, reason: e.message })),
+    api("/datasets").catch(() => []),
+    Promise.all([api("/portfolio").catch(() => ({ positions: [] })), api("/watchlist").catch(() => ({ stocks: [] }))]),
+  ]);
+  renderOvMarket(volume);
+  renderOvOverseas(overseas);
+  renderOvFlow(flow);
+  renderOvData(datasets);
+  renderOvBook(book[0], book[1]);
+  loadOvRisk();
+  renderJobs(await api("/jobs?limit=8").catch(() => []));
+}
+
+function renderOvMarket(volume) {
+  const note = $("ov-market-note");
+  const target = $("ov-market");
+  const m = volume?.market;
+  if (!m) {
+    renderError(target, volume?.error || volume?.unavailable || "没有量能数据", () => loadDashboard());
+    note.textContent = "";
+    bindOvGoto();
+    return;
+  }
+  note.textContent = m.as_of ? `截至 ${m.as_of}` : "";
+  target.innerHTML = `
+    <div class="row" style="gap:12px;align-items:baseline;margin-bottom:8px">
+      <b style="font-size:22px;font-variant-numeric:tabular-nums">${m.ratio == null ? "—" : m.ratio.toFixed(2)}</b>
+      <span class="muted">20 日均量比</span>
+      <span class="badge ${QUAD_TONE(m.quadrant)}">${m.level} · ${m.quadrant}</span>
+    </div>
+    <div class="kv"><span>总量</span><span>${m.amount} 亿</span></div>
+    <div class="kv"><span>当日涨跌</span><span>${m.change_pct > 0 ? "+" : ""}${m.change_pct}%</span></div>
+    <div class="kv"><span>连放/连缩</span><span>${m.streak >= 2 ? m.streak + " 天" : "—"}</span></div>
+    <div class="kv"><span>口径</span><span class="muted">${volume.market_source === "sample" ? "样本合计" : volume.market_source}</span></div>
+    <p class="muted" style="margin:8px 0 10px;line-height:1.7">${m.advice}</p>
+    ${ovGoto("volume", "看量能三层明细")}`;
+  bindOvGoto();
+}
+
+function renderOvOverseas(o) {
+  const note = $("ov-overseas-note");
+  const target = $("ov-overseas");
+  if (!o.available) {
+    note.textContent = "";
+    const reason = o.reason || o.error || "没有外围数据";
+    if (reason.includes("还没有")) {
+      target.innerHTML = `<div class="empty">${reason}</div>${ovGoto("overseas", "去抓一次外围快照")}`;
+    } else {
+      target.innerHTML = `<div class="error-box"><b>加载失败</b>${reason}<button id="ov-os-retry">重试</button></div>`;
+      $("ov-os-retry").addEventListener("click", () => loadDashboard());
+    }
+    bindOvGoto();
+    return;
+  }
+  const tone = o.tone || {};
+  note.textContent = o.fetched_at ? new Date(o.fetched_at).toLocaleString("zh-CN", { hour12: false }) : "";
+  target.innerHTML = `
+    <div class="row" style="gap:12px;align-items:baseline;margin-bottom:8px">
+      <span class="badge ${TONE_CLASS(tone.label)}">${tone.label || "—"}</span>
+      <span class="muted">情绪分</span><b>${tone.score == null ? "—" : tone.score}</b>
+      ${o.stale ? '<span class="badge warn">快照已过时</span>' : ""}
+    </div>
+    <p class="muted" style="margin:0 0 10px;line-height:1.7">${o.advice || ""}</p>
+    ${o.missing.length ? `<p class="muted" style="margin:0 0 10px;font-size:12px">缺失：${o.missing.join("；")}</p>` : ""}
+    ${ovGoto("overseas", "看传导路径")}`;
+  bindOvGoto();
+}
+
+function renderOvFlow(flow) {
+  const note = $("ov-flow-note");
+  const target = $("ov-flow");
+  if (!flow.available) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${flow.reason || flow.error || "没有资金流数据"}</div>${ovGoto("sectors", "去板块页刷新")}`;
+    bindOvGoto();
+    return;
+  }
+  const stamp = flow.fetched_at ? new Date(flow.fetched_at).toLocaleString("zh-CN", { hour12: false }) : "—";
+  note.textContent = stamp + " · " + flow.sectors.length + " 个行业";
+  const line = (row) =>
+    `<div class="kv"><span>${row.name}</span><span class="${row.main_net > 0 ? "up" : "down"}">${row.main_net > 0 ? "+" : ""}${row.main_net.toFixed(1)} 亿</span></div>`;
+  target.innerHTML = `
+    ${flow.top_in.length ? `<h4 style="margin:0 0 4px;font-size:12px;color:var(--good)">主力净流入前 ${Math.min(3, flow.top_in.length)}</h4>${flow.top_in.slice(0, 3).map(line).join("")}` : ""}
+    ${flow.top_out.length ? `<h4 style="margin:10px 0 4px;font-size:12px;color:var(--bad)">主力净流出前 ${Math.min(2, flow.top_out.length)}</h4>${flow.top_out.slice(0, 2).map(line).join("")}` : ""}
+    <div style="margin-top:10px">${ovGoto("sectors", "看板块与资金流")}</div>`;
+  bindOvGoto();
+}
+
+function renderOvData(datasets) {
+  const target = $("ov-data");
+  if (!datasets.length) {
+    renderError(target, "没有可用数据集", () => loadDashboard());
+    return;
+  }
+  const current = datasets.find((d) => d.key === state.dataset) || datasets[0];
+  const when = current?.updated_at ? new Date(current.updated_at).toLocaleString("zh-CN", { hour12: false }) : null;
+  const ageDays = when ? Math.floor((Date.now() - new Date(current.updated_at).getTime()) / 86400000) : null;
+  const stale = ageDays !== null && ageDays >= 3;
+  target.innerHTML = `
+    <div class="kv"><span>当前数据集</span><span>${current.label}</span></div>
+    <div class="kv"><span>样本数</span><span>${current.n_symbols ?? "—"}</span></div>
+    <div class="kv"><span>最后更新</span><span>${when ?? "—"}${stale ? ' <span class="badge warn">已停更</span>' : ""}</span></div>
+    ${stale ? `<p class="muted" style="margin:6px 0 0;color:var(--warn)">数据已 ${ageDays} 天没更新——分析里的「今日」都是旧数据，先补数。</p>` : ""}
+    <div style="margin-top:10px">${ovGoto("data", "看数据质量")}${ovGoto("collect", "去采集")}</div>`;
+  bindOvGoto();
+}
+
+function renderOvBook(holdings, watchlist) {
+  const target = $("ov-book");
+  const positions = holdings?.positions || [];
+  const stocks = watchlist?.stocks || [];
+  target.innerHTML = `
+    <div class="kv"><span>持仓</span><span>${positions.length} 只</span></div>
+    <div class="kv"><span>自选</span><span>${stocks.length} 只</span></div>
+    <div class="muted" style="margin:8px 0 0">${positions.length || stocks.length ? "基本面红旗核对只覆盖持仓 ∪ 自选。" : "还没有持仓与自选——量能提示与红旗核对都落不到票上。"}</div>
+    <div id="ov-risk" style="margin-top:8px"></div>
+    <div style="margin-top:10px">${ovGoto("portfolio", "去持仓复盘")}${ovGoto("watchlist", "去自选股")}</div>`;
+  bindOvGoto();
+}
+
+async function loadOvRisk() {
+  const target = $("ov-risk");
+  if (!target) return;
+  const risk = await api("/fundamentals/risk").catch((e) => ({ available: false, reason: e.message }));
+  if (!risk.available) {
+    target.innerHTML = `<p class="muted" style="margin:0;font-size:12px">${risk.reason || risk.error || "红旗未核对"}</p>`;
+    return;
+  }
+  const count = (level) => risk.risks.filter((row) => row.level === level).length;
+  const high = count("高");
+  const mid = count("中");
+  const unknown = count("未知");
+  const names = risk.risks.filter((row) => row.level === "高").map((row) => row.name).join("、");
+  target.innerHTML = `
+    <div class="row" style="gap:10px">
+      <span class="badge ${high ? "bad" : "good"}">红旗高 ${high}</span>
+      <span class="badge ${mid ? "warn" : ""}">中 ${mid}</span>
+      ${unknown ? `<span class="muted">未覆盖 ${unknown}</span>` : ""}
+    </div>
+    ${high ? `<p class="muted" style="margin:6px 0 0;color:var(--bad)">${names}：任何「坑」都要先怀疑是雷。</p>` : ""}`;
+}
+
+$("ov-go-collect").addEventListener("click", () => showView("collect"));
+
 /* ---------- 行业资金流 ---------- */
 /* 东财口径与板块表的证监会分类对不上，所以独立成卡：宁缺毋配。 */
 
@@ -3185,6 +3370,7 @@ enhanceSymbolInputs();
   buildScreenForm();
   renderVariants();
   await loadOverview();
+  await loadDashboard();
   await loadScreenLatest();
   await loadScreenReview();
   await loadWatchlist();
