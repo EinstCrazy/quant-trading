@@ -2836,6 +2836,24 @@ def portfolio_import(payload: dict[str, Any]) -> dict[str, Any]:
     return {**result, "n_added": len(result["added"])}
 
 
+@router.get("/etf/compare")
+def etf_compare(symbols: str, days: int = Query(250, ge=20, le=1500)) -> dict[str, Any]:
+    """多只 ETF 归一化对比（首日=100）：曲线 + 统计 + 相关性。
+
+    超过 6 只不给画：一张图上七条线，读者只会看见一团面条——宁可
+    让用户分两次看，也不给看不懂的图。
+    """
+    wanted = [part.strip() for part in symbols.split(",") if part.strip()]
+    if not wanted:
+        raise HTTPException(status_code=400, detail="至少选一只 ETF")
+    if len(wanted) > 6:
+        raise HTTPException(status_code=400, detail="一次最多对比 6 只：再多就看不清了，分两次看")
+    try:
+        return etf_mod.compare(load_settings().data.directory, wanted, days=days)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
 @router.get("/etf/{symbol}/history")
 def etf_history(symbol: str, days: int = Query(250, ge=20, le=1500)) -> dict[str, Any]:
     """一只 ETF 的历史走势与区间统计（只读缓存，不联网）。

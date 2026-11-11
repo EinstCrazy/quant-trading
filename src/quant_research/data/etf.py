@@ -34,6 +34,7 @@ from quant_research.data.providers.base import (
 __all__ = [
     "DIRECTORY",
     "ETF_UNIVERSE",
+    "compare",
     "fetch",
     "fetch_spot",
     "history",
@@ -251,6 +252,95 @@ def history(root: Path, symbol: str, days: int = 250) -> dict[str, Any]:
             "区间涨跌=窗口首尾收盘；年化波动=日收益标准差×√244；"
             "最大回撤=收盘对窗口内峰值的最大跌幅；均额单位亿元；"
             "份额变化需要至少两次份额快照——只有最新值时如实留空"
+        ),
+    }
+
+
+def compare(root: Path, symbols: list[str], days: int = 250) -> dict[str, Any]:
+    """多只 ETF 归一化对比：首日=100 的收益曲线 + 各自统计 + 相关性。
+
+    先按共同交易日对齐再归一化：不同 ETF 上市时间、停牌日都不同，不
+    对齐就会出现「曲线上某天只有一部分标的有值」的假交叉。对齐后的窗口
+    同时用于统计——画面与数字必须是同一段数据。
+
+    只读缓存；没采过的进 ``missing`` 而不是让整张对比失败。
+    """
+    requested: list[str] = []
+    for symbol in symbols:
+        bare = to_bare_symbol(symbol)
+        if bare and bare not in requested:
+            requested.append(bare)
+    if not requested:
+        raise ValueError("至少选一只 ETF")
+
+    closes: dict[str, pd.Series] = {}
+    missing: list[str] = []
+    for bare in requested:
+        frame = load(root, bare)
+        if frame is None:
+            missing.append(f"{bare} {ETF_UNIVERSE.get(bare, '')}".strip())
+            continue
+        closes[bare] = frame["close"]
+
+    if not closes:
+        raise ValueError("选中的 ETF 都还没有落盘数据：先点「刷新（联网采集）」")
+
+    # 内连接：只在全体都有成交的交易日上比，曲线不会因为某只停牌而错位
+    aligned = pd.concat(closes, axis=1, join="inner").dropna(how="any").iloc[-days:]
+    if len(aligned) < 2:
+        raise ValueError("共同交易日不足两天：这些 ETF 的采集区间几乎不重叠")
+
+    series: list[dict[str, Any]] = []
+    stats: list[dict[str, Any]] = []
+    for bare in [symbol for symbol in requested if symbol in closes]:
+        window = aligned[bare]
+        base = float(window.iloc[0])
+        if not base:
+            continue
+        series.append(
+            {
+                "symbol": bare,
+                "name": ETF_UNIVERSE.get(bare, ""),
+                "points": [
+                    [str(index.date()), round(float(value) / base * 100, 2)]
+                    for index, value in window.items()
+                ],
+            }
+        )
+        returns = window.pct_change().dropna()
+        drawdown = (window / window.cummax() - 1).min()
+        stats.append(
+            {
+                "symbol": bare,
+                "name": ETF_UNIVERSE.get(bare, ""),
+                "change": round(float(window.iloc[-1]) / base - 1, 4),
+                "volatility": round(float(returns.std()) * (244**0.5), 4)
+                if len(returns) > 1
+                else None,
+                "max_drawdown": None if pd.isna(drawdown) else round(float(drawdown), 4),
+                "first": str(window.index[0].date()),
+                "last": str(window.index[-1].date()),
+                "rows": len(window),
+            }
+        )
+
+    labels = [row["symbol"] for row in series]
+    correlations = aligned[labels].pct_change().dropna().corr() if len(labels) > 1 else None
+    matrix = (
+        [[round(float(correlations.loc[a, b]), 3) for b in labels] for a in labels]
+        if correlations is not None
+        else []
+    )
+    return {
+        "days": len(aligned),
+        "as_of": str(aligned.index[-1].date()),
+        "series": series,
+        "stats": stats,
+        "correlation": {"symbols": labels, "matrix": matrix},
+        "missing": missing,
+        "note": (
+            "曲线=各只收盘 / 窗口首日收盘 × 100，按共同交易日对齐后再算；"
+            "波动=日收益标准差×√244；相关性用同一段对齐窗口的日收益"
         ),
     }
 

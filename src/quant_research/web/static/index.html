@@ -168,6 +168,9 @@
   .pf-item { border-left: 3px solid var(--line); padding: 4px 10px; margin: 6px 0; }
   /* 滚动定位：导航栏是 sticky 的，不加边距会被它盖住标题 */
   #etf-hist-chart { scroll-margin-top: 76px; }
+  .chip { padding: 2px 10px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; font-size: 12px; user-select: none; }
+  .chip:hover { border-color: #9db4d8; }
+  .chip.on { background: #eef4ff; border-color: #7aa7ff; color: #1d4ed8; }
   #etf-body tbody tr[data-etf-row] { cursor: pointer; }
   #etf-body tbody tr[data-etf-row]:hover { background: #f7f9fc; }
   #etf-body tbody tr.selected { background: #eef4ff; }
@@ -679,6 +682,20 @@
         <div id="etf-hist-chart"></div>
         <div id="etf-hist-facts" class="row" style="gap:16px;margin:8px 0;flex-wrap:wrap"></div>
         <div id="etf-hist-amount"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h3>多只对比 <span class="muted" id="etf-cmp-note"></span></h3>
+        <div class="row" style="gap:14px;margin-bottom:8px;flex-wrap:wrap">
+          <div id="etf-cmp-chips" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+          <label>窗口</label>
+          <select id="etf-cmp-days" style="width:110px">
+            <option value="120">120 日</option>
+            <option value="250" selected>250 日</option>
+            <option value="500">500 日</option>
+          </select>
+        </div>
+        <div id="etf-cmp-chart"></div>
+        <div id="etf-cmp-table" style="margin-top:8px"></div>
       </div>
       <div class="card">
         <h3>清单快照 <span class="muted" id="etf-note"></span></h3>
@@ -2055,6 +2072,11 @@ document.addEventListener("click", (event) => {
     jumpToEtf(link.dataset.etfJump);
     return;
   }
+  const chip = event.target.closest("[data-etf-cmp]");
+  if (chip) {
+    toggleEtfCompare(chip.dataset.etfCmp);
+    return;
+  }
   const row = event.target.closest("#etf-body tr[data-etf-row]");
   if (row) jumpToEtf(row.dataset.etfRow);
 });
@@ -2741,6 +2763,7 @@ function renderEtf() {
   if (!rows.length) {
     ETF_PENDING = null;
     target.innerHTML = `<div class="empty">清单里 ${ETF_DATA.n_tracked} 只 ETF 还一只都没采集过。点「刷新（联网采集）」补数——快照只读缓存，不会自己联网。</div>`;
+    renderEtfCompareChips();
     return;
   }
   const pct = (value, digits = 1) =>
@@ -2853,6 +2876,102 @@ async function loadEtfHistory() {
       digits: 0,
       zeroLine: true,
     });
+  }
+}
+
+/* 多只对比：首日=100 的归一化曲线——价格量级不同的标的（4 元的宽基
+   和 7 元的黄金）直接画会被压成一条直线，归一化后比的是「谁走得更强」。
+   对齐与统计都在后端同一段窗口里算，画面与数字不会对不上。 */
+let ETF_CMP = new Set();
+
+function renderEtfCompareChips() {
+  const rows = (ETF_DATA?.rows || []).filter((row) => row.last_close != null);
+  const box = $("etf-cmp-chips");
+  if (!rows.length) {
+    box.innerHTML = '<span class="muted" style="font-size:12px">还没有采集过 ETF 日线</span>';
+    $("etf-cmp-chart").innerHTML = "";
+    $("etf-cmp-table").innerHTML = "";
+    $("etf-cmp-note").textContent = "";
+    return;
+  }
+  const available = new Set(rows.map((row) => row.symbol));
+  for (const symbol of [...ETF_CMP]) if (!available.has(symbol)) ETF_CMP.delete(symbol);
+  // 首次进入给三只默认选择：不选就没有图，等于这个功能不存在
+  if (!ETF_CMP.size) rows.slice(0, 3).forEach((row) => ETF_CMP.add(row.symbol));
+  box.innerHTML = rows
+    .map((row) => `<span class="chip${ETF_CMP.has(row.symbol) ? " on" : ""}" data-etf-cmp="${row.symbol}" title="点击加入/移出对比">${row.name}</span>`)
+    .join("");
+  loadEtfCompare();
+}
+
+function toggleEtfCompare(symbol) {
+  if (ETF_CMP.has(symbol)) {
+    ETF_CMP.delete(symbol);
+  } else {
+    if (ETF_CMP.size >= 6) {
+      toast("一次最多对比 6 只：再多就看不清了");
+      return;
+    }
+    ETF_CMP.add(symbol);
+  }
+  renderEtfCompareChips();
+}
+
+async function loadEtfCompare() {
+  const note = $("etf-cmp-note");
+  const target = $("etf-cmp-chart");
+  const symbols = [...ETF_CMP];
+  if (symbols.length < 2) {
+    note.textContent = "选两只以上才能对比";
+    target.innerHTML = '<div class="empty">至少选两只 ETF：一只没有对比可言</div>';
+    $("etf-cmp-table").innerHTML = "";
+    return;
+  }
+  const days = $("etf-cmp-days").value;
+  note.textContent = "取数中…";
+  try {
+    const data = await api(`/etf/compare?symbols=${symbols.join(",")}&days=${days}`);
+    note.textContent = `${data.series.length} 只 · ${data.days} 个共同交易日 · 截至 ${data.as_of} · 首日=100`;
+    chart(target, data.series.map((item) => ({ name: item.name, points: item.points })), {
+      height: 300,
+      digits: 0,
+      reference: [100],
+    });
+    const pct = (value) =>
+      value == null ? "—" : `<span class="${value >= 0 ? "up" : "down"}">${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%</span>`;
+    const rows = data.stats.map((row) => [
+      `<a class="sym-link" data-etf-jump="${row.symbol}">${row.symbol}</a>`,
+      row.name,
+      pct(row.change),
+      row.volatility == null ? "—" : `${(row.volatility * 100).toFixed(1)}%`,
+      pct(row.max_drawdown),
+      String(row.rows),
+    ]);
+    let html = table(["代码", "名称", "区间涨跌", "年化波动", "最大回撤", "共同交易日"], rows);
+    const corr = data.correlation || {};
+    if ((corr.symbols || []).length > 1) {
+      const grid = corr.matrix
+        .map(
+          (line, i) => `<tr><td>${corr.symbols[i]}</td>${line
+            .map((value) => {
+              const tone = i === 0 && line.indexOf(value) === 0 ? "muted" : value >= 0.8 ? "up" : value <= 0.3 ? "down" : "";
+              return `<td class="${tone}">${value.toFixed(2)}</td>`;
+            })
+            .join("")}</tr>`,
+        )
+        .join("");
+      html += `<p class="muted" style="margin:10px 0 4px;font-size:12px">日收益相关性（红=高相关，分散效果差；绿=低相关，互补）</p>
+        <table><thead><tr><th></th>${corr.symbols.map((symbol) => `<th>${symbol}</th>`).join("")}</tr></thead><tbody>${grid}</tbody></table>`;
+    }
+    if ((data.missing || []).length) {
+      html += `<p class="muted" style="margin:8px 0 0;font-size:12px">未采集：${data.missing.join("；")}——点上面「刷新（联网采集）」补上</p>`;
+    }
+    html += `<p class="muted" style="margin:8px 0 0;font-size:12px">${data.note}</p>`;
+    $("etf-cmp-table").innerHTML = html;
+  } catch (error) {
+    note.textContent = "";
+    target.innerHTML = `<div class="empty">${error.message}</div>`;
+    $("etf-cmp-table").innerHTML = "";
   }
 }
 
@@ -3901,6 +4020,7 @@ $("pf-refresh").addEventListener("click", async () => {
 $("pf-account-filter").addEventListener("change", () => renderHoldings());
 $("pf-chart-symbol").addEventListener("change", () => loadReviewChart());
 $("etf-hist-symbol").addEventListener("change", () => loadEtfHistory());
+$("etf-cmp-days").addEventListener("change", () => loadEtfCompare());
 
 /* 一键补采：缺什么补什么——已有数据的不碰。结果逐只可见，
    失败的票（如已退市）如实留在 failed 里，不假装补齐了。 */

@@ -754,3 +754,34 @@ class TestEtfDetailLink:
         section = html.split("function renderEtfHistory(")[1].split("async function refreshEtf(")[0]
         assert "selectEtfDetail(pending)" not in section
         assert "highlightEtfRow(pending)" in section
+
+
+class TestEtfCompare:
+    """多只 ETF 对比：归一化曲线 + 统计 + 相关性，上限 6 只。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_chips_and_compare_endpoint_are_wired(self):
+        html = self._html()
+        assert 'id="etf-cmp-chips"' in html
+        assert "/etf/compare?symbols=" in html
+        assert "function toggleEtfCompare(" in html
+
+    def test_normalised_to_100_with_reference_line(self):
+        """价格量级不同的标的直接画会被压成直线：首日=100 + 100 参考线。"""
+        html = self._html()
+        assert "reference: [100]" in html
+        assert "首日=100" in html
+
+    def test_six_curves_is_the_client_side_limit_too(self):
+        """服务端挡 6 只，前端也要挡：不然点了没反应，用户以为坏了。"""
+        html = self._html()
+        assert "ETF_CMP.size >= 6" in html
+
+    def test_single_selection_explains_why_there_is_no_chart(self):
+        html = self._html()
+        assert "选两只以上才能对比" in html

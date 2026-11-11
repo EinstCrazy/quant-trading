@@ -137,3 +137,83 @@ class TestHistoryAPI:
         assert len(payload["candles"]) == 40
         assert payload["candles"][0][0] < payload["candles"][-1][0]  # 日期递增
         assert all(len(point) == 5 for point in payload["candles"])  # date/o/h/l/c
+
+
+class TestCompare:
+    """多只对比：先对齐再归一化，画面与统计必须同一段数据。"""
+
+    def test_curves_start_at_100_and_share_dates(self, tmp_path):
+        etf.store(tmp_path, "510300", _frame(80, 1.0, 1.5))
+        etf.store(tmp_path, "518880", _frame(80, 7.0, 6.3))  # 量级差 7 倍、方向相反
+
+        data = etf.compare(tmp_path, ["510300", "518880"], days=40)
+
+        assert data["days"] == 40
+        for item in data["series"]:
+            assert item["points"][0][1] == pytest.approx(100.0, abs=0.01)
+            assert len(item["points"]) == 40
+        # 同一组日期：不齐就会画出假交叉
+        assert [p[0] for p in data["series"][0]["points"]] == [
+            p[0] for p in data["series"][1]["points"]
+        ]
+
+    def test_change_matches_the_normalised_curve_end(self, tmp_path):
+        etf.store(tmp_path, "510300", _frame(60, 1.0, 1.2))
+        etf.store(tmp_path, "518880", _frame(60, 7.0, 6.3))
+
+        data = etf.compare(tmp_path, ["510300", "518880"], days=60)
+
+        for row, item in zip(data["stats"], data["series"], strict=True):
+            assert item["points"][-1][1] == pytest.approx(100 * (1 + row["change"]), abs=0.05)
+
+    def test_only_common_trading_days_are_compared(self, tmp_path):
+        """一只早上市、一只晚上市：共同日期才是可比的窗口。"""
+        etf.store(tmp_path, "510300", _frame(80))
+        short = _frame(80).iloc[-40:]
+        etf.store(tmp_path, "518880", short)
+
+        data = etf.compare(tmp_path, ["510300", "518880"], days=250)
+
+        assert data["days"] == 40
+        assert data["stats"][0]["rows"] == 40
+
+    def test_missing_is_reported_not_fatal(self, tmp_path):
+        etf.store(tmp_path, "510300", _frame(60))
+        etf.store(tmp_path, "518880", _frame(60))
+
+        data = etf.compare(tmp_path, ["510300", "518880", "515000"], days=30)
+
+        assert len(data["series"]) == 2
+        assert any("515000" in item for item in data["missing"])
+
+    def test_correlation_matrix_is_symmetric_with_unit_diagonal(self, tmp_path):
+        etf.store(tmp_path, "510300", _frame(80))
+        etf.store(tmp_path, "518880", _frame(80, 7.0, 6.3))
+
+        data = etf.compare(tmp_path, ["510300", "518880"], days=60)
+
+        matrix = data["correlation"]["matrix"]
+        assert matrix[0][0] == pytest.approx(1.0)
+        assert matrix[1][1] == pytest.approx(1.0)
+        assert matrix[0][1] == pytest.approx(matrix[1][0])
+
+    def test_all_missing_says_how_to_fix_it(self, tmp_path):
+        with pytest.raises(ValueError, match="刷新"):
+            etf.compare(tmp_path, ["510300", "518880"])
+
+    def test_api_rejects_too_many_curves(self, tmp_path, monkeypatch):
+        from quant_research.web import api as api_module
+        from quant_research.web import create_app
+
+        class _Settings:
+            class data:
+                directory = tmp_path
+
+        monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _Settings())
+
+        response = TestClient(create_app()).get(
+            "/api/etf/compare?symbols=510300,518880,513100,513500,510050,510500,512880"
+        )
+
+        assert response.status_code == 400
+        assert "6 只" in response.json()["detail"]
