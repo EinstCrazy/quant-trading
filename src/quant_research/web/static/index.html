@@ -2748,7 +2748,32 @@ function renderSectorFlow() {
   }
   const stamp = SECTOR_FLOW.fetched_at ? new Date(SECTOR_FLOW.fetched_at).toLocaleString("zh-CN", { hour12: false }) : "—";
   note.textContent = `${stamp} 抓取 · ${SECTOR_FLOW.sectors.length} 个行业${SECTOR_FLOW.missing.length ? " · 缺失：" + SECTOR_FLOW.missing.join("；") : ""}`;
+  const delta = SECTOR_FLOW.delta;
+  let deltaHtml = "";
+  if (delta?.available && delta.rows?.length) {
+    const fmt = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)} 亿`;
+    const deltaTable = (rows, label, cls) => `
+      <div><b>${label}</b><table><thead><tr><th>行业</th><th>今日净流入</th><th>较上日</th></tr></thead><tbody>
+      ${rows
+        .map(
+          (row) => `<tr><td>${row.name}</td><td>${fmt(row.main_net)}</td><td class="${cls}">${fmt(row.change)}</td></tr>`
+        )
+        .join("")}
+      </tbody></table></div>`;
+    deltaHtml = `
+      <div style="margin-bottom:12px">
+        <b>风向变化 <span class="muted" style="font-weight:normal;font-size:12px">${delta.as_of} vs ${delta.prev_as_of}</span></b>
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-top:6px">
+          ${deltaTable(delta.rows.slice(0, 5), "转强最快（5）", "up")}
+          ${deltaTable(delta.rows.slice(-5).reverse(), "转弱最快（5）", "down")}
+        </div>
+        ${delta.new?.length ? `<p class="muted" style="margin:6px 0 0;font-size:12px">新出现：${delta.new.join("、")}（上一快照没有，不编变化值）</p>` : ""}
+      </div>`;
+  } else if (delta) {
+    deltaHtml = `<p class="muted" style="margin:0 0 12px;font-size:12px">风向对比：${delta.reason || "暂不可比"}——按日快照从今天开始积累。</p>`;
+  }
   target.innerHTML = `
+    ${deltaHtml}
     <div style="margin-bottom:12px"><b>主力净流入前 ${SECTOR_FLOW.top_in.length}</b>${flowTable(SECTOR_FLOW.top_in)}</div>
     <div><b>主力净流出前 ${SECTOR_FLOW.top_out.length}</b>${flowTable(SECTOR_FLOW.top_out)}</div>`;
 }

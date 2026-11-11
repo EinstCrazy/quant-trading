@@ -2439,13 +2439,18 @@ def sector_flow() -> dict[str, Any]:
     东财行业分类与面板的证监会分类不是一套——快照不与板块表做跨口径
     匹配，宁可在页面上独立成卡注明口径，也不产出看似精确的错配。
     """
-    snapshot = sector_flow_mod.load(load_settings().data.directory)
+    root = load_settings().data.directory
+    snapshot = sector_flow_mod.load(root)
     if snapshot is None:
         return {
             "available": False,
             "reason": "还没有行业资金流快照：点「刷新（联网抓取）」，或等 nightly 自动更新",
         }
-    return {**snapshot, "available": True}
+    return {
+        **snapshot,
+        "available": True,
+        "delta": sector_flow_mod.delta(root),  # 风向对比：只有一份快照时如实说不可比
+    }
 
 
 @router.post("/sector-flow/refresh")

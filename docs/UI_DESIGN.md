@@ -312,7 +312,7 @@ high/low，量比要 volume），分析照常，而不是整段失败。
 | POST | `/api/portfolio/review/save` | 把当前复盘存为今日存档，返回档位变化 |
 | GET | `/api/sectors/analysis` | 板块汇总：等权/中位涨幅、上涨占比、分化度、成交额、领涨领跌、外围关联（只读快照，不联网） |
 | GET | `/api/sectors/members` | 单板块成分股明细：超额、RSI、MA20、量比、成交额 |
-| GET | `/api/sector-flow` | 行业资金流快照（东财口径，独立成卡不跨口径匹配） |
+| GET | `/api/sector-flow` | 行业资金流快照 + 风向对比（较上一交易日，只有一份快照时如实说不可比）（东财口径，独立成卡不跨口径匹配） |
 | POST | `/api/sector-flow/refresh` | 联网抓取行业资金流并落盘 |
 | GET | `/api/volume/analysis` | 量能三层：大盘量比/量价状态、板块量能排序、个股（持仓∪自选）量价状态与建议 |
 | GET | `/api/overseas/analysis` | 外围快照分析：六组行情、情绪分、传导路径与建议（只读缓存，不联网） |

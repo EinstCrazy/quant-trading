@@ -322,3 +322,86 @@ class _StubFetch:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"stub")
         return path
+
+
+class TestSectorFlowDelta:
+    """风向对比：单日快照只有「谁在流入」，两次之间才有「风向变没变」。"""
+
+    def _snapshot(self, day: str, nets: dict[str, float]) -> dict:
+        sectors = [{"name": name, "main_net": net} for name, net in nets.items()]
+        sectors.sort(key=lambda row: row["main_net"], reverse=True)
+        return {
+            "fetched_at": f"{day}T20:00:00+00:00",
+            "sectors": sectors,
+            "top_in": sectors[:10],
+            "top_out": list(reversed(sectors[-5:])),
+            "missing": [],
+        }
+
+    def test_save_keeps_daily_files_and_latest(self, tmp_path):
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-10", {"白酒": 5.0}))
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-11", {"白酒": 7.0}))
+
+        assert (tmp_path / sector_flow_mod.DIRECTORY / "2026-11-10.json").is_file()
+        assert (tmp_path / sector_flow_mod.DIRECTORY / "2026-11-11.json").is_file()
+        assert sector_flow_mod.load(tmp_path)["fetched_at"].startswith("2026-11-11")
+
+    def test_single_snapshot_says_not_comparable(self, tmp_path):
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-11", {"白酒": 5.0}))
+
+        payload = sector_flow_mod.delta(tmp_path)
+
+        assert payload["available"] is False
+        assert "两个不同交易日" in payload["reason"]
+
+    def test_change_is_vs_the_previous_trading_day(self, tmp_path):
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-10", {"白酒": 5.0, "证券": -3.0}))
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-11", {"白酒": 7.0, "证券": -8.0}))
+
+        payload = sector_flow_mod.delta(tmp_path)
+
+        assert payload["available"] is True
+        assert payload["as_of"] == "2026-11-11" and payload["prev_as_of"] == "2026-11-10"
+        assert payload["rows"][0]["name"] == "白酒"  # +2 最强
+        assert payload["rows"][0]["change"] == pytest.approx(2.0)
+        assert payload["rows"][-1]["name"] == "证券"  # -5 最弱
+
+    def test_same_day_twice_is_not_a_change(self, tmp_path):
+        """同日抓两次是同一口径的两次采样，不算风向变化。"""
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-11", {"白酒": 5.0}))
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-11", {"白酒": 9.0}))
+
+        payload = sector_flow_mod.delta(tmp_path)
+
+        assert payload["available"] is False
+
+    def test_new_sector_is_labelled_not_zeroed(self, tmp_path):
+        """昨天快照里没有的行业：标注「新出现」，不编一个 0 变化。"""
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-10", {"白酒": 5.0}))
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-11", {"白酒": 7.0, "证券": -1.0}))
+
+        payload = sector_flow_mod.delta(tmp_path)
+
+        assert "证券" in payload["new"]
+        assert all(row["name"] != "证券" for row in payload["rows"])
+
+    def test_api_includes_delta_and_labels_first_run(self, tmp_path, monkeypatch):
+        from quant_research.web import api as api_module
+        from quant_research.web import create_app
+
+        class _Settings:
+            class data:
+                directory = tmp_path
+
+            class collection:
+                provider = "baostock"
+                adjust = "qfq"
+
+        monkeypatch.setattr(api_module, "load_settings", lambda *a, **k: _Settings())
+        sector_flow_mod.save(tmp_path, self._snapshot("2026-11-11", {"白酒": 5.0}))
+
+        payload = TestClient(create_app()).get("/api/sector-flow").json()
+
+        assert payload["available"] is True
+        assert payload["delta"]["available"] is False
+        assert "两个不同交易日" in payload["delta"]["reason"]
