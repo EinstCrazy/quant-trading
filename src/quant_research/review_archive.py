@@ -12,6 +12,7 @@
       "saved_at": "2026-11-09T16:40:12",
       "provider": "baostock",
       "summary_note": "2 只需要盯（止损/减仓观察）……",
+      "user_note": "（用户手写备注，可选）明天打算怎么操作……",
       "positions": {
         "600519.SH": {"stance": "hold", "label": "持有",
                       "close": 1392.05, "pnl_pct": -0.57}
@@ -96,11 +97,15 @@ def compact(payload: dict[str, Any]) -> dict[str, Any]:
             "pnl_pct": row.get("pnl_pct"),
         }
     summary = payload.get("summary") or {}
+    note = (payload.get("user_note") or "").strip()
     return {
         "date": payload.get("as_of"),
         "saved_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "provider": payload.get("provider"),
         "summary_note": summary.get("note"),
+        # summary_note 是系统生成的结论；user_note 是用户当天手写的注解，
+        # 两者分开放——「机器说的」和「人记的」不该混在一个字段里
+        "user_note": note or None,
         "positions": positions,
     }
 

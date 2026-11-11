@@ -573,6 +573,8 @@
           <button class="btn ghost" id="pf-save">存为今日复盘</button>
           <span class="muted" id="pf-compare"></span>
         </div>
+        <textarea id="pf-review-user-note" rows="2" style="width:100%;font-family:inherit" placeholder="今日复盘备注（可选，≤500 字）：为什么改档位、明天打算怎么操作……随存档一起留下"></textarea>
+        <div id="pf-review-user-note-hint" class="muted" style="margin:4px 0 8px;font-size:12px"></div>
         <div id="pf-summary"></div>
         <div id="pf-discipline"></div>
         <div id="pf-advice"></div>
@@ -589,6 +591,16 @@
             <div id="pf-pnl-bars"></div>
           </div>
         </div>
+      </div>
+      <div class="card">
+        <h3>历史复盘 <span class="muted" id="pf-history-note"></span></h3>
+        <div class="row" style="margin-bottom:8px">
+          <label>日期</label>
+          <select id="pf-history-date" style="width:150px"><option value="">还没有存档</option></select>
+          <span class="muted" id="pf-history-meta"></span>
+        </div>
+        <div id="pf-history-note-box" style="display:none;margin-bottom:8px"></div>
+        <div id="pf-history-body"></div>
       </div>
       <div class="card">
         <h3>基本面红旗 <span class="muted" id="fr-note"></span></h3>
@@ -3709,6 +3721,7 @@ async function loadPortfolio() {
     renderError($("pf-table"), error.message, () => loadPortfolio());
   }
   await loadReview();
+  await loadReviewHistory();
 }
 
 async function loadReview() {
@@ -4205,13 +4218,93 @@ $("pf-backfill").addEventListener("click", () =>
 
 $("pf-save").addEventListener("click", async () => {
   try {
-    const saved = await api("/portfolio/review/save", null, "POST");
+    const note = $("pf-review-user-note").value.trim();
+    if (note.length > 500) {
+      toast("备注太长了：复盘备注是给未来的自己看的提示，不是日记本（≤500 字）", "error");
+      return;
+    }
+    const saved = await api("/portfolio/review/save", note ? { note } : null, "POST");
     toast(`已存档 ${saved.date}${saved.changes.length ? `（${saved.changes.length} 只档位变化已记录）` : ""}`);
     await loadReview();
   } catch (error) {
     toast(error.message);
   }
 });
+
+/* 历史复盘：复盘的价值在对比——只存不翻，等于没存。
+   备注分两行显示：机器结论（summary_note）与用户手写（user_note）。 */
+async function loadReviewHistory() {
+  try {
+    const { history } = await api("/portfolio/review/history");
+    const select = $("pf-history-date");
+    const previous = select.value;
+    select.innerHTML = history.length
+      ? history
+          .map(
+            (h) =>
+              `<option value="${h.date}">${h.date}${h.user_note ? " ✎" : ""}${h.n_alerts ? ` · ${h.n_alerts} 只需盯` : ""}</option>`,
+          )
+          .join("")
+      : '<option value="">还没有存档：点「存为今日复盘」开始</option>';
+    if (previous && history.some((h) => h.date === previous)) {
+      select.value = previous;
+    }
+    $("pf-history-note").textContent = history.length ? `${history.length} 份存档` : "";
+    if (select.value) {
+      await loadReviewArchive(select.value);
+    } else {
+      $("pf-history-body").innerHTML = '<div class="empty">还没有存档：点「存为今日复盘」开始</div>';
+    }
+  } catch {
+    $("pf-history-body").innerHTML = "";
+  }
+}
+
+async function loadReviewArchive(date) {
+  try {
+    const detail = await api(`/portfolio/review/archive/${encodeURIComponent(date)}`);
+    const meta = [];
+    if (detail.saved_at) meta.push(`存于 ${detail.saved_at.replace("T", " ")}`);
+    meta.push(`${detail.positions.length} 只档位`);
+    if (detail.changes.length) meta.push(`与上次比 ${detail.changes.length} 只变了`);
+    $("pf-history-meta").textContent = meta.join(" · ");
+    const noteBox = $("pf-history-note-box");
+    if (detail.user_note || detail.summary_note) {
+      noteBox.style.display = "";
+      noteBox.innerHTML = [
+        detail.user_note ? `<div style="background:#fdf6e3;border-left:3px solid #e6b800;padding:8px 10px;border-radius:4px"><b>我的备注</b>：${detail.user_note.replace(/</g, "&lt;")}</div>` : "",
+        detail.summary_note ? `<div class="muted" style="margin-top:6px">系统结论：${detail.summary_note.replace(/</g, "&lt;")}</div>` : "",
+      ].join("");
+    } else {
+      noteBox.style.display = "none";
+      noteBox.innerHTML = "";
+    }
+    const changes = new Map(detail.changes.map((c) => [`${c.account}::${c.symbol}`, c]));
+    const rows = detail.positions.map((p) => {
+      const key = `${p.account || "默认"}::${p.symbol}`;
+      const changed = changes.get(key);
+      const pnlPct = p.pnl_pct == null ? "—" : `${p.pnl_pct > 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`;
+      const pnlTone = p.pnl_pct > 0 ? "up" : p.pnl_pct < 0 ? "down" : "muted";
+      return [
+        p.account || "默认",
+        symbolCell(p.symbol),
+        changed ? `${p.label} <span class="muted">（原 ${changed.from_label}）</span>` : p.label,
+        p.close == null ? "—" : fmt(p.close, 2),
+        `<span class="${pnlTone}">${pnlPct}</span>`,
+      ];
+    });
+    $("pf-history-body").innerHTML = rows.length
+      ? table(["账户", "代码", "档位", "收盘", "盈亏率"], rows)
+      : '<div class="empty">这份存档里没有持仓档位</div>';
+  } catch (error) {
+    $("pf-history-body").innerHTML = `<div class="empty">${error.message}</div>`;
+  }
+}
+
+$("pf-history-date").addEventListener("change", (e) => {
+  if (e.target.value) loadReviewArchive(e.target.value);
+});
+
 
 /* ---------- 自选股 ---------- */
 /* 自选是用户标注的集合：标签归标签，价格每次从面板现读，前端只管展示。

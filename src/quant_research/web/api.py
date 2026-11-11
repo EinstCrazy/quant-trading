@@ -103,6 +103,7 @@ from .schemas import (
     PositionIn,
     PositionPatch,
     RebalanceIn,
+    ReviewSaveIn,
     ScreenOut,
     ScreenPickOut,
     ScreenRequest,
@@ -1681,10 +1682,12 @@ def portfolio_review(provider: str | None = None, adjust: str | None = None) -> 
 
 
 @router.post("/portfolio/review/save")
-def save_portfolio_review() -> dict[str, Any]:
+def save_portfolio_review(request: ReviewSaveIn | None = None) -> dict[str, Any]:
     """把当前复盘存为今日存档——显式动作，GET 不写盘。
 
     存档是「那天我看到的档位」，下次打开时回答「和上次比，什么变了」。
+    请求体可选：note 是用户当天手写的备注（为什么改档位、明天打算怎么
+    操作），随存档一起落盘——档位是机器算的，备注是人写的，都得留下。
     """
     settings = load_settings()
     payload = _review_payload(settings, settings.collection.provider, settings.collection.adjust)
@@ -1693,12 +1696,89 @@ def save_portfolio_review() -> dict[str, Any]:
             status_code=400,
             detail=payload["unavailable"] or "还没有持仓可以复盘",
         )
-    previous = review_store.latest(settings.data.directory, exclude=payload["as_of"])
+    # 备注语义：省略 = 继承当天已有的备注（重复存档不该把手写的注解
+    # 抹掉）；显式空串 = 清除。档位每次现算，备注只属于「人写的」。
+    root = settings.data.directory
+    note = request.note if request is not None else None
+    if note is None:
+        existing = review_store.load(root, payload["as_of"])
+        note = (existing or {}).get("user_note")
+    payload["user_note"] = note
+    previous = review_store.latest(root, exclude=payload["as_of"])
     path = review_store.save(settings.data.directory, payload)
     return {
         "saved": path.name,
         "date": payload["as_of"],
         "changes": _changes(payload["positions"], previous),
+    }
+
+
+@router.get("/portfolio/review/history")
+def review_history() -> dict[str, Any]:
+    """历次复盘存档的清单（新到旧）：备注、结论、档位概况一眼可见。
+
+    只读目录不联网——存的是「那天看到的」，不是行情；重算才需要面板。
+    """
+    root = load_settings().data.directory
+    folder = review_store.directory(root)
+    if not folder.is_dir():
+        return {"history": []}
+    history: list[dict[str, Any]] = []
+    for file in sorted(folder.glob("*.json"), reverse=True):
+        data = review_store.load(root, file.stem)
+        if not data:
+            continue
+        positions = data.get("positions") or {}
+        history.append(
+            {
+                "date": data.get("date") or file.stem,
+                "saved_at": data.get("saved_at"),
+                "user_note": data.get("user_note"),
+                "summary_note": data.get("summary_note"),
+                "n_positions": len(positions),
+                "n_alerts": sum(
+                    1
+                    for entry in positions.values()
+                    if entry.get("stance") and entry["stance"] != "hold"
+                ),
+            }
+        )
+    return {"history": history}
+
+
+@router.get("/portfolio/review/archive/{date}")
+def review_archive_detail(date: str) -> dict[str, Any]:
+    """单日存档详情：档位逐条 + 用户备注 + 与再上一次的档位变化。
+
+    存档日期不存在是 404 指路（先存档）；对比对象是这份存档之前最近
+    的一份——「那天和那天前比」，不是「那天和今天比」。
+    """
+    root = load_settings().data.directory
+    data = review_store.load(root, date)
+    if not data:
+        raise HTTPException(
+            status_code=404, detail=f"{date} 没有复盘存档：先在该日点「存为今日复盘」"
+        )
+    previous = review_store.latest(root, exclude=date)
+    positions = data.get("positions") or {}
+    rows = [
+        {
+            "symbol": entry.get("symbol"),
+            "account": entry.get("account") or holdings_store.DEFAULT_ACCOUNT,
+            "label": entry.get("label") or entry.get("stance"),
+            "stance": entry.get("stance"),
+            "close": entry.get("close"),
+            "pnl_pct": entry.get("pnl_pct"),
+        }
+        for entry in positions.values()
+    ]
+    return {
+        "date": data.get("date"),
+        "saved_at": data.get("saved_at"),
+        "user_note": data.get("user_note"),
+        "summary_note": data.get("summary_note"),
+        "positions": rows,
+        "changes": _changes(rows, previous),
     }
 
 

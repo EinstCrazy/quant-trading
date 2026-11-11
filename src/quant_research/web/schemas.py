@@ -410,6 +410,15 @@ class WatchlistIn(BaseModel):
     note: str | None = None
 
 
+class ReviewSaveIn(BaseModel):
+    """存今日复盘时顺手写的备注：用户手写的注解，与系统结论分开存。
+
+    上限 500 字——复盘备注是给未来的自己看的提示，不是日记本。
+    """
+
+    note: str | None = Field(default=None, max_length=500)
+
+
 class PositionPatch(BaseModel):
     """改一条持仓：全部可选——只传要改的字段；to_account 是挪账户。
 
