@@ -1206,3 +1206,53 @@ class TestReviewProviderSwitch:
         html = self._html()
         assert '$("pf-provider").addEventListener("change"' in html
         assert "loadReviewHistory();" in html  # 复盘历史也跟着源走
+
+
+class TestUIPolish:
+    """界面整理：错误处理补齐 + 加载中提示 + 空态与故障分开。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_watchlist_deletes_have_catch(self):
+        """自选股删除（股票 + 分类）失败 toast，不再无声吞错。"""
+        html = self._html()
+        render = html[html.index("function renderWatchlist(") + 10 :]
+        render = render[: render.index("function ")]
+        assert "删除分类失败" in render
+        assert "移除失败" in render
+        # 每个 DELETE 后必须跟 catch（两个 handler 各一次）
+        assert render.count("toast(`") >= 2
+
+    def test_custom_spec_load_failure_shown(self):
+        """自定义指标口径加载失败 → cs-spec 容器提示，不再无声。"""
+        html = self._html()
+        render = html[html.index("function renderCustomSpec(") + 10 :]
+        render = render[: render.index("function ")]
+        assert "ensureCustomSpec()" in render
+        assert "自定义指标口径加载失败" in render
+
+    def test_busy_hints_before_fetch(self):
+        """取数前的 busy 提示：采集/报告/选股复盘/外围盘不再白屏等待。"""
+        html = self._html()
+        assert "innerHTML = '<div class=\"muted\">取数中…</div>'" in html
+        assert '<div class="muted">计算中…</div>' in html
+        # 出现次数：col-status、col-reports、scr-review-body、os-summary、sec-flow
+        assert html.count("取数中…") >= 4
+
+    def test_screen_latest_separates_empty_from_error(self):
+        """选股名单失败不再一律说「还没有选股记录」——404 才是空态。"""
+        html = self._html()
+        render = html[html.index("function loadScreenLatest(") + 10 :]
+        render = render[: render.index("function ")]
+        assert "/404|不存在|还没有/" in render
+        assert "renderErrorBox(error.message)" in render
+
+    def test_render_error_box_shared_helper(self):
+        """错误框字符串版与 DOM 版共用 escapeAttr 转义口径。"""
+        html = self._html()
+        assert "function renderErrorBox(message)" in html
+        assert html.count("escapeAttr(message)") >= 2

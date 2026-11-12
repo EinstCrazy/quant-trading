@@ -882,6 +882,11 @@ function skeleton(target, mode = "table") {
 }
 
 /* 错误框：带重试按钮——比只弹 toast 可靠，用户不用记住刚才点了什么 */
+/* 错误框的字符串版：不能直接写 DOM 时用（消息先转义） */
+function renderErrorBox(message) {
+  return `<div class="error-box"><b>加载失败</b>${escapeAttr(message)}</div>`;
+}
+
 function renderError(target, message, retry) {
   if (!target) return;
   const id = `retry-${Math.random().toString(36).slice(2, 8)}`;
@@ -1730,6 +1735,7 @@ function syncCollectForm() {
 
 async function loadCollection() {
   try {
+    $("col-status").innerHTML = '<div class="muted">取数中…</div>';
     const data = await api("/collection/status");
     const providers = data.providers || [];
     $("col-status").innerHTML = `<h3>落盘状态（根目录 ${data.root}）</h3>` +
@@ -1758,6 +1764,7 @@ async function loadCollection() {
 
 async function loadReports() {
   try {
+    $("col-reports").innerHTML = '<div class="muted">取数中…</div>';
     const data = await api("/collection/reports?limit=10");
     const reports = data.reports || [];
     $("col-reports").innerHTML = reports.length
@@ -1905,14 +1912,18 @@ async function loadScreenLatest() {
   try {
     renderScreen(await api("/screen/latest?provider=" + screenProvider()));
   } catch (error) {
-    $("scr-latest").innerHTML =
-      "<h3>名单</h3><p class='muted'>还没有选股记录——先跑一次，或等收盘后自动跑。</p>";
+    // 空态与故障分开：404（没有记录）才是「先跑一次」，别的错误如实报
+    const empty = /404|不存在|还没有/.test(error.message);
+    $("scr-latest").innerHTML = empty
+      ? "<h3>名单</h3><p class='muted'>还没有选股记录——先跑一次，或等收盘后自动跑。</p>"
+      : `<h3>名单</h3>${renderErrorBox(error.message)}`;
   }
 }
 
 async function loadScreenReview() {
   const provider = screenProvider();
   const horizon = Number($("scr-horizon").value) || 5;
+  $("scr-review-body").innerHTML = '<div class="muted">计算中…</div>';
   try {
     const payload = await api(`/screen/review?horizon=${horizon}&provider=${provider}`);
     if (!payload.screens) {
@@ -2388,6 +2399,13 @@ const TONE_CLASS = (label) =>
   label === "风险偏好回升" ? "good" : label === "风险偏好回落" ? "bad" : "muted";
 
 async function loadOverseas() {
+  // 取数期间给两个盒子 busy 提示：快照抓取要几秒，白屏等会被当成卡死
+  const summary = $("os-summary");
+  const groups = $("os-groups");
+  if (summary && groups) {
+    summary.innerHTML = '<div class="muted">取数中…</div>';
+    groups.innerHTML = "";
+  }
   const [data, indexes] = await Promise.all([
     api("/overseas/analysis").catch((error) => ({ available: false, reason: error.message })),
     loadIndexes().catch(() => null),
@@ -3227,7 +3245,13 @@ async function ensureCustomSpec() {
 }
 
 async function renderCustomSpec() {
-  const spec = await ensureCustomSpec();
+  let spec;
+  try {
+    spec = await ensureCustomSpec();
+  } catch (error) {
+    $("cs-spec").innerHTML = `<div class="muted">自定义指标口径加载失败：${escapeAttr(error.message)}</div>`;
+    return;
+  }
   const target = $("cs-spec");
   if (!spec) return;
   const customRows = (spec.custom_indicators || [])
@@ -3510,6 +3534,8 @@ wireImport("pf", "/api/portfolio/import", loadPortfolio);
 let SECTOR_FLOW = null;
 
 async function loadSectorFlow() {
+  const target = $("sec-flow");
+  if (target) target.innerHTML = '<div class="muted">取数中…</div>';
   SECTOR_FLOW = await api("/sector-flow").catch((error) => ({ available: false, reason: error.message }));
   renderSectorFlow();
 }
@@ -4852,15 +4878,23 @@ function renderWatchlist() {
   });
   filter.querySelectorAll("[data-wl-cat-del]").forEach((el) => {
     el.addEventListener("click", async () => {
-      WATCHLIST = await api(`/watchlist/categories/${encodeURIComponent(el.dataset.wlCatDel)}`, null, "DELETE");
-      renderWatchlist();
+      try {
+        WATCHLIST = await api(`/watchlist/categories/${encodeURIComponent(el.dataset.wlCatDel)}`, null, "DELETE");
+        renderWatchlist();
+      } catch (error) {
+        toast(`删除分类失败：${error.message}`, "error");
+      }
     });
   });
   $("wl-table").querySelectorAll("[data-wl-del]").forEach((el) => {
     el.addEventListener("click", async () => {
-      WATCHLIST = await api(`/watchlist/${encodeURIComponent(el.dataset.wlDel)}`, null, "DELETE");
-      renderWatchlist();
-      refreshWatchButtons();
+      try {
+        WATCHLIST = await api(`/watchlist/${encodeURIComponent(el.dataset.wlDel)}`, null, "DELETE");
+        renderWatchlist();
+        refreshWatchButtons();
+      } catch (error) {
+        toast(`移除失败：${error.message}`, "error");
+      }
     });
   });
 }
