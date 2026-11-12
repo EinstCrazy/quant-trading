@@ -1178,3 +1178,31 @@ class TestEscapeAudit:
         """旧的只转义引号的写法清零——& < > 同样能破坏属性与上下文。"""
         html = self._html()
         assert '.replace(/"/g, "&quot;")' not in html
+
+
+class TestReviewProviderSwitch:
+    """复盘数据源切换：主源（akshare）被限流补不进数据时，切 baostock
+    立即复盘——面板按源隔离，切源不是绕过口径，是用另一份已备好的面板。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_provider_select_exists(self):
+        html = self._html()
+        assert '<select id="pf-provider"' in html
+        assert '<option value="baostock">' in html
+
+    def test_load_review_carries_provider(self):
+        html = self._html()
+        assert (
+            'REVIEW = await api(`/portfolio/review${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`);'
+            in html
+        )
+
+    def test_switch_reloads_review_and_history(self):
+        html = self._html()
+        assert '$("pf-provider").addEventListener("change"' in html
+        assert "loadReviewHistory();" in html  # 复盘历史也跟着源走

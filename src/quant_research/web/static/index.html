@@ -584,6 +584,11 @@
       <div class="card">
         <h3>复盘与明日关注 <span class="muted" id="pf-review-note"></span></h3>
         <div class="row" style="margin-bottom:8px">
+          <label>数据源</label>
+          <select id="pf-provider" title="复盘读哪个数据源的面板：主源被限流时切备用源立即复盘（两家前复权基准不同，价位会有小差异）">
+            <option value="akshare" selected>akshare</option>
+            <option value="baostock">baostock</option>
+          </select>
           <button class="btn ghost" id="pf-save">存为今日复盘</button>
           <span class="muted" id="pf-compare"></span>
         </div>
@@ -2368,6 +2373,10 @@ function renderStockVolume() {
 renderVolumeRanking();
 $("vol-refresh").addEventListener("click", loadVolume);
 $("vol-provider").addEventListener("change", loadVolume);
+  $("pf-provider").addEventListener("change", () => {
+    loadReview();
+    loadReviewHistory();
+  });
 
 /* ---------- 外围盘 ---------- */
 /* 外围给的是开盘环境，不是全天走势。所以每条传导都写清「前提」：前提不成立，
@@ -3850,7 +3859,9 @@ async function loadPortfolio() {
 async function loadReview() {
   $("pf-status").textContent = "复盘计算中…";
   try {
-    REVIEW = await api("/portfolio/review");
+    // 数据源可选：主源（akshare）限流补不进数据时，切备用源立即复盘
+    const provider = $("pf-provider") ? $("pf-provider").value : "";
+    REVIEW = await api(`/portfolio/review${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`);
     renderReview();
     renderReviewPlan(REVIEW.position_plan);
     $("pf-status").textContent = "";
