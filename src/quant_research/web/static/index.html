@@ -880,7 +880,8 @@ function skeleton(target, mode = "table") {
 function renderError(target, message, retry) {
   if (!target) return;
   const id = `retry-${Math.random().toString(36).slice(2, 8)}`;
-  target.innerHTML = `<div class="error-box"><b>加载失败</b>${message}
+  // 错误消息来自后端异常文本，进 innerHTML 前转义——<细节> 不能变成标签
+  target.innerHTML = `<div class="error-box"><b>加载失败</b>${escapeAttr(message)}
     ${retry ? `<button id="${id}">重试</button>` : ""}</div>`;
   if (retry) $(id).addEventListener("click", () => retry());
 }
@@ -1542,7 +1543,7 @@ function renderExperiments(items) {
       fmtMetric("max_drawdown", exp.metrics?.max_drawdown),
       String(exp.trade_count),
       fmtMoney(exp.final_equity),
-      `<input class="exp-note" data-note="${exp.id}" value="${String(exp.note || "").replace(/"/g, "&quot;")}" placeholder="为什么记下它">`,
+      `<input class="exp-note" data-note="${exp.id}" value="${escapeAttr(exp.note || "")}" placeholder="为什么记下它">`,
       `<button class="btn" data-load="${exp.id}">载入</button>`,
     ])
   );
@@ -2446,8 +2447,8 @@ function renderOverseas() {
     note.textContent = "";
     const reason = OVERSEAS.reason || OVERSEAS.error || "没有外围数据";
     summary.innerHTML = reason.includes("还没有")
-      ? `<div class="empty">${reason}</div>`  /* 没抓过快照：这不是故障，按钮就在旁边 */
-      : `<div class="error-box"><b>加载失败</b>${reason}<button id="os-retry">重试</button></div>`;
+      ? `<div class="empty">${escapeAttr(reason)}</div>`  /* 没抓过快照：这不是故障，按钮就在旁边 */
+      : `<div class="error-box"><b>加载失败</b>${escapeAttr(reason)}<button id="os-retry">重试</button></div>`;
     if (!reason.includes("还没有")) $("os-retry").addEventListener("click", loadOverseas);
     groupsBox.innerHTML = "";
     signalsBox.innerHTML = "";
@@ -2673,9 +2674,9 @@ function renderOvOverseas(o, indexes) {
     note.textContent = "";
     const reason = o.reason || o.error || "没有外围数据";
     if (reason.includes("还没有")) {
-      target.innerHTML = `<div class="empty">${reason}</div>${ovGoto("overseas", "去抓一次外围快照")}`;
+      target.innerHTML = `<div class="empty">${escapeAttr(reason)}</div>${ovGoto("overseas", "去抓一次外围快照")}`;
     } else {
-      target.innerHTML = `<div class="error-box"><b>加载失败</b>${reason}<button id="ov-os-retry">重试</button></div>`;
+      target.innerHTML = `<div class="error-box"><b>加载失败</b>${escapeAttr(reason)}<button id="ov-os-retry">重试</button></div>`;
       $("ov-os-retry").addEventListener("click", () => loadDashboard());
     }
     bindOvGoto();
@@ -3650,7 +3651,7 @@ function renderSectors() {
   };
   const rows = SECTORS.sectors.map((row) => {
     const thin = row.n <= 1; // 单票板块没有「领涨/领跌」可言
-    return `<tr data-sector="${row.sector.replace(/"/g, "&quot;")}">
+    return `<tr data-sector="${escapeAttr(row.sector)}">
       <td>${row.sector}</td>
       <td>${row.n}</td>
       <td>${pctCell(row.change_1d)}</td>
@@ -3865,10 +3866,12 @@ function renderHoldings() {
   const names = HOLDINGS.account_names || [];
   const details = HOLDINGS.account_details || [];
   const noteOf = (n) => (details.find((d) => d.name === n) || {}).note || "";
+  // 账户名与备注都是手打的：进 innerHTML 前转义——名字里一个引号
+  // 就能把 value 属性断掉，一个 <img onerror> 就是 XSS
   const options = names
     .map((n) => {
       const note = noteOf(n);
-      return `<option value="${n}">${n}${note ? `（${note}）` : ""}</option>`;
+      return `<option value="${escapeAttr(n)}">${escapeAttr(n)}${note ? `（${escapeAttr(note)}）` : ""}</option>`;
     })
     .join("");
   const picked = $("pf-account").value || "默认";
@@ -3881,7 +3884,7 @@ function renderHoldings() {
   const active = filter.value;
   filter.innerHTML =
     '<option value="">全部账户</option>' +
-    names.map((name) => `<option value="${name}"${name === active ? " selected" : ""}>${name}</option>`).join("");
+    names.map((name) => `<option value="${escapeAttr(name)}"${name === active ? " selected" : ""}>${escapeAttr(name)}</option>`).join("");
   const visible = HOLDINGS.positions.filter((p) => !active || (p.account || "默认") === active);
   /* 账户汇总 + 仓位占比：占比分母 = 该账户**有现价**的市值合计——
      无现价的票进不了分母（否则占比没法定义），在汇总里写明 N/M 只有行情，
@@ -3902,7 +3905,7 @@ function renderHoldings() {
     const a = byAccount[pos.account || "默认"];
     if (!a || !a.mv || pos.market_value == null) return "";
     const w = (pos.market_value / a.mv) * 100;
-    return `<span title="占${pos.account || "默认"}账户有现价市值（${fmt(a.mv, 2)}）的比重">${w.toFixed(1)}%</span>`;
+    return `<span title="占${escapeAttr(pos.account || "默认")}账户有现价市值（${fmt(a.mv, 2)}）的比重">${w.toFixed(1)}%</span>`;
   };
   const rows = visible.map((p) => {
     const change = p.change_pct == null ? "—" : `${p.change_pct > 0 ? "+" : ""}${p.change_pct.toFixed(2)}%`;
@@ -3927,12 +3930,12 @@ function renderHoldings() {
         `<span class="${pnlTone}">${pnl}</span>`,
         `<span class="${pnlTone}">${pnlPct}</span>`,
         `<span class="${tone}">${change}</span>`,
-        `<input id="pf-e-note" value="${(p.note || "").replace(/"/g, "&quot;")}" style="width:120px">`,
+        `<input id="pf-e-note" value="${escapeAttr(p.note || "")}" style="width:120px">`,
         `<a data-pf-save class="sym-link" style="cursor:pointer">保存</a> <a data-pf-cancel class="muted" style="cursor:pointer">取消</a>`,
       ];
     }
     return [
-      who,
+      escapeAttr(who),
       symbolCell(p.symbol),
       p.name || "—",
       fmt(p.shares, 0),
@@ -3943,14 +3946,14 @@ function renderHoldings() {
       `<span class="${pnlTone}">${pnl}</span>`,
       `<span class="${pnlTone}">${pnlPct}</span>`,
       `<span class="${tone}">${change}</span>`,
-      p.note || "",
-      `<a data-pf-edit="${p.symbol}" data-pf-account="${who}" class="muted" style="cursor:pointer">编辑</a> <a data-pf-del="${p.symbol}" data-pf-account="${who}" class="muted" style="cursor:pointer">移除</a>`,
+      escapeAttr(p.note || ""),
+      `<a data-pf-edit="${p.symbol}" data-pf-account="${escapeAttr(who)}" class="muted" style="cursor:pointer">编辑</a> <a data-pf-del="${p.symbol}" data-pf-account="${escapeAttr(who)}" class="muted" style="cursor:pointer">移除</a>`,
     ];
   });
   const totals = Object.entries(byAccount)
     .map(([name, a]) => {
       const parts = [
-        `<b>${name}</b>：市值 <b>${fmt(a.mv, 2)}</b>`,
+        `<b>${escapeAttr(name)}</b>：市值 <b>${fmt(a.mv, 2)}</b>`,
         `${a.valued}/${a.n} 只有行情`,
       ];
       if (a.mv) {
@@ -4822,7 +4825,7 @@ function renderWatchlist() {
         <td class="${tone}">${change}</td>
         <td>${rsi}</td>
         <td>${ma}</td>
-        <td class="muted">${s.note || ""}</td>
+        <td class="muted">${escapeAttr(s.note || "")}</td>
         <td><a data-wl-del="${s.symbol}" class="muted" style="cursor:pointer">移除</a></td>
       </tr>`;
     });

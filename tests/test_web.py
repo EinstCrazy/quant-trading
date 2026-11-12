@@ -1130,3 +1130,51 @@ class TestHoldingsTotals:
         html = self._html()
         render = html[html.index("const weightOf") : html.index("const rows = visible.map")]
         assert 'return ""' in render
+
+
+class TestEscapeAudit:
+    """用户手打的账户名/备注进 innerHTML 前必须转义——名字里一个引号
+    断掉 value 属性，一个 <img onerror> 就是 XSS。"""
+
+    @staticmethod
+    def _html() -> str:
+        return (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_account_options_escaped(self):
+        """账户下拉（录入 + 筛选）：名字与备注都过 escapeAttr。"""
+        html = self._html()
+        render = html[html.index("function renderHoldings()") :]
+        render = render[: render.index("$(" + '"pf-table"')]
+        assert '<option value="${escapeAttr(n)}">${escapeAttr(n)}' in render
+        assert "（${escapeAttr(note)}）" in render
+        assert '<option value="${escapeAttr(name)}"' in render
+
+    def test_positions_note_and_account_escaped(self):
+        """持仓备注（编辑行 + 展示行）与账户名（行首、data-* 属性、占比 title、汇总）转义。"""
+        html = self._html()
+        render = html[html.index("function renderHoldings()") :]
+        render = render[: render.index("$(" + '"pf-table"')]
+        assert 'escapeAttr(p.note || "")' in render
+        assert "escapeAttr(who)" in render
+        assert "escapeAttr(pos.account" in render  # 占比 title
+        assert "<b>${escapeAttr(name)}</b>" in render  # 汇总账户名
+
+    def test_render_error_message_escaped(self):
+        """错误消息来自后端异常文本，进 innerHTML 前转义。"""
+        html = self._html()
+        render = html[html.index("function renderError(") :]
+        assert (
+            'target.innerHTML = `<div class="error-box"><b>加载失败</b>${escapeAttr(message)}'
+            in render
+        )
+
+    def test_overseas_reason_escaped(self):
+        html = self._html()
+        assert html.count("${escapeAttr(reason)}") >= 4  # os 页 2 处 + 概览 2 处
+
+    def test_no_bare_quot_only_escape_left(self):
+        """旧的只转义引号的写法清零——& < > 同样能破坏属性与上下文。"""
+        html = self._html()
+        assert '.replace(/"/g, "&quot;")' not in html

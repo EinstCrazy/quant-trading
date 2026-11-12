@@ -445,6 +445,16 @@
 
 ### Fixed
 
+- 界面转义审计（修 A）：用户手打的文本进 innerHTML 前统一 escapeAttr
+  - 账户名/备注：录入下拉、筛选下拉、行首、data-* 属性、仓位占比
+    title、账户汇总块——名字里一个引号断掉 value 属性，一个
+    <img onerror> 就是 XSS
+  - 持仓备注（编辑行 + 展示行）、自选备注、实验备注：原先只转义
+    引号的写法清零（& < > 同样能破坏属性）
+  - renderError 的 message、overseas reason（页内 2 处 + 概览 2 处）：
+    后端异常文本里的标签不再生效
+  - node 沙盒 ESCAPE_OK（XSS payload 全部渲染为文本）；测试 +5
+
 - 复盘「补采这只票」假成功修复：采集端点失败也返回 HTTP 200，失败详情在
   payload.failed 里——前端不看它，「akshare 被限流」就被报成「已补进样本
   面板」。现在失败如实报（带原因首行、按钮恢复可重试）；成功 toast 带行数；
