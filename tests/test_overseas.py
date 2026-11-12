@@ -361,7 +361,7 @@ class TestAPI:
         assert "一项都没抓到" in response.json()["detail"]
 
     def test_fetch_swallows_broken_interfaces_and_reports_them(self, monkeypatch):
-        """三个接口各自失败，缺的进 missing，而不是整个 fetch 抛异常。"""
+        """四个接口各自失败，缺的进 missing，而不是整个 fetch 抛异常。"""
 
         class Boom(Exception):
             pass
@@ -372,11 +372,161 @@ class TestAPI:
         import akshare as ak
 
         monkeypatch.setattr(ak, "index_global_spot_em", broken)
+        monkeypatch.setattr(ak, "stock_hk_index_spot_sina", broken)
         monkeypatch.setattr(ak, "futures_foreign_commodity_realtime", broken)
         monkeypatch.setattr(ak, "bond_zh_us_rate", broken)
 
         snapshot = fetch()
 
-        assert len(snapshot["missing"]) == 3
+        assert len(snapshot["missing"]) == 4
         assert snapshot["quotes"] == []
         assert json.dumps(snapshot)  # 可序列化（能落盘）
+
+
+class TestHKQuotes:
+    """港股信息：东财全球指数接口对港股只回名称不回数值——混进来就是
+    一行「有名无实」的记录，看着像有数据其实全是 None。港股走新浪
+    专用接口（代码列直接回 HSI/HSCEI/HSTECH），并补恒生科技指数。"""
+
+    def test_group_order_includes_hstech(self):
+        """港股组内顺序 HSI → HSCEI → HSTECH，分组平均三只都算。"""
+        snapshot = _snapshot(
+            [
+                _quote("HSI", "恒生指数", -0.98, "港股"),
+                _quote("HSCEI", "恒生中国企业指数", -1.14, "港股"),
+                _quote("HSTECH", "恒生科技指数", -1.41, "港股"),
+            ]
+        )
+        groups = analyze(snapshot)["groups"]
+        hk = next(g for g in groups if g["name"] == "港股")
+        assert [row["code"] for row in hk["rows"]] == ["HSI", "HSCEI", "HSTECH"]
+        assert hk["avg_change"] == pytest.approx((-0.98 - 1.14 - 1.41) / 3, abs=1e-2)
+
+    def test_hstech_signal_on_big_move(self):
+        """恒生科技 ≥±1.5%：科技成长的 A/H 联动信号，带前提。"""
+        snapshot = _snapshot([_quote("HSTECH", "恒生科技指数", -1.8, "港股")])
+        signals = analyze(snapshot)["signals"]
+        assert len(signals) == 1
+        assert signals[0]["market"] == "恒生科技指数"
+        assert "成长" in signals[0]["impact"]
+        assert signals[0]["condition"]  # 传导必须带前提
+
+    def test_hstech_small_move_triggers_nothing(self):
+        snapshot = _snapshot([_quote("HSTECH", "恒生科技指数", -1.2, "港股")])
+        assert analyze(snapshot)["signals"] == []
+
+    def test_fetch_takes_hk_from_sina_not_global(self, monkeypatch):
+        """抓取：港股数值来自新浪接口；全球指数里的港股 NaN 行不进 quotes。"""
+        import pandas as pd
+
+        global_frame = pd.DataFrame(
+            {
+                "代码": ["DJIA", "HSI", "HSCEI"],
+                "名称": ["道琼斯", "恒生指数", "国企指数"],
+                "最新价": [52000.0, float("nan"), float("nan")],
+                "涨跌幅": [0.5, float("nan"), float("nan")],
+                "最新行情时间": ["2026-11-12 05:00:00"] * 3,
+            }
+        )
+        hk_frame = pd.DataFrame(
+            {
+                "代码": ["HSI", "HSCEI", "HSTECH", "CES100"],
+                "名称": ["恒生指数", "恒生中国企业指数", "恒生科技指数", "中华港股通精选100"],
+                "最新价": [24315.92, 8171.45, 4027.06, 5129.2],
+                "涨跌幅": [-0.98, -1.14, -1.41, -1.07],
+            }
+        )
+
+        class _FakeAk:
+            @staticmethod
+            def index_global_spot_em():
+                return global_frame
+
+            @staticmethod
+            def stock_hk_index_spot_sina():
+                return hk_frame
+
+            @staticmethod
+            def futures_foreign_commodity_realtime(symbol):
+                return pd.DataFrame(columns=["名称", "最新价", "涨跌幅", "日期", "行情时间"])
+
+            @staticmethod
+            def bond_zh_us_rate():
+                return pd.DataFrame(
+                    {
+                        "日期": ["2026-11-12"],
+                        "美国国债收益率10年": [4.1],
+                        "中国国债收益率10年": [1.8],
+                    }
+                )
+
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "akshare":
+                return _FakeAk
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        snapshot = fetch()
+        hk = [q for q in snapshot["quotes"] if q["group"] == "港股"]
+        assert {q["code"] for q in hk} == {"HSI", "HSCEI", "HSTECH"}
+        hsi = next(q for q in hk if q["code"] == "HSI")
+        assert hsi["price"] == 24315.92 and hsi["change_pct"] == -0.98
+        # 全球指数里的道琼斯照常进
+        assert any(q["code"] == "DJIA" for q in snapshot["quotes"])
+        # 港股行不重复（全球指数的 NaN 港股行被排除）
+        assert len([q for q in snapshot["quotes"] if q["code"] == "HSI"]) == 1
+
+    def test_hk_fetch_failure_named_in_missing(self, monkeypatch):
+        """新浪接口挂了 → missing 里点名「港股指数」，全球指数照常。"""
+        import pandas as pd
+
+        class _FakeAk:
+            @staticmethod
+            def index_global_spot_em():
+                return pd.DataFrame(
+                    {
+                        "代码": ["DJIA"],
+                        "名称": ["道琼斯"],
+                        "最新价": [52000.0],
+                        "涨跌幅": [0.5],
+                        "最新行情时间": ["2026-11-12 05:00:00"],
+                    }
+                )
+
+            @staticmethod
+            def stock_hk_index_spot_sina():
+                raise ConnectionError("sina down")
+
+            @staticmethod
+            def futures_foreign_commodity_realtime(symbol):
+                return pd.DataFrame(columns=["名称", "最新价", "涨跌幅", "日期", "行情时间"])
+
+            @staticmethod
+            def bond_zh_us_rate():
+                return pd.DataFrame(
+                    {
+                        "日期": ["2026-11-12"],
+                        "美国国债收益率10年": [4.1],
+                        "中国国债收益率10年": [1.8],
+                    }
+                )
+
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "akshare":
+                return _FakeAk
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        snapshot = fetch()
+        assert any("港股指数" in m for m in snapshot["missing"])
+        assert any(q["code"] == "DJIA" for q in snapshot["quotes"])  # 独立失败不拖垮

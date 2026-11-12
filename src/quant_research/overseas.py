@@ -39,7 +39,7 @@ _FILENAME = "latest.json"
 # 关注清单：代码 → 分组。不追求全，只留对 A 股有传导路径的。
 _INDEX_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("美股", ("DJIA", "SPX", "NDX")),
-    ("港股", ("HSI", "HSCEI")),
+    ("港股", ("HSI", "HSCEI", "HSTECH")),
     ("亚太", ("N225", "KS11", "TWII", "AS51")),
     ("欧洲", ("SX5E", "GDAXI", "FCHI", "FTSE")),
     ("汇率与商品", ("UDI", "CRB")),
@@ -177,7 +177,14 @@ def fetch() -> dict[str, Any]:
         import akshare as ak
 
         frame = ak.index_global_spot_em()
-        wanted = {code for _, codes in _INDEX_GROUPS for code in codes}
+        # 港股单独抓（见下）：这个接口对港股只回名称，价格涨跌幅常是空占位，
+        # 混进来就是一行有名无实的记录——看着像有数据，其实全是 None
+        wanted = {
+            code
+            for _, codes in _INDEX_GROUPS
+            for code in codes
+            if code not in ("HSI", "HSCEI", "HSTECH")
+        }
         for _, row in frame.iterrows():
             code = str(row["代码"]).strip()
             if code not in wanted:
@@ -195,6 +202,30 @@ def fetch() -> dict[str, Any]:
             )
     except Exception as exc:  # noqa: BLE001 - 网络/接口都可能坏，不能拖垮整个快照
         missing.append(f"全球指数：{type(exc).__name__} {exc}")
+
+    try:
+        import akshare as ak
+
+        # 港股走新浪：A/H 联动的近邻，信号与情绪分都指望它有真实数值
+        frame = ak.stock_hk_index_spot_sina()
+        hk_codes = {"HSI", "HSCEI", "HSTECH"}
+        for _, row in frame.iterrows():
+            code = str(row["代码"]).strip()
+            if code not in hk_codes:
+                continue
+            quotes.append(
+                {
+                    "group": "港股",
+                    "code": code,
+                    "name": str(row["名称"]).strip(),
+                    "price": _num(row["最新价"]),
+                    "change_pct": _num(row["涨跌幅"]),
+                    # 接口不带行情时间：用抓取时刻近似（港股盘中 15 分钟延迟内）
+                    "as_of": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        missing.append(f"港股指数：{type(exc).__name__} {str(exc)[:60]}")
 
     try:
         import akshare as ak
@@ -374,6 +405,22 @@ def _signals(quotes: list[dict[str, Any]], rates: dict[str, Any]) -> list[dict[s
                 "change": hsi["change_pct"],
                 "impact": direction,
                 "condition": "A/H 溢价本身已在极端位置时，联动会减弱",
+            }
+        )
+
+    hstech = find("HSTECH")
+    if hstech and hstech["change_pct"] is not None and abs(hstech["change_pct"]) >= 1.5:
+        direction = (
+            "恒生科技走弱 → 隔夜/盘中科技情绪直接传导，A 股成长（半导体、AI 硬件、互联网）开盘承压"
+            if hstech["change_pct"] < 0
+            else "恒生科技走强 → 科技情绪回暖，A 股成长开盘有联动支撑"
+        )
+        signals.append(
+            {
+                "market": hstech["name"],
+                "change": hstech["change_pct"],
+                "impact": direction,
+                "condition": "港股科技与 A 股成长的联动靠南向资金与共同权重股（腾讯、阿里、美团）；若南向逆势净买入，联动减弱",
             }
         )
 
