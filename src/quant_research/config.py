@@ -364,12 +364,21 @@ class Settings:
 
 
 def _find_default_settings_path() -> Path:
-    """Return the project-level settings YAML if it exists."""
-    start = Path(__file__).resolve().parent
-    for candidate in (start, *start.parents):
-        settings_file = candidate / "config" / "settings.yaml"
-        if settings_file.is_file():
-            return settings_file
+    """Return the project-level settings YAML if it exists.
+
+    顺序：先从当前工作目录（项目根）向上找，再从包目录向上找。
+
+    包内 ``src/quant_research/config/settings.yaml`` 是最小默认模板（只有
+    data/backtest 两段）；项目根的 ``config/settings.yaml`` 才是完整配置。
+    之前只从包目录向上找——永远先命中包内模板，根目录那份修改从不生效
+    （provider 之类的设置改了也没反应），这里按「项目配置优先于包内默认」
+    修正。
+    """
+    for start in (Path.cwd().resolve(), Path(__file__).resolve().parent):
+        for candidate in (start, *start.parents):
+            settings_file = candidate / "config" / "settings.yaml"
+            if settings_file.is_file():
+                return settings_file
 
     raise FileNotFoundError(
         "Could not find config/settings.yaml in the project tree. "

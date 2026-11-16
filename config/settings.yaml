@@ -12,7 +12,10 @@ backtest:
 
 # Daily A-share collection. Run `quant-collect --help` for CLI overrides.
 collection:
-  provider: akshare        # akshare | baostock | sse | futu | mock
+  # 2026-11-12 切 baostock 为主源：东财连续两天限流（持仓补采 0 成功），
+  # baostock 稳定不限流、单票历史更长；板块流/ETF/外围/广度仍走 akshare
+  # （独立模块，不经过这个 provider 通道）
+  provider: baostock       # akshare | baostock | sse | futu | mock
   symbols: []              # empty = use --symbols / --all / whatever is already stored
   output_directory: data/raw
   format: parquet          # parquet | csv
