@@ -95,13 +95,49 @@ def _path(root: Path, symbol: str) -> Path:
     return root / DIRECTORY / f"{to_bare_symbol(symbol)}.parquet"
 
 
+def _fetch_sina(bare: str, start: date | None, end: date | None) -> pd.DataFrame:
+    """新浪备胎：东财限流时顶上。
+
+    接口不支持起止参数（取全历史后本地切片），且**没有复权**——ETF
+    分红除权远少于个股，但口径必须如实：source 标 ``sina-unadjusted``，
+    store 的 meta 会记录它，别让未复权数据冒充 qfq。
+    """
+    import akshare as ak
+
+    prefix = "sh" if bare[0] == "5" else "sz"
+    raw = ak.fund_etf_hist_sina(symbol=f"{prefix}{bare}")
+    if raw is None or raw.empty:
+        raise ValueError(f"ETF {bare}（新浪）没有返回数据")
+    missing = {"date", "open", "high", "low", "close", "volume"} - set(raw.columns)
+    if missing:
+        raise ValueError(f"ETF {bare}（新浪）返回缺少列：{sorted(missing)}")
+    frame = raw.set_index("date")
+    for col in ("open", "high", "low", "close", "volume"):
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    if "amount" not in frame.columns:
+        frame["amount"] = float("nan")
+    frame = normalise_bars(frame, source=f"etf:{bare}:sina-unadjusted")
+    start_ts = pd.Timestamp(start) if start else None
+    end_ts = pd.Timestamp(end) if end else None
+    if start_ts is not None or end_ts is not None:
+        frame = frame.loc[start_ts:end_ts]
+    frame.attrs["source"] = "sina-unadjusted"
+    return frame
+
+
 def fetch(
     symbol: str,
     adjust: str = "qfq",
     start: date | None = None,
     end: date | None = None,
 ) -> pd.DataFrame:
-    """从东财拉 ETF 日线（fund_etf_hist_em），映射成标准 bar 列。"""
+    """拉 ETF 日线，映射成标准 bar 列。东财主路径、新浪备胎。
+
+    东财接口连续限流（RemoteDisconnected）时 ETF 刷新整体失败，而
+    baostock 不支持 ETF——新浪是唯一的备胎。备胎没有复权，source 与
+    meta 都会如实标注，不让它冒充 qfq。
+    """
     import akshare as ak
 
     bare = to_bare_symbol(symbol)
@@ -115,8 +151,9 @@ def fetch(
             end_date=end_text,
             adjust=adjust,
         )
-    except Exception as exc:
-        raise RuntimeError(f"ETF {bare} 抓取失败：{type(exc).__name__}: {exc}") from exc
+    except Exception:
+        # 东财限流/断连等任何失败换备胎；备胎失败抛它自己的真错
+        return _fetch_sina(bare, start, end)
     if raw is None or raw.empty:
         raise ValueError(f"ETF {bare} 没有返回数据")
     missing = {"日期", "开盘", "收盘", "最高", "最低", "成交量"} - set(raw.columns)
@@ -136,6 +173,7 @@ def store(root: Path, symbol: str, frame: pd.DataFrame) -> Path:
         "saved_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "rows": len(frame),
         "as_of": str(frame.index[-1].date()) if len(frame) else None,
+        "source": getattr(frame, "attrs", {}).get("source", "em"),
     }
     target.with_suffix(".json").write_text(
         json.dumps(meta_info, ensure_ascii=False), encoding="utf-8"

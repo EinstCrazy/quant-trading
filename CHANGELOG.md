@@ -445,6 +445,12 @@
 
 ### Fixed
 
+- **ETF 更新失败**（159915 等）：东财 `fund_etf_hist_em` 连续限流
+  （RemoteDisconnected），而 baostock 不支持 ETF——ETF 刷新整体失败。
+  加新浪备胎 `fund_etf_hist_sina`（全历史 3624 行到最新交易日）：
+  接口无复权，source/meta 如实标 `sina-unadjusted`，不冒充 qfq；
+  ETF 分红除权少，短期指标与区间涨幅影响有限。真实冒烟 159915
+  备胎刷新成功。测试 +3。
 - 界面整理与优化（遗留排查项清零）：
   - 错误处理补齐：自选股删除（股票/分类）、自定义指标口径加载失败
     都有 toast/容器提示，不再无声吞错

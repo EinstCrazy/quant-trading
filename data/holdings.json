@@ -8,14 +8,6 @@
       "symbol": "000559.SZ",
       "account": "ycc"
     },
-    "ycc::600435.SH": {
-      "shares": 3800.0,
-      "cost": 12.3,
-      "note": "",
-      "added_at": "2026-11-11T05:56:01+00:00",
-      "symbol": "600435.SH",
-      "account": "ycc"
-    },
     "ycc::603006.SH": {
       "symbol": "603006.SH",
       "account": "ycc",
@@ -32,13 +24,29 @@
       "note": "",
       "added_at": "2026-11-11T14:10:35+00:00"
     },
-    "ycc::300129.SZ": {
-      "symbol": "300129.SZ",
+    "ycc::588350.SH": {
+      "symbol": "588350.SH",
       "account": "ycc",
-      "shares": 3000.0,
-      "cost": 14.77,
+      "shares": 50100.0,
+      "cost": 1.15,
       "note": "",
-      "added_at": "2026-11-11T14:11:05+00:00"
+      "added_at": "2026-11-17T01:51:59+00:00"
+    },
+    "ycc::002878.SZ": {
+      "symbol": "002878.SZ",
+      "account": "ycc",
+      "shares": 2000.0,
+      "cost": 14.68,
+      "note": "",
+      "added_at": "2026-11-17T01:52:34+00:00"
+    },
+    "ycc::002639.SZ": {
+      "symbol": "002639.SZ",
+      "account": "ycc",
+      "shares": 1500.0,
+      "cost": 18.7,
+      "note": "",
+      "added_at": "2026-11-17T01:53:04+00:00"
     }
   },
   "accounts": []

@@ -383,3 +383,100 @@ class _FakeSettings:
 
         self.data = _Data()
         self.data.directory = directory
+
+
+class TestEtfSinaFallback:
+    """新浪备胎：东财限流（RemoteDisconnected）时 ETF 刷新不再整体失败。
+
+    baostock 不支持 ETF，新浪是唯一备胎；它没有复权——source 与
+    meta 必须如实标注 sina-unadjusted，别让未复权数据冒充 qfq。
+    """
+
+    @staticmethod
+    def _import_ak(monkeypatch, hist_em, hist_sina):
+        """akshare 是函数内 import，用 fake import 注入 stub。"""
+        import builtins
+        import types
+
+        fake = types.SimpleNamespace(fund_etf_hist_em=hist_em, fund_etf_hist_sina=hist_sina)
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "akshare":
+                return fake
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    def test_em_failure_falls_back_to_sina(self, tmp_path, monkeypatch):
+        """东财抛 RemoteDisconnected → 新浪接管，attrs 标记未复权。"""
+        import pandas as pd
+
+        def broken(**kwargs):
+            raise ConnectionError("('Connection aborted.', RemoteDisconnected(...))")
+
+        sina_frame = pd.DataFrame(
+            {
+                "date": ["2026-11-13", "2026-11-16"],
+                "open": [2.53, 2.41],
+                "high": [2.55, 2.41],
+                "low": [2.43, 2.33],
+                "close": [2.44, 2.33],
+                "volume": [4.76e9, 4.72e9],
+                "amount": [1.18e10, 1.12e10],
+            }
+        )
+
+        self._import_ak(monkeypatch, broken, lambda symbol: sina_frame)
+        frame = etf_mod.fetch("159915")
+        assert frame.attrs["source"] == "sina-unadjusted"
+        assert str(frame.index[-1].date()) == "2026-11-16"
+        assert float(frame["close"].iloc[-1]) == pytest.approx(2.33)
+
+    def test_sina_meta_records_unadjusted_source(self, tmp_path, monkeypatch):
+        """备胎落盘 → meta 里 source=sina-unadjusted，口径可核对。"""
+        import pandas as pd
+
+        def broken(**kwargs):
+            raise ConnectionError("em down")
+
+        sina_frame = pd.DataFrame(
+            {
+                "date": ["2026-11-13", "2026-11-16"],
+                "open": [2.53, 2.41],
+                "high": [2.55, 2.41],
+                "low": [2.43, 2.33],
+                "close": [2.44, 2.33],
+                "volume": [4.76e9, 4.72e9],
+                "amount": [1.18e10, 1.12e10],
+            }
+        )
+        self._import_ak(monkeypatch, broken, lambda symbol: sina_frame)
+        frame = etf_mod.fetch("159915")
+        target = etf_mod.store(tmp_path, "159915", frame)
+        meta_info = json.loads(target.with_suffix(".json").read_text(encoding="utf-8"))
+        assert meta_info["source"] == "sina-unadjusted"
+        assert meta_info["as_of"] == "2026-11-16"
+
+    def test_em_source_untagged(self, monkeypatch):
+        """东财成功时 attrs 不带 source（meta 落默认 em）。"""
+
+        def ok_em(**kwargs):
+            return pd.DataFrame(
+                {
+                    "日期": ["2026-11-16"],
+                    "开盘": [2.41],
+                    "收盘": [2.33],
+                    "最高": [2.41],
+                    "最低": [2.33],
+                    "成交量": [4724979],
+                    "成交额": [1.12e10],
+                }
+            )
+
+        def fail_sina(symbol):
+            raise AssertionError("东财成功就不该碰备胎")
+
+        self._import_ak(monkeypatch, ok_em, fail_sina)
+        frame = etf_mod.fetch("159915")
+        assert frame.attrs.get("source") is None
