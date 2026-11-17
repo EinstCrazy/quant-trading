@@ -86,3 +86,100 @@ class TestIndexesAPI:
 
         assert payload["available"] is True
         assert payload["rows"][0]["last"] == pytest.approx(3015.0)
+
+
+class TestIndexFallback:
+    """指数日线备胎：东财限流（这几天连续发生）时切 baostock，不让
+    量能页的大盘口径整体失败。两家口径一致（指数不复权、amount 元）。"""
+
+    def test_em_failure_falls_back_to_baostock(self, monkeypatch):
+        """东财抛任何异常 → baostock 接管，attrs 标记来源。"""
+        import pandas as pd
+
+        def broken(symbol):
+            raise ConnectionError("em down")
+
+        monkeypatch.setattr(index_mod, "_fetch_em", broken)
+
+        hk_frame = pd.DataFrame(
+            {
+                "date": ["2026-11-13", "2026-11-16"],
+                "close": ["3600.5", "3634.35"],
+                "amount": ["770614169983.6", "706214352273.4"],
+            }
+        )
+        # baostock 真实路径会转数值；mock 里复刻这一步
+        for col in ("close", "amount"):
+            hk_frame[col] = pd.to_numeric(hk_frame[col], errors="coerce")
+        monkeypatch.setattr(
+            index_mod, "_fetch_baostock", lambda symbol: index_mod._normalize(hk_frame, symbol)
+        )
+
+        frame = index_mod.fetch("sh000001")
+        assert frame.attrs["source"] == "baostock"
+        assert len(frame) == 2
+        assert frame["close"].iloc[-1] == pytest.approx(3634.35)
+
+    def test_both_sources_failing_raises_baostock_error(self, monkeypatch):
+        """备胎也失败 → 抛备胎的错（比吞掉错误强）。"""
+
+        def broken(symbol):
+            raise ConnectionError("em down")
+
+        def bs_broken(symbol):
+            raise ValueError("baostock 没有返回数据")
+
+        monkeypatch.setattr(index_mod, "_fetch_em", broken)
+        monkeypatch.setattr(index_mod, "_fetch_baostock", bs_broken)
+        with pytest.raises(ValueError, match="baostock"):
+            index_mod.fetch("sh000001")
+
+    def test_baostock_path_logs_in_and_out(self, monkeypatch):
+        """备胎必须 login/logout 包裹——裸 query 返回 0 行（踩过的坑）。"""
+
+        calls: list[str] = []
+
+        class _FakeBs:
+            @staticmethod
+            def login():
+                calls.append("login")
+
+            @staticmethod
+            def logout():
+                calls.append("logout")
+
+            @staticmethod
+            def query_history_k_data_plus(code, fields, start_date, frequency):
+                assert code == "sh.000001"  # 代码映射：sh000001 → sh.000001
+                calls.append("query")
+
+                class _Rs:
+                    error_code = "0"
+
+                    @staticmethod
+                    def next():
+                        return False  # 返回空也要走 finally logout
+
+                return _Rs()
+
+        import types
+
+        fake = types.SimpleNamespace(
+            login=_FakeBs.login,
+            logout=_FakeBs.logout,
+            query_history_k_data_plus=_FakeBs.query_history_k_data_plus,
+        )
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "baostock":
+                return fake
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        with pytest.raises(ValueError, match="没有返回数据"):
+            index_mod._fetch_baostock("sh000001")
+        # login 在 query 前、logout 在其后（空结果也不能漏）
+        assert calls == ["login", "query", "logout"]

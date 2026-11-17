@@ -2089,7 +2089,7 @@ def _portfolio_payload(settings: Settings) -> dict[str, Any]:
 
 
 @router.get("/watchlist/analysis")
-def watchlist_analysis() -> dict[str, Any]:
+def watchlist_analysis(provider: str | None = None) -> dict[str, Any]:
     """自选个股的技术截面 + 基于已落盘样本的大盘宽度。
 
     「大盘」在这里只能诚实地叫作「已落盘样本的等权统计」：项目没有接指数行情，
@@ -2098,9 +2098,11 @@ def watchlist_analysis() -> dict[str, Any]:
     """
     settings = load_settings()
     data = watchlist_store.load(settings.data.directory)
+    # 与复盘/量能/选股一致：provider 可选，默认跟 settings
+    source = provider or settings.collection.provider
     try:
-        panel = _load_panel(settings.collection.provider, settings.collection.adjust)
-        bundle = _load_indicators(settings.collection.provider, settings.collection.adjust)
+        panel = _load_panel(source, settings.collection.adjust)
+        bundle = _load_indicators(source, settings.collection.adjust)
     except HTTPException as exc:
         # 没有落盘数据时大盘卡也看得见——只是空着，并说明为什么空着
         return {
@@ -2233,7 +2235,9 @@ def _sector_map(settings: Settings) -> tuple[dict[str, str], str | None]:
 
 @router.get("/sectors/movers")
 def sector_movers(
-    days: int = Query(default=5, ge=2, le=60), top: int = Query(default=8, ge=3, le=20)
+    days: int = Query(default=5, ge=2, le=60),
+    top: int = Query(default=8, ge=3, le=20),
+    provider: str | None = None,
 ) -> dict[str, Any]:
     """板块异动：近 ``days`` 日各板块成分股的等权涨幅与上涨占比。
 
@@ -2249,7 +2253,9 @@ def sector_movers(
             detail="板块表尚未建立：先运行 quant-symbols --sectors 建立行业归属",
         )
 
-    panel = _load_panel(settings.collection.provider, settings.collection.adjust)
+    # 主源限流补不进数据时，其他板块视图都能切源，这里没有道理例外
+    source = provider or settings.collection.provider
+    panel = _load_panel(source, settings.collection.adjust)
     close = panel.prices
     if len(close) < days + 1:
         raise HTTPException(

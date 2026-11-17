@@ -68,13 +68,14 @@ class TestIndexStore:
         assert index_mod.load(tmp_path, "sh000001") is None
 
     def test_fetch_rejects_a_frame_without_amount(self, monkeypatch):
+        """东财返回缺 amount 列 → 东财路径报错（fetch 会换备胎，这里直接测它）。"""
         import akshare as ak
 
         frame = pd.DataFrame({"date": ["2026-11-10"], "close": [3000.0]})
         monkeypatch.setattr(ak, "stock_zh_index_daily_em", lambda symbol: frame)
 
         with pytest.raises(ValueError, match="amount"):
-            index_mod.fetch("sh000001")
+            index_mod._fetch_em("sh000001")
 
     def test_index_market_volume_uses_the_real_amounts(self):
         from quant_research.volume import market_from_index

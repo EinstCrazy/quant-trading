@@ -39,13 +39,8 @@ def _path(root: Path, symbol: str) -> Path:
     return root / DIRECTORY / f"{symbol}.parquet"
 
 
-def fetch(symbol: str) -> pd.DataFrame:
-    """从东财拉指数日线（date/close/amount），amount 单位为元。"""
-    import akshare as ak
-
-    frame = ak.stock_zh_index_daily_em(symbol=symbol)
-    if frame is None or frame.empty:
-        raise ValueError(f"指数 {symbol} 没有返回数据")
+def _normalize(frame: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """统一成 date/close/amount（amount 单位：元），date 作索引。"""
     frame = frame.rename(columns=str.lower)
     missing = {"date", "close", "amount"} - set(frame.columns)
     if missing:
@@ -57,6 +52,61 @@ def fetch(symbol: str) -> pd.DataFrame:
     return out
 
 
+def _fetch_em(symbol: str) -> pd.DataFrame:
+    """东财：主路径。返回全历史（8 千多行、一次请求）。"""
+    import akshare as ak
+
+    frame = ak.stock_zh_index_daily_em(symbol=symbol)
+    if frame is None or frame.empty:
+        raise ValueError(f"指数 {symbol} 没有返回数据")
+    return _normalize(frame, symbol)
+
+
+def _fetch_baostock(symbol: str) -> pd.DataFrame:
+    """baostock：东财限流时的备胎。
+
+    指数不复权，两家口径一致（amount 单位都是元）；代码映射只差
+    一个点：sh000001 → sh.000001。
+    """
+    import baostock as bs
+
+    code = f"{symbol[:2]}.{symbol[2:]}"
+    # baostock 的 query 必须先 login（provider 类里有这层，这里是独立调用）
+    bs.login()
+    try:
+        rs = bs.query_history_k_data_plus(
+            code, "date,close,amount", start_date="1990-01-01", frequency="d"
+        )
+        rows: list[list[str]] = []
+        while rs.error_code == "0" and rs.next():
+            rows.append(rs.get_row_data())
+    finally:
+        bs.logout()
+    if not rows:
+        raise ValueError(f"指数 {symbol}（baostock {code}）没有返回数据")
+    frame = pd.DataFrame(rows, columns=["date", "close", "amount"])
+    # baostock 回的是字符串；amount 空（未开盘的行）置 NaN 统一丢掉
+    for col in ("close", "amount"):
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    return _normalize(frame, symbol)
+
+
+def fetch(symbol: str) -> pd.DataFrame:
+    """拉指数日线（date/close/amount），amount 单位为元。
+
+    东财主路径、baostock 备胎：东财接口限流（ConnectionError/RemoteDisconnected）
+    时不让指数刷新整体失败——量能页的大盘口径等着这份数据。备胎失败才真抛。
+    """
+    try:
+        frame = _fetch_em(symbol)
+        frame.attrs["source"] = "em"
+        return frame
+    except Exception:  # noqa: BLE001 - 限流/断连等任何失败都换备胎，备胎自己会抛真错
+        frame = _fetch_baostock(symbol)
+        frame.attrs["source"] = "baostock"
+        return frame
+
+
 def store(root: Path, symbol: str, frame: pd.DataFrame) -> Path:
     target = _path(root, symbol)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +116,7 @@ def store(root: Path, symbol: str, frame: pd.DataFrame) -> Path:
         "saved_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "rows": len(frame),
         "as_of": str(frame.index[-1].date()) if len(frame) else None,
+        "source": getattr(frame, "attrs", {}).get("source", "em"),
     }
     target.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     return target
