@@ -13,9 +13,12 @@
       "provider": "baostock",
       "summary_note": "2 只需要盯（止损/减仓观察）……",
       "user_note": "（用户手写备注，可选）明天打算怎么操作……",
+      "summary": {...}, "discipline": [...], "position_plan": {...},
       "positions": {
         "600519.SH": {"stance": "hold", "label": "持有",
-                      "close": 1392.05, "pnl_pct": -0.57}
+                      "close": 1392.05, "pnl_pct": -0.57,
+                      "rsi_14": 62.3, "ma20": 1410.2, "headline": "…",
+                      "reasons": ["…"], "levels": {"stop": 1300.0}, "plans": [...]}
       }
     }
 
@@ -82,13 +85,39 @@ def rename_account(root: Path | str, old: str, new: str) -> int:
     return changed
 
 
+# 存档里每条档位保留的「决策依据」：没有依据的结论无法回溯——
+# 三个月后看历史，要知道「那天为什么给减仓观察」（RSI 超买？跌破
+# MA20？），光有档位标签说不清楚
+_ENTRY_EVIDENCE = (
+    "shares",
+    "cost",
+    "market_value",
+    "pnl",
+    "change_pct",
+    "rsi_14",
+    "ma20",
+    "ma60",
+    "atr_14",
+    "high20",
+    "low20",
+    "volume_ratio",
+    "headline",
+    "reasons",
+    "levels",
+    "plans",
+)
+
+
 def compact(payload: dict[str, Any]) -> dict[str, Any]:
-    """裁剪成「那天的结论」：档位、收盘、盈亏率，不留冗余。"""
+    """裁剪成「那天的结论 + 结论的依据」：档位、收盘、盈亏率、指标与预案。
+
+    依然不存行情序列——指标是从面板现算的快照，留的是数字不是原始 K 线。
+    """
     positions: dict[str, dict[str, Any]] = {}
     for row in payload.get("positions") or []:
         account = str(row.get("account") or "默认")
         # 键带账户：同一票在两个账户各有一条档位，不能互相覆盖
-        positions[f"{account}::{row['symbol']}"] = {
+        entry = {
             "symbol": row["symbol"],
             "account": account,
             "stance": row["stance"],
@@ -96,9 +125,13 @@ def compact(payload: dict[str, Any]) -> dict[str, Any]:
             "close": row.get("close"),
             "pnl_pct": row.get("pnl_pct"),
         }
+        for field in _ENTRY_EVIDENCE:
+            if row.get(field) is not None:
+                entry[field] = row[field]
+        positions[f"{account}::{row['symbol']}"] = entry
     summary = payload.get("summary") or {}
     note = (payload.get("user_note") or "").strip()
-    return {
+    archived = {
         "date": payload.get("as_of"),
         "saved_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "provider": payload.get("provider"),
@@ -108,6 +141,12 @@ def compact(payload: dict[str, Any]) -> dict[str, Any]:
         "user_note": note or None,
         "positions": positions,
     }
+    # 组合层：当日汇总数值、纪律检查、计划仓位——那天看到的全景都在，
+    # 回溯时不用再猜「当时组合整体是什么状态」
+    for key in ("summary", "discipline", "position_plan"):
+        if payload.get(key) is not None:
+            archived[key] = payload[key]
+    return archived
 
 
 def save(root: Path | str, payload: dict[str, Any]) -> Path:

@@ -1778,14 +1778,18 @@ def review_archive_detail(date: str) -> dict[str, Any]:
         )
     previous = review_store.latest(root, exclude=date)
     positions = data.get("positions") or {}
+    # 详细字段（RSI/均线/价位/预案）随行带出：历史存档的价值在回溯
+    # 「那天为什么给这个档位」，光有标签说不清
     rows = [
-        {
-            "symbol": entry.get("symbol"),
+        {key: entry.get(key) for key in (
+            "symbol", "stance", "close", "pnl_pct", "shares", "cost",
+            "market_value", "pnl", "change_pct", "rsi_14", "ma20", "ma60",
+            "atr_14", "high20", "low20", "volume_ratio",
+            "headline", "reasons", "levels", "plans",
+        )}
+        | {
             "account": entry.get("account") or holdings_store.DEFAULT_ACCOUNT,
             "label": entry.get("label") or entry.get("stance"),
-            "stance": entry.get("stance"),
-            "close": entry.get("close"),
-            "pnl_pct": entry.get("pnl_pct"),
         }
         for entry in positions.values()
     ]
@@ -1794,6 +1798,9 @@ def review_archive_detail(date: str) -> dict[str, Any]:
         "saved_at": data.get("saved_at"),
         "user_note": data.get("user_note"),
         "summary_note": data.get("summary_note"),
+        "summary": data.get("summary"),
+        "discipline": data.get("discipline"),
+        "position_plan": data.get("position_plan"),
         "positions": rows,
         "changes": _changes(rows, previous),
     }

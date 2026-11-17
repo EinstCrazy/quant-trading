@@ -4583,17 +4583,41 @@ async function loadReviewArchive(date) {
       const changed = changes.get(key);
       const pnlPct = p.pnl_pct == null ? "—" : `${p.pnl_pct > 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`;
       const pnlTone = p.pnl_pct > 0 ? "up" : p.pnl_pct < 0 ? "down" : "muted";
+      const rsi =
+        p.rsi_14 == null ? '<span class="muted">—</span>' : `<span class="muted">${p.rsi_14}</span>`;
+      // 当日依据：headline + 关键价位（hover 看全部），转义系统文本
+      const levelsText = p.levels
+        ? Object.entries(p.levels)
+            .map(([k, v]) => `${k} ${fmt(v, 2)}`)
+            .join(" · ")
+        : "";
+      const basis = p.headline
+        ? `<span title="${escapeAttr(levelsText)}">${escapeAttr(p.headline)}</span>`
+        : '<span class="muted">—</span>';
       return [
         p.account || "默认",
         symbolCell(p.symbol),
         changed ? `${p.label} <span class="muted">（原 ${changed.from_label}）</span>` : p.label,
         p.close == null ? "—" : fmt(p.close, 2),
+        rsi,
         `<span class="${pnlTone}">${pnlPct}</span>`,
+        basis,
       ];
     });
-    $("pf-history-body").innerHTML = rows.length
-      ? table(["账户", "代码", "档位", "收盘", "盈亏率"], rows)
-      : '<div class="empty">这份存档里没有持仓档位</div>';
+    // 组合摘要：那天收盘的整体状态（总市值/总盈亏/集中度）
+    const sum = detail.summary;
+    const summaryLine =
+      sum && sum.total_value != null
+        ? `<p class="muted" style="margin:8px 0 0">组合市值 ${fmt(sum.total_value, 2)} · 浮动盈亏 ${
+            sum.total_pnl > 0 ? "+" : ""
+          }${fmt(sum.total_pnl, 2)}（${sum.total_pnl_pct == null ? "—" : `${sum.total_pnl_pct > 0 ? "+" : ""}${sum.total_pnl_pct}%`}）${
+            sum.concentration != null ? ` · 第一重仓占比 ${sum.concentration.toFixed(1)}%` : ""
+          }</p>`
+        : "";
+    $("pf-history-body").innerHTML =
+      (rows.length
+        ? table(["账户", "代码", "档位", "收盘", "RSI", "盈亏率", "当日依据"], rows)
+        : '<div class="empty">这份存档里没有持仓档位</div>') + summaryLine;
   } catch (error) {
     $("pf-history-body").innerHTML = `<div class="empty">${error.message}</div>`;
   }
