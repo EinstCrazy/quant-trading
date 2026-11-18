@@ -19,6 +19,7 @@ Two things a caller should not have to discover the hard way:
 from __future__ import annotations
 
 import re
+import threading
 from datetime import date, timedelta
 from typing import Any, ClassVar
 
@@ -28,6 +29,7 @@ from quant_research.data.providers.base import (
     MarketDataProvider,
     ProviderError,
     ProviderUnavailable,
+    SourceUnreachable,
     normalise_bars,
     normalize_symbol,
 )
@@ -56,6 +58,37 @@ _NUMERIC = ("open", "high", "low", "close", "volume", "amount", "turn", "pctChg"
 _COLUMN_MAP = {"pctChg": "pct_change", "turn": "turnover"}
 _SHARES_PER_LOT = 100  # BaoStock reports shares; the store keeps lots
 _EARLIEST = "1990-01-01"
+
+# BaoStock 服务端偶发挂起：socket recv 既不返回数据也不抛错，查询线程
+# 永远卡住——批量采集跑到那儿就整个进程停摆（实测 2026-11 两次）。
+# 每次 query 用 daemon 线程 + 超时：超时抛 SourceUnreachable，collector
+# 的退避重试接管；卡死的旧线程随之泄漏（daemon，不挡主线程，代价是
+# 几 MB 内存），比整个采集停摆便宜得多。
+_QUERY_TIMEOUT_SECONDS = 45.0
+
+
+def _with_timeout(fn, *args, timeout: float = _QUERY_TIMEOUT_SECONDS, **kwargs):
+    """Run ``fn`` in a daemon thread; raise SourceUnreachable when it hangs."""
+    box: dict[str, Any] = {}
+    finished = threading.Event()
+
+    def worker():
+        try:
+            box["result"] = fn(*args, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 - 转发到主线程再抛
+            box["error"] = exc
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    if not finished.wait(timeout=timeout):
+        raise SourceUnreachable(
+            f"baostock query 挂起超过 {timeout:.0f}s（服务端无响应）——由退避重试接管，不要原地等"
+        )
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
 
 
 class BaostockProvider(MarketDataProvider):
@@ -180,7 +213,8 @@ class BaostockProvider(MarketDataProvider):
             for symbol in symbols:
                 normalised = normalize_symbol(symbol)
                 try:
-                    result = baostock.query_history_k_data_plus(
+                    result = _with_timeout(
+                        baostock.query_history_k_data_plus,
                         code=self._code(normalised),
                         fields=_FIELDS,
                         start_date=start_text,
@@ -191,8 +225,14 @@ class BaostockProvider(MarketDataProvider):
                     if getattr(result, "error_code", "0") != "0":
                         raise ProviderError(f"{normalised}: {result.error_msg}")
                     rows: list[list[str]] = []
-                    while result.next():
-                        rows.append(result.get_row_data())
+
+                    def _drain(result_set):
+                        collected = []
+                        while result_set.next():
+                            collected.append(result_set.get_row_data())
+                        return collected
+
+                    rows = _with_timeout(_drain, result)
                 except ProviderError:
                     raise
                 except Exception as exc:

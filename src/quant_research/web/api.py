@@ -964,7 +964,7 @@ def screen_latest(provider: str | None = None, adjust: str | None = None) -> Scr
                 factors={
                     key: float(value)
                     for key, value in row.items()
-                    if key not in ("close", "turnover")
+                    if key not in ("close", "turnover") and value is not None
                 },
             )
         )

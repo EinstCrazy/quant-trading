@@ -387,3 +387,37 @@ def test_akshare_unadjusted_fallback_marks_the_adjustment_basis(monkeypatch):
     frames = AkshareProvider(adjust="qfq").fetch_daily(["600519.SH"])
 
     assert "unadjusted" in frames["600519.SH"].attrs.get("source", "")
+
+
+class TestBaostockHangGuard:
+    """baostock 服务端偶发挂起：socket recv 无响应无异常，采集进程整体
+    停摆（2026-11 实测两次，夜采漏一整天数据）。查询走 daemon 线程 +
+    45s 超时——超时抛 SourceUnreachable 让退避重试接管。"""
+
+    def test_timeout_raises_source_unreachable(self):
+        from quant_research.data.providers.baostock_provider import _with_timeout
+        from quant_research.data.providers.base import SourceUnreachable
+
+        import time
+
+        def hangs():
+            time.sleep(120)
+
+        start = time.monotonic()
+        with pytest.raises(SourceUnreachable, match="挂起超过 1s"):
+            _with_timeout(hangs, timeout=1)
+        assert time.monotonic() - start < 10  # 不能真等 120s
+
+    def test_worker_error_is_forwarded(self):
+        from quant_research.data.providers.baostock_provider import _with_timeout
+
+        def boom():
+            raise ValueError("真错要转发，不是被吞成超时")
+
+        with pytest.raises(ValueError, match="真错"):
+            _with_timeout(boom)
+
+    def test_result_passes_through(self):
+        from quant_research.data.providers.baostock_provider import _with_timeout
+
+        assert _with_timeout(lambda a, b: a + b, 2, 3) == 5

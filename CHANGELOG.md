@@ -445,6 +445,12 @@
 
 ### Fixed
 
+- **baostock 查询挂起防护**：服务端偶发 socket recv 无响应无异常
+  （2026-11 实测两次），采集进程整体停摆——夜采因此漏了一整天
+  数据（面板 11-17 行大面积缺价）。每次 query 走 daemon 线程 +
+  45s 超时：超时抛 SourceUnreachable，collector 的退避重试接管；
+  卡死的线程泄漏（daemon，不挡主线程），比整个采集停摆便宜得多。
+  测试 +3（超时、真错转发、结果透传）。
 - **ETF 更新失败**（159915 等）：东财 `fund_etf_hist_em` 连续限流
   （RemoteDisconnected），而 baostock 不支持 ETF——ETF 刷新整体失败。
   加新浪备胎 `fund_etf_hist_sina`（全历史 3624 行到最新交易日）：

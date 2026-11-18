@@ -100,7 +100,7 @@ class ScreenLedger:
                 str(symbol): {
                     key: float(value)
                     for key, value in row.items()
-                    if key not in ("score", "rank") and value is not None
+                    if key not in ("score", "rank") and not pd.isna(value)
                 }
                 for symbol, row in result.picks.iterrows()
             },
