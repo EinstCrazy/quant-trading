@@ -900,12 +900,22 @@ def _screen_out(result: Any, provider: str, latest: Any, note: str = "") -> Scre
     held = held[held > 0]
     as_of = pd.Timestamp(result.as_of)
     latest_stamp = pd.Timestamp(latest)
+    # 因子列 = score/rank/close/turnover 之外的列：名字随因子配置变，
+    # 全量带出让界面能分解「分数是怎么来的」
+    factor_keys = [
+        key
+        for key in result.picks.columns
+        if key not in ("score", "rank", "close", "turnover")
+    ]
     picks = [
         ScreenPickOut(
             symbol=str(symbol),
             rank=position,
             score=float(row["score"]),
             weight=float(held.get(symbol, 0.0)),
+            close=None if pd.isna(row.get("close")) else float(row["close"]),
+            turnover=None if pd.isna(row.get("turnover")) else float(row["turnover"]),
+            factors={key: float(row[key]) for key in factor_keys if not pd.isna(row[key])},
         )
         for position, (symbol, row) in enumerate(result.picks.iterrows(), start=1)
     ]
@@ -939,15 +949,31 @@ def screen_latest(provider: str | None = None, adjust: str | None = None) -> Scr
     latest = _latest_session(wanted_provider, wanted_adjust) or record.as_of
     ranked = sorted(record.picks.items(), key=lambda item: item[1], reverse=True)
     share = 1.0 / len(ranked) if ranked else 0.0
+    detail = record.picks_detail or {}
+    picks = []
+    for position, (symbol, score) in enumerate(ranked, start=1):
+        row = detail.get(symbol) or {}
+        picks.append(
+            ScreenPickOut(
+                symbol=str(symbol),
+                rank=position,
+                score=float(score),
+                weight=share,
+                close=row.get("close"),
+                turnover=row.get("turnover"),
+                factors={
+                    key: float(value)
+                    for key, value in row.items()
+                    if key not in ("close", "turnover")
+                },
+            )
+        )
     return ScreenOut(
         as_of=record.as_of,
         latest_session=latest,
         provider=record.provider,
         universe=record.universe,
-        picks=[
-            ScreenPickOut(symbol=str(symbol), rank=position, score=float(score), weight=share)
-            for position, (symbol, score) in enumerate(ranked, start=1)
-        ],
+        picks=picks,
         dropped=dict(record.dropped),
         note=record.note,
         stale=record.as_of < latest,

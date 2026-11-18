@@ -207,6 +207,11 @@ class ScreenPickOut(BaseModel):
     rank: int
     score: float
     weight: float
+    # 入选依据快照：当日收盘、各因子分量、成交额——分数是结论，分量是
+    # 理由。旧 ledger 记录没有 detail，退回只显示分数（字段留空）
+    close: float | None = None
+    turnover: float | None = None
+    factors: dict[str, float] = Field(default_factory=dict)
 
 
 class ScreenOut(BaseModel):

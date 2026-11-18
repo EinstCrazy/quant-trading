@@ -38,6 +38,10 @@ class ScreenRecord:
     provider: str = "unknown"
     adjust: str = "unknown"
     picks: dict[str, float] = field(default_factory=dict)
+    # 每只入选票的依据快照：当日收盘、各因子分量、成交额——只有分数的
+    # 名单无法回溯「那天为什么选它」。旧记录没有这个字段（向后兼容），
+    # 界面对空 detail 退回只显示分数
+    picks_detail: dict[str, dict[str, float]] = field(default_factory=dict)
     universe: int = 0
     dropped: dict[str, int] = field(default_factory=dict)
     params: dict[str, object] = field(default_factory=dict)
@@ -54,6 +58,7 @@ class ScreenRecord:
             "provider": self.provider,
             "adjust": self.adjust,
             "picks": dict(self.picks),
+            "picks_detail": dict(self.picks_detail),
             "universe": self.universe,
             "dropped": dict(self.dropped),
             "params": dict(self.params),
@@ -91,6 +96,14 @@ class ScreenLedger:
             provider=provider,
             adjust=adjust,
             picks={str(symbol): float(score) for symbol, score in result.picks["score"].items()},
+            picks_detail={
+                str(symbol): {
+                    key: float(value)
+                    for key, value in row.items()
+                    if key not in ("score", "rank") and value is not None
+                }
+                for symbol, row in result.picks.iterrows()
+            },
             universe=result.universe,
             dropped=dict(result.dropped),
             params=dict(params or {}),

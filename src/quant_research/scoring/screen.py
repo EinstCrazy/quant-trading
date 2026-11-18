@@ -219,6 +219,8 @@ def screen(
     # a pick nobody can decompose into its parts cannot be argued with
     parts = {name: frame.loc[day].reindex(ranked.index).round(4) for name, frame in factors.items()}
     picks = pd.DataFrame({"score": ranked.round(4), "rank": range(1, len(ranked) + 1), **parts})
+    # 当日收盘随行：名单里「多少钱能买」不该再查一次面板才知道
+    picks["close"] = prices.loc[day].reindex(ranked.index)
     if turnover is not None:
         picks["turnover"] = turnover.loc[day].reindex(ranked.index)
     picks.index.name = "symbol"

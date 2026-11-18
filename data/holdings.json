@@ -1,13 +1,5 @@
 {
   "positions": {
-    "ycc::000559.SZ": {
-      "shares": 3400.0,
-      "cost": 12.95,
-      "note": "",
-      "added_at": "2026-11-11T05:54:49+00:00",
-      "symbol": "000559.SZ",
-      "account": "ycc"
-    },
     "ycc::603006.SH": {
       "symbol": "603006.SH",
       "account": "ycc",

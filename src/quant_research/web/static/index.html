@@ -1845,6 +1845,15 @@ const DROP_LABELS = {
   short_history: "历史不足", no_score: "无法打分", thin_turnover: "流动性过低",
   limit_up_locked: "一字板不可成交", below_cross_sectional_mean: "低于截面均值",
 };
+  /* 选股因子分量中文名：hover 依据里用 */
+  const FACTOR_LABELS = {
+    momentum: "动量",
+    ma_distance: "均线乖离",
+    inverse_volatility: "低波动",
+    rsi_reversal: "RSI 反转",
+    macd_trend: "MACD 趋势",
+    boll_position: "布林位置",
+  };
 const pct = (value) =>
   value === null || value === undefined
     ? "—"
@@ -1883,10 +1892,26 @@ function renderScreen(data) {
     return;
   }
   const top = data.picks[0];
-  const rows = data.picks.map((pick) => `
+  // 依据分解：各因子分量 + 成交额，hover 全量——分数是结论，分量是理由
+  const basis = (pick) => {
+    const parts = Object.entries(pick.factors || {})
+      .map(([k, v]) => `${FACTOR_LABELS[k] || k} ${v >= 0 ? "+" : ""}${v.toFixed(3)}`)
+      .join(" · ");
+    if (pick.turnover != null) {
+      const 亿 = (pick.turnover / 1e8).toFixed(2);
+      return `${parts}${parts ? " · " : ""}成交额 ${亿} 亿`;
+    }
+    return parts;
+  };
+  const rows = data.picks.map((pick) => {
+    const detail = basis(pick);
+    return `
     <tr><td>${pick.rank}</td><td>${symbolCell(pick.symbol)}</td>
     <td>${pick.score >= 0 ? "+" : ""}${pick.score.toFixed(3)}</td>
-    <td>${(pick.weight * 100).toFixed(1)}%</td></tr>`).join("");
+    <td>${(pick.weight * 100).toFixed(1)}%</td>
+    <td>${pick.close == null ? "—" : fmt(pick.close, 2)}</td>
+    <td>${detail ? `<span class="muted" title="${escapeAttr(detail)}">hover 看依据</span>` : '<span class="muted">—</span>'}</td></tr>`;
+  });
   const dropped = Object.entries(data.dropped || {})
     .filter(([, count]) => count > 0)
     .map(([reason, count]) => `${DROP_LABELS[reason] || reason} ${count}`)
@@ -1898,7 +1923,7 @@ function renderScreen(data) {
       数据源 ${data.provider} · 候选 ${data.universe} 只 · 数据截至 ${data.latest_session}
       ${data.stale ? `｜这是 ${data.as_of} 的名单，不是最新收盘` : ""}
     </p>
-    <table><thead><tr><th>#</th><th>标的</th><th>分数</th><th>权重</th></tr></thead>
+    <table><thead><tr><th>#</th><th>标的</th><th>分数</th><th>权重</th><th>收盘</th><th>依据</th></tr></thead>
     <tbody>${rows}</tbody></table>
     ${dropped ? `<p class="muted">剔除：${dropped}</p>` : ""}
     <p class="muted">研究用的候选名单，不是投资建议，也不接实盘。</p>`;
