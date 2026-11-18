@@ -395,10 +395,10 @@ class TestBaostockHangGuard:
     45s 超时——超时抛 SourceUnreachable 让退避重试接管。"""
 
     def test_timeout_raises_source_unreachable(self):
+        import time
+
         from quant_research.data.providers.baostock_provider import _with_timeout
         from quant_research.data.providers.base import SourceUnreachable
-
-        import time
 
         def hangs():
             time.sleep(120)

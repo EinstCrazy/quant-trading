@@ -151,8 +151,7 @@ def fetch(
             end_date=end_text,
             adjust=adjust,
         )
-    except Exception:
-        # 东财限流/断连等任何失败换备胎；备胎失败抛它自己的真错
+    except Exception:  # noqa: BLE001 - 限流/断连等任何失败换备胎，备胎自己会抛真错
         return _fetch_sina(bare, start, end)
     if raw is None or raw.empty:
         raise ValueError(f"ETF {bare} 没有返回数据")
