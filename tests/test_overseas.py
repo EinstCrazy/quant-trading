@@ -361,7 +361,11 @@ class TestAPI:
         assert "一项都没抓到" in response.json()["detail"]
 
     def test_fetch_swallows_broken_interfaces_and_reports_them(self, monkeypatch):
-        """四个接口各自失败，缺的进 missing，而不是整个 fetch 抛异常。"""
+        """四个接口各自失败，缺的进 missing，而不是整个 fetch 抛异常。
+
+        备胎引入后全球指数失败会连坐新浪备胎（也挂）——missing 里两条
+        都要可见：全球指数、美股（新浪备胎）。
+        """
 
         class Boom(Exception):
             pass
@@ -372,13 +376,16 @@ class TestAPI:
         import akshare as ak
 
         monkeypatch.setattr(ak, "index_global_spot_em", broken)
+        monkeypatch.setattr(ak, "index_us_stock_sina", broken)
         monkeypatch.setattr(ak, "stock_hk_index_spot_sina", broken)
         monkeypatch.setattr(ak, "futures_foreign_commodity_realtime", broken)
         monkeypatch.setattr(ak, "bond_zh_us_rate", broken)
 
         snapshot = fetch()
 
-        assert len(snapshot["missing"]) == 4
+        assert len(snapshot["missing"]) == 5
+        assert any("全球指数" in m for m in snapshot["missing"])
+        assert any("美股（新浪备胎）" in m for m in snapshot["missing"])
         assert snapshot["quotes"] == []
         assert json.dumps(snapshot)  # 可序列化（能落盘）
 
@@ -530,3 +537,123 @@ class TestHKQuotes:
         snapshot = fetch()
         assert any("港股指数" in m for m in snapshot["missing"])
         assert any(q["code"] == "DJIA" for q in snapshot["quotes"])  # 独立失败不拖垮
+
+
+class TestUSSinaFallback:
+    """美股新浪备胎：东财全球指数限流时（RemoteDisconnected），美股组
+    整组缺席——情绪分一半权重挂在美股上，缺不得。备胎拿历史日线用
+    最后两根收盘算隔夜涨跌（外围盘本来就是「隔夜」叙事），as_of 如实
+    标「收盘」；亚太/欧洲/美元指数没有备胎，缺了如实点名。"""
+
+    @staticmethod
+    def _fake_ak(global_fn, sina_fn, **rest):
+        import builtins
+
+        import pandas as pd
+
+        class _FakeAk:
+            @staticmethod
+            def index_global_spot_em():
+                return global_fn()
+
+            @staticmethod
+            def index_us_stock_sina(symbol):
+                return sina_fn(symbol)
+
+            @staticmethod
+            def stock_hk_index_spot_sina():
+                return rest.get("hk", pd.DataFrame(columns=["代码", "名称", "最新价", "涨跌幅"]))
+
+            @staticmethod
+            def futures_foreign_commodity_realtime(symbol):
+                return pd.DataFrame(columns=["名称", "最新价", "涨跌幅", "日期", "行情时间"])
+
+            @staticmethod
+            def bond_zh_us_rate():
+                return pd.DataFrame(
+                    {
+                        "日期": ["2026-11-12"],
+                        "美国国债收益率10年": [4.1],
+                        "中国国债收益率10年": [1.8],
+                    }
+                )
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "akshare":
+                return _FakeAk
+            return real_import(name, *args, **kwargs)
+
+        return fake_import
+
+    def test_em_failure_takes_us_from_sina(self, monkeypatch):
+        """东财限流 → 美股三大指数从新浪历史日线补齐，涨跌幅是日间计算值。"""
+        import pandas as pd
+
+        def broken():
+            raise ConnectionError("('Connection aborted.', RemoteDisconnected(...))")
+
+        frames = {
+            ".DJI": pd.DataFrame(
+                {"date": ["2026-11-17", "2026-11-18"], "close": [50759.42, 50198.17]}
+            ),
+            ".IXIC": pd.DataFrame(
+                {"date": ["2026-11-17", "2026-11-18"], "close": [24195.0, 24429.88]}
+            ),
+            ".INX": pd.DataFrame(
+                {"date": ["2026-11-17", "2026-11-18"], "close": [7340.53, 7323.63]}
+            ),
+        }
+
+        monkeypatch.setattr(
+            "builtins.__import__",
+            self._fake_ak(broken, lambda symbol: frames[symbol]),
+        )
+        snapshot = fetch()
+        us = [q for q in snapshot["quotes"] if q["group"] == "美股"]
+        assert {q["code"] for q in us} == {"DJIA", "NDX", "SPX"}
+        dji = next(q for q in us if q["code"] == "DJIA")
+        assert dji["price"] == 50198.17
+        assert dji["change_pct"] == pytest.approx((50198.17 / 50759.42 - 1) * 100, abs=0.01)
+        assert "收盘" in dji["as_of"]  # 不冒充实时行情
+        # 亚太/欧洲/美元指数没有备胎：如实点名，不装「数据正常」
+        assert any("亚太/欧洲" in m for m in snapshot["missing"])
+
+    def test_sina_failure_still_reported(self, monkeypatch):
+        """备胎也挂 → missing 里两条都在（全球指数 + 新浪备胎），美股缺席可见。"""
+
+        def broken():
+            raise ConnectionError("em down")
+
+        def sina_down(symbol):
+            raise ConnectionError("sina down too")
+
+        monkeypatch.setattr("builtins.__import__", self._fake_ak(broken, sina_down))
+        snapshot = fetch()
+        assert not [q for q in snapshot["quotes"] if q["group"] == "美股"]
+        assert any("全球指数" in m for m in snapshot["missing"])
+        assert any("美股（新浪备胎）" in m for m in snapshot["missing"])
+
+    def test_em_success_never_touches_sina(self, monkeypatch):
+        """东财成功就不碰备胎——备胎是兜底，不是常驻数据源。"""
+        import pandas as pd
+
+        def ok():
+            return pd.DataFrame(
+                {
+                    "代码": ["DJIA", "NDX", "SPX", "N225", "UDI"],
+                    "名称": ["道琼斯", "纳斯达克", "标普500", "日经225", "美元指数"],
+                    "最新价": [52000.0, 24400.0, 7340.0, 50000.0, 100.0],
+                    "涨跌幅": [0.5, 0.8, 0.6, -0.3, -0.2],
+                    "最新行情时间": ["2026-11-12 05:00:00"] * 5,
+                }
+            )
+
+        def must_not_be_called(symbol):
+            raise AssertionError("东财成功就不该碰新浪备胎")
+
+        monkeypatch.setattr("builtins.__import__", self._fake_ak(ok, must_not_be_called))
+        snapshot = fetch()
+        assert any(q["code"] == "DJIA" for q in snapshot["quotes"])
+        assert not any("备胎" in m for m in snapshot["missing"])

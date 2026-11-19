@@ -162,6 +162,41 @@ def sector_link(sector_name: str, snapshot: dict[str, Any] | None) -> dict[str, 
 
 # --- 采集 ----------------------------------------------------------------------
 
+# 美股新浪代码 → 关注清单代码：备胎拿的是历史日线，用最后两根收盘算
+# 隔夜涨跌——外围盘本来就是「隔夜」叙事（开盘前看的是收盘价），不必等
+# 实时接口。code 沿用东财口径（NDX=纳斯达克综合），名称如实标新浪口径
+_US_SINA_SYMBOLS = ((".DJI", "DJIA"), (".IXIC", "NDX"), (".INX", "SPX"))
+_US_NAMES = {"DJIA": "道琼斯", "NDX": "纳斯达克综合", "SPX": "标普500"}
+
+
+def _fetch_us_sina(quotes: list[dict[str, Any]], missing: list[str]) -> None:
+    """美股三大指数新浪备胎：东财全球指数限流时，美股组不再整组缺席。
+
+    接口回历史日线，取最后两根收盘算日涨跌幅；``as_of`` 标「收盘」，
+    不冒充实时行情。新浪挂了就进 missing，不编数。
+    """
+    try:
+        import akshare as ak
+
+        for symbol, code in _US_SINA_SYMBOLS:
+            frame = ak.index_us_stock_sina(symbol=symbol)
+            if frame is None or len(frame) < 2:
+                continue
+            closes = frame["close"].tolist()
+            change = (float(closes[-1]) / float(closes[-2]) - 1) * 100
+            quotes.append(
+                {
+                    "group": "美股",
+                    "code": code,
+                    "name": _US_NAMES[code],
+                    "price": round(float(closes[-1]), 2),
+                    "change_pct": round(change, 2),
+                    "as_of": f"{frame['date'].iloc[-1]} 收盘",
+                }
+            )
+    except Exception as exc:  # noqa: BLE001 - 备胎失败如实报告，不拖垮快照
+        missing.append(f"美股（新浪备胎）：{type(exc).__name__} {str(exc)[:60]}")
+
 
 def fetch() -> dict[str, Any]:
     """抓一次外围快照。三个接口各自独立失败，缺的进 ``missing``。
@@ -201,7 +236,14 @@ def fetch() -> dict[str, Any]:
                 }
             )
     except Exception as exc:  # noqa: BLE001 - 网络/接口都可能坏，不能拖垮整个快照
-        missing.append(f"全球指数：{type(exc).__name__} {exc}")
+        # 东财限流（RemoteDisconnected）时美股组整组缺席——情绪分一半权重
+        # 挂在美股上，必须有备胎。新浪只覆盖美股三大指数：亚太/欧洲/美元
+        # 指数没有备胎，缺了就如实点名，不装作「数据正常只是没显示」
+        _fetch_us_sina(quotes, missing)
+        if not any(q.get("group") == "美股" for q in quotes):
+            missing.append(f"全球指数：{type(exc).__name__} {str(exc)[:60]}")
+        elif not any(q.get("code") == "UDI" for q in quotes):
+            missing.append("亚太/欧洲/美元指数：东财限流，备胎只覆盖美股三大指数")
 
     try:
         import akshare as ak
