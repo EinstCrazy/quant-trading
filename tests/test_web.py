@@ -1256,3 +1256,31 @@ class TestUIPolish:
         html = self._html()
         assert "function renderErrorBox(message)" in html
         assert html.count("escapeAttr(message)") >= 2
+
+
+class TestReviewChartWiring:
+    """复盘图表必须接回渲染链：2a14539 重构 renderReview 时丢了
+    renderReviewCharts() 调用——函数还在但没人调，图表区永远空白。
+    用户报障才发现，纯结构性回归，值得一条静态测试守住。"""
+
+    @staticmethod
+    def _load_review_body() -> str:
+        html = (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+        body = html[html.index("async function loadReview(") + 10 :]
+        return body[: body.index("async function ")]
+
+    def test_load_review_calls_charts(self):
+        """loadReview 成功路径必须调 renderReviewCharts（下拉 + K线 + 横条）。"""
+        body = self._load_review_body()
+        assert "renderReviewCharts();" in body
+
+    def test_render_review_charts_still_defined(self):
+        """渲染函数本体仍在，且会调 loadReviewChart 画 K 线。"""
+        html = (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+        body = html[html.index("function renderReviewCharts()") :]
+        body = body[: body.index("function reviewPnlBars(")]
+        assert "loadReviewChart();" in body

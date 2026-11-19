@@ -3915,6 +3915,8 @@ async function loadReview() {
     REVIEW = await api(`/portfolio/review${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`);
     renderReview();
     renderReviewPlan(REVIEW.position_plan);
+    // 2a14539 重构时丢了这行：图表函数还在但没人调——图表区永远空白
+    renderReviewCharts();
     $("pf-status").textContent = "";
   } catch (error) {
     REVIEW = null;
