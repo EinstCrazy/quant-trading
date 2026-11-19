@@ -1284,3 +1284,88 @@ class TestReviewChartWiring:
         body = html[html.index("function renderReviewCharts()") :]
         body = body[: body.index("function reviewPnlBars(")]
         assert "loadReviewChart();" in body
+
+
+class TestDataQualityViewWiring:
+    """「数据质量」页三处断线：下拉永远没人填充（state.dataset 永远
+    空串）、showView 没有 data 分支（切入不加载）、overview 用默认
+    missing_policy="raise"——多票上市时间不同，并集面板前段是结构性
+    NaN，加载直接 500。质量页的任务就是报告缺失，不该被缺失挡在门外。"""
+
+    @staticmethod
+    def _patched_settings(tmp_path):
+        from dataclasses import replace
+
+        import quant_research.web.api as api_module
+
+        settings = api_module.load_settings()
+        return replace(
+            settings,
+            data=replace(settings.data, directory=tmp_path),
+            collection=replace(settings.collection, output_directory=tmp_path / "raw"),
+        )
+
+    @staticmethod
+    def _seed_provider(tmp_path):
+        import json
+
+        import pandas as pd
+
+        daily = tmp_path / "raw" / "testprov" / "daily"
+        daily.mkdir(parents=True)
+        for symbol, start in (("A.SH", "2026-01-05"), ("B.SZ", "2026-02-02")):
+            index = pd.bdate_range(start, periods=10)
+            pd.DataFrame({"date": index, "close": [10.0 + i for i in range(10)]}).to_parquet(
+                daily / f"{symbol}.parquet"
+            )
+        state = {
+            "provider": "testprov",
+            "adjust": "qfq",
+            "format": "parquet",
+            "updated_at": "2026-11-19T10:00:00+08:00",
+            "symbols": {
+                "A.SH": {"first_date": "2026-01-05", "last_date": "2026-01-16", "rows": 10},
+                "B.SZ": {"first_date": "2026-02-02", "last_date": "2026-02-13", "rows": 10},
+            },
+        }
+        (tmp_path / "raw" / "testprov" / "_state.json").write_text(
+            json.dumps(state), encoding="utf-8"
+        )
+
+    def test_datasets_report_symbol_counts(self, client, tmp_path, monkeypatch):
+        """collected 数据集带出票数与更新时间——kind 重命名成 collected
+        后比较值没跟上（还是比 "raw"），state 永远 None。"""
+        self._seed_provider(tmp_path)
+        patched = self._patched_settings(tmp_path)
+        import quant_research.web.api as api_module
+
+        monkeypatch.setattr(api_module, "load_settings", lambda: patched)
+        datasets = client.get("/api/datasets").json()
+        testprov = next(d for d in datasets if d["key"] == "raw:testprov")
+        assert testprov["n_symbols"] == 2
+        assert testprov["updated_at"] == "2026-11-19T10:00:00+08:00"
+
+    def test_overview_tolerates_structural_nans(self, client, tmp_path, monkeypatch):
+        """并集面板的结构性 NaN 不 raise：missing_rate 统计出来。"""
+        self._seed_provider(tmp_path)
+        patched = self._patched_settings(tmp_path)
+        import quant_research.web.api as api_module
+
+        monkeypatch.setattr(api_module, "load_settings", lambda: patched)
+        response = client.get("/api/datasets/raw%3Atestprov/overview")
+        assert response.status_code == 200
+        quality = response.json()["quality"]
+        assert quality["missing_rate"]["B.SZ"] > 0  # A 比 B 早开盘：B 前段缺失
+        assert quality["n_obs"] > 0
+
+    def test_frontend_wiring_exists(self):
+        """下拉填充 + showView 的 data 分支 + loadOverview 空串守卫都在。"""
+        html = (Path(__file__).parents[1] / "src/quant_research/web/static/index.html").read_text(
+            encoding="utf-8"
+        )
+        datasets_body = html[html.index("async function loadDatasets(") :]
+        datasets_body = datasets_body[: datasets_body.index("addEventListener")]
+        assert '$("dataset").innerHTML' in datasets_body
+        show_view = html[html.index("function showView(") :]
+        show_view = show_view[: show_view.index("function applyHash(")]
+        assert 'name === "data") loadOverview()' in show_view

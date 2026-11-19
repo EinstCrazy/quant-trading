@@ -333,7 +333,7 @@ def datasets() -> list[DatasetOut]:
         kind_raw, name = key.split(":", maxsplit=1)
         kind: Literal["sample", "collected"] = "sample" if kind_raw == "sample" else "collected"
         state = None
-        if kind == "raw":
+        if kind_raw == "raw":
             state = LocalMarketStore(settings.collection.output_directory, name).load_state()
         items.append(
             DatasetOut(
@@ -358,7 +358,10 @@ def overview(
 ) -> dict[str, Any]:
     settings = load_settings()
     path = _resolve(key, settings)
-    panel = load_price_panel(path)
+    # 数据质量页的任务就是「报告缺失」，加载时却被缺失值挡住（多票上市
+    # 时间不同，并集面板前段是结构性 NaN）——keep：缺了也算进 missing_rate，
+    # 不 raise 拒载
+    panel = load_price_panel(path, missing_policy="keep")
     quality = describe_panel(panel)
 
     base = panel.prices.bfill().iloc[0]

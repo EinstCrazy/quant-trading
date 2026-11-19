@@ -1088,6 +1088,7 @@ function showView(name, push = true) {
     loadSectors();
     loadSectorFlow();
   }
+  if (name === "data") loadOverview();
   if (name === "volume") loadVolume();
   if (name === "overseas") loadOverseas();
   if (name === "etf") loadEtf();
@@ -5025,6 +5026,16 @@ async function loadDatasets() {
     state.strategies = health.strategies || ["ma_cross"];
     const datasets = await api("/datasets");
     state.datasets = datasets;
+    /* 数据集下拉：之前没人填充它——下拉永远空，state.dataset 永远空串，
+       loadOverview 第一行直接 return，「数据质量」页四个卡片全空白 */
+    $("dataset").innerHTML = datasets
+      .map((d) => {
+        const tag = d.n_symbols != null ? `（${d.n_symbols} 只）` : "";
+        return `<option value="${d.key}">${d.label}${tag}</option>`;
+      })
+      .join("");
+    if (!state.dataset) state.dataset = datasets[0]?.key || "";
+    $("dataset").value = state.dataset;
     const current = datasets.find((d) => d.key === state.dataset) || datasets[0];
     const when = current?.updated_at
       ? new Date(current.updated_at).toLocaleString("zh-CN", { hour12: false })

@@ -445,6 +445,16 @@
 
 ### Fixed
 
+- **「数据质量」页无信息**：三处断线叠加——① `#dataset` 下拉永远
+  没人填充（state.dataset 永远空串，loadOverview 第一行直接
+  return）；② showView 没有 data 分支（切入不触发加载）；③
+  datasets 端点 kind 重命名成 collected 后比较值没跟上（仍比
+  "raw"），state 永远 None——票数/更新时间全空。另有 ④ overview
+  用默认 missing_policy="raise"：多票上市时间不同，并集面板前段
+  是结构性 NaN，直接 500——质量页的任务就是报告缺失，改 keep，
+  缺了算进 missing_rate 不拒载。真实验证：baostock 数据集 279 只
+  +更新时间可见，质量报告 n_obs 8766、286 条缺失率、8 个跳变。
+  测试 +3。
 - **复盘中「图表分析」无数据**：2a14539（明日仓位预案）重构时把
   `renderReviewCharts()` 调用弄丢——K 线/浮盈横条的渲染函数都在，
   但没人调它们，图表区永远空白。接回 loadReview 成功路径；node
